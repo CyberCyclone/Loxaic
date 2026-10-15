@@ -12,9 +12,18 @@ describe("parseProbe", () => {
   });
 
   it("turns warnings into sentences, and gathers PATH entries a login shell drops into one", () => {
-    const out = parseProbe("uid=0\ngid=0\nwarn=git\nwarn=rg\nwarn=path:/opt/sdk/bin\nwarn=path:/opt/tools\nwarn=unknown\n");
+    const out = parseProbe("uid=1000\ngid=1000\nwarn=git\nwarn=rg\nwarn=path:/opt/sdk/bin\nwarn=path:/opt/tools\nwarn=unknown\n");
     expect(out.check.warnings.map((w) => w.code)).toEqual(["git", "rg", "path"]);
     expect(out.check.warnings[2].message).toContain("/opt/sdk/bin, /opt/tools");
+  });
+
+  it("warns when the image runs as root, and only then", () => {
+    expect(parseProbe("uid=0\ngid=0\n").check.warnings.map((w) => w.code)).toEqual(["root"]);
+    expect(parseProbe("uid=1000\ngid=1000\n").check.warnings).toEqual([]);
+  });
+
+  it("requires sh, which a GitHub workspace's CA setup runs", () => {
+    expect(PROBE_SCRIPT).toMatch(/for t in sh tail /);
   });
 
   it("counts an image whose user cannot be read as missing id", () => {

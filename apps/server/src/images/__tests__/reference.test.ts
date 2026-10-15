@@ -55,7 +55,7 @@ describe("parseReference", () => {
 
 describe("registries", () => {
   it("normalises a login's registry as typed", () => {
-    expect(parseRegistry("")).toBe("docker.io");
+    expect(() => parseRegistry("")).toThrow("Name the registry");
     expect(parseRegistry("https://index.docker.io/v1/")).toBe("docker.io");
     expect(parseRegistry("GHCR.io")).toBe("ghcr.io");
     expect(parseRegistry("https://localhost:5000/v2/")).toBe("localhost:5000");

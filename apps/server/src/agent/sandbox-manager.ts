@@ -533,8 +533,13 @@ async function imageConfigFor(
         "this server's sandbox mode has changed since. Start a new conversation, or ask an admin.",
     );
   }
-  const { findImage, readLimits, DEFAULT_IMAGE_LIMITS, ensureImagePresent } = await import("../images/store.ts");
+  const { customImagesBlocked, findImage, readLimits, DEFAULT_IMAGE_LIMITS, ensureImagePresent } = await import("../images/store.ts");
   const { useRefusal } = await import("../images/access.ts");
+  // The engine can change after a pull too, and this path may pull again
+  // (ensureImagePresent). On Podman a pull with no login can fall back to the
+  // host's own, so the Docker-only rule is asked here as well as at pull time.
+  const blocked = await customImagesBlocked();
+  if (blocked) throw new Error(`This conversation's image "${chosen.label}" can't be used right now: ${blocked}`);
   const row = await findImage(chosen.id);
   const refusal = useRefusal(row, getSandboxSettings().customImages, ownerId, { github: workspace.kind === "github" });
   if (refusal || !row?.digest || row.uid === null || row.gid === null) {

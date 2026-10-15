@@ -7,7 +7,7 @@
  * and the digest it records is the only thing a container is ever made from.
  */
 import type Docker from "dockerode";
-import { and, asc, db, eq, isNull } from "@loxaic/db";
+import { and, asc, db, eq, isNull, sql } from "@loxaic/db";
 import { sandboxImages } from "@loxaic/db/schema";
 import { getSandboxSettings } from "../settings.ts";
 import { engineKind } from "../sandbox/container-engine.ts";
@@ -67,9 +67,34 @@ function ownerIs(owner: LoginOwner) {
   return owner === null ? isNull(sandboxImages.ownerId) : eq(sandboxImages.ownerId, owner);
 }
 
-/** Pulls in flight, by row id, with how far each has got. */
+/** Pulls in flight, by row id, with how far each has got and whose they are. */
 const pulls = new Map<string, Promise<void>>();
 const progress = new Map<string, PullProgress>();
+const pullOwners = new Map<string, LoginOwner>();
+
+/**
+ * How much one person can ask this host to hold. Content stays on the engine
+ * when a row is deleted (it may back another row), so these are what stops a
+ * user under "everyone" from filling the disk Postgres and every sandbox
+ * share. Shared images are an admin's, and not capped.
+ */
+export const MAX_PERSONAL_IMAGES = 25;
+export const MAX_PULLS_PER_OWNER = 2;
+
+function pullsFor(owner: LoginOwner): number {
+  let n = 0;
+  for (const o of pullOwners.values()) if (o === owner) n++;
+  return n;
+}
+
+function assertCanPull(owner: LoginOwner): void {
+  if (owner !== null && pullsFor(owner) >= MAX_PULLS_PER_OWNER) {
+    throw new ImageError(
+      `You already have ${String(MAX_PULLS_PER_OWNER)} images pulling; wait for one to finish.`,
+      429,
+    );
+  }
+}
 
 export function readLimits(raw: unknown): ImageLimits | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -122,7 +147,7 @@ export async function findImage(id: string): Promise<ImageRow | null> {
   return (await db.query.sandboxImages.findFirst({ where: eq(sandboxImages.id, id) })) ?? null;
 }
 
-function isUuid(value: string): boolean {
+export function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
@@ -189,6 +214,16 @@ export async function addImage(
   const label = cleanLabel(input.label, reference);
   const limits = owner === null ? (input.limits === undefined ? DEFAULT_IMAGE_LIMITS : parseLimits(input.limits)) : null;
   if (owner !== null && input.limits !== undefined) throw new ImageError("Only shared images have limits.");
+  if (owner !== null) {
+    const [{ n }] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(sandboxImages)
+      .where(eq(sandboxImages.ownerId, owner));
+    if (n >= MAX_PERSONAL_IMAGES) {
+      throw new ImageError(`You can have at most ${String(MAX_PERSONAL_IMAGES)} images; remove one first.`, 409);
+    }
+  }
+  assertCanPull(owner);
   const inserted = await db
     .insert(sandboxImages)
     .values({ ownerId: owner, reference, label, status: "pulling", limits, createdBy })
@@ -196,7 +231,7 @@ export async function addImage(
     .returning();
   const row = inserted.at(0);
   if (!row) throw new ImageError(`${reference} is already in the list.`, 409);
-  void startPull(row.id);
+  void startPull(row.id, owner);
   return toImageView(row);
 }
 
@@ -238,27 +273,41 @@ export async function repull(owner: LoginOwner, id: string): Promise<ImageView |
   const row = await getImage(owner, id);
   if (!row) return null;
   if (!pulls.has(id)) {
+    assertCanPull(owner);
     const updated = await db
       .update(sandboxImages)
       .set({ status: "pulling", error: null, updatedAt: new Date() })
       .where(eq(sandboxImages.id, id))
       .returning();
-    void startPull(id);
+    void startPull(id, owner);
     const row2 = updated.at(0);
     return row2 ? toImageView(row2) : null;
   }
   return toImageView(row);
 }
 
-/** Single flight per row: a second request while one runs joins it. */
-function startPull(id: string): Promise<void> {
+/**
+ * Single flight per row: a second request while one runs joins it. Never
+ * rejects: nothing awaits it (callers `void` it), and the server has no
+ * unhandledRejection handler, so a throw here would end the process.
+ * `pullAndCheck` records its own failures on the row.
+ */
+function startPull(id: string, owner: LoginOwner): Promise<void> {
   const existing = pulls.get(id);
   if (existing) return existing;
-  const run: Promise<void> = pullAndCheck(id).finally(() => {
-    if (pulls.get(id) === run) pulls.delete(id);
-    progress.delete(id);
-  });
+  const run: Promise<void> = pullAndCheck(id)
+    .catch((err: unknown) => {
+      console.error(`[images] pull of ${id} failed outside its own handling:`, err);
+    })
+    .finally(() => {
+      if (pulls.get(id) === run) {
+        pulls.delete(id);
+        pullOwners.delete(id);
+      }
+      progress.delete(id);
+    });
   pulls.set(id, run);
+  pullOwners.set(id, owner);
   return run;
 }
 
@@ -268,11 +317,13 @@ export async function __waitForPull(id: string): Promise<void> {
 }
 
 async function pullAndCheck(id: string): Promise<void> {
-  const row = await db.query.sandboxImages.findFirst({ where: eq(sandboxImages.id, id) });
-  if (!row) return;
-  const ref = parseReference(row.reference);
   let secret: string | null = null;
   try {
+    // Inside the try, like everything else: a transient database error or a
+    // stored reference that no longer parses fails this row, never the process.
+    const row = await db.query.sandboxImages.findFirst({ where: eq(sandboxImages.id, id) });
+    if (!row) return;
+    const ref = parseReference(row.reference);
     const blocked = await customImagesBlocked();
     if (blocked) throw new Error(blocked);
     const { sandboxEngine } = await import("../sandbox/container-provider.ts");
@@ -286,9 +337,16 @@ async function pullAndCheck(id: string): Promise<void> {
       throw new Error(describePullFailure((err as Error).message, row.reference, ref.registry, secret));
     }
     const repository = repositoryName(ref);
-    const info = await docker.getImage(row.reference).inspect();
-    const digest = chooseDigest(repository, statuses, info.RepoDigests);
+    // The tag only for the fallback, which is reached only when the pull's
+    // own status lines named no digest. Everything decided about the image is
+    // then read from the pinned digest: the tag is shared with every row that
+    // names it, and another pull can move it between our pull and this read.
+    const tagged = statuses.some((line) => line.startsWith("Digest: "))
+      ? []
+      : (await docker.getImage(row.reference).inspect()).RepoDigests;
+    const digest = chooseDigest(repository, statuses, tagged);
     if (!digest) throw new Error("The registry did not say which digest it sent, so the image can't be pinned.");
+    const info = await docker.getImage(digest).inspect();
     const refused = labelRefusal(info.Config.Labels);
     if (refused) throw new Error(refused);
     const probe = await probeImage(docker, digest, row.ownerId ?? row.createdBy ?? "shared");

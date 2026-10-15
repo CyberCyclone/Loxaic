@@ -16,6 +16,13 @@ describe("chooseDigest", () => {
     expect(chooseDigest(repo, [], [`${repo}@${a}`, `${repo}@${b}`])).toBeNull();
     expect(chooseDigest(repo, [], [])).toBeNull();
   });
+
+  it("reads Docker Hub's unqualified repo digests, and answers with the qualified name", () => {
+    expect(chooseDigest("docker.io/library/ubuntu", [], [`ubuntu@${a}`])).toBe(`docker.io/library/ubuntu@${a}`);
+    expect(chooseDigest("docker.io/someone/tool", [], [`someone/tool@${a}`])).toBe(`docker.io/someone/tool@${a}`);
+    // A different repository's short form is not this one's.
+    expect(chooseDigest("docker.io/library/ubuntu", [], [`debian@${a}`])).toBeNull();
+  });
 });
 
 describe("describePullFailure", () => {
@@ -28,6 +35,12 @@ describe("describePullFailure", () => {
   it("reads Docker's answer to a pull with no login as a refusal too", () => {
     const raw = '(HTTP code 500) server error - Head "http://localhost:5055/v2/a/b/manifests/1": no basic auth credentials';
     expect(describePullFailure(raw, "localhost:5055/a/b:1", "localhost:5055", null)).toMatch(/localhost:5055 refused/);
+  });
+
+  it("does not read a 401 or 403 inside a digest as a refusal", () => {
+    const digestWith401 = `sha256:${"0".repeat(20)}401${"0".repeat(41)}`;
+    expect(describePullFailure(`manifest unknown: ${digestWith401}`, "x", "ghcr.io", null)).toMatch(/was not found/);
+    expect(describePullFailure("unexpected status 403 Forbidden", "x", "ghcr.io", null)).toMatch(/refused/);
   });
 
   it("says when the image has no build for this platform, or does not exist", () => {
