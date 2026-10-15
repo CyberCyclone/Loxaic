@@ -11,6 +11,7 @@ import { ModePicker } from '@/components/sandbox/ModePicker';
 import { EnginePicker } from '@/components/sandbox/EnginePicker';
 import { NetworkToggle } from '@/components/sandbox/NetworkToggle';
 import { RetentionSettings } from '@/components/sandbox/RetentionSettings';
+import { CustomImagesPicker } from '@/components/sandbox/CustomImagesPicker';
 import { RunQueueSettings } from '@/components/sandbox/RunQueueSettings';
 import { PermissionCheckSettings } from '@/components/sandbox/PermissionCheckSettings';
 import { ModelModal } from '@/components/settings/ModelModal';
@@ -179,6 +180,17 @@ export default function SandboxScreen() {
           <Text size="2xs" className="-mt-3 text-muted-foreground">
             Set by the SANDBOX_ALLOW_NETWORK environment variable.
           </Text>
+        )}
+
+        {/* Absent from a server that predates custom images (#253). */}
+        {settings.customImages !== undefined && (
+          <CustomImagesPicker
+            policy={settings.customImages}
+            disabled={settings.envOverrides.customImages === true || !reachable}
+            pinned={settings.envOverrides.customImages === true}
+            {...(settings.customImagesBlocked ? { blocked: settings.customImagesBlocked } : {})}
+            onSelect={(customImages) => { void applyAndRefresh({ customImages }); }}
+          />
         )}
 
         <RetentionSettings

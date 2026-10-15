@@ -821,6 +821,9 @@ export function useAgentSession(
         pendingLocalIdRef.current = localId;
         pendingModelRef.current = model;
         const chosen = pendingWorkspaceRef.current;
+        // Only a plain scratch workspace takes the implicit path; one with a
+        // custom image (#253) is created first, like any other choice.
+        const implicit = chosen.kind === 'scratch' && !chosen.image;
         // A workspace's conversation is created over REST before the message
         // goes out, so until then there is nothing for the server to know.
         sendsRef.current.remember(localMsgId, {
@@ -828,7 +831,7 @@ export function useAgentSession(
           localMsgId,
           localConvId: localId,
           hadAttachments,
-          dispatched: chosen.kind === 'scratch',
+          dispatched: implicit,
         });
         const newRun: Conversation = {
           id: localId,
@@ -838,11 +841,11 @@ export function useAgentSession(
           model,
           location: 'server',
           msgs: [{ id: localMsgId, role: 'user', text, attachments }],
-          workspace: chosen.kind === 'scratch' ? null : chosen,
+          workspace: implicit ? null : chosen,
         };
         setRuns((prev) => [newRun, ...prev]);
         setActiveId(localId);
-        if (chosen.kind === 'scratch') {
+        if (implicit) {
           // The implicit path: the server opens a scratch conversation on the
           // first send. Unchanged from before workspaces existed.
           if (

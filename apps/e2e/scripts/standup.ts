@@ -25,6 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockGithub } from './mock-github.ts';
 import { startMockProvider } from './mock-provider.ts';
+import { startMockRegistry } from './mock-registry.ts';
 import { startMockHf, type MockHf } from './mock-hf.ts';
 import { startMockLlamaReleases, type MockLlamaReleases } from './mock-llama-releases.ts';
 import { startGitServer, type GitServer } from './git-server.ts';
@@ -134,6 +135,19 @@ export function mockProviderApiBase(): string {
   }
   const { apiBase } = JSON.parse(readFileSync(MOCK_PROVIDER_FILE, 'utf8')) as { apiBase: string };
   return apiBase;
+}
+
+/** The private registry the custom-image specs pull from (#253), handed
+ * across processes the same way as the mock GitHub API. */
+const MOCK_REGISTRY_FILE = path.join(RUN_DIR, 'mock-registry.json');
+let stopMockRegistry: (() => Promise<void>) | null = null;
+
+/** The mock registry's host and the two images pushed to it. */
+export function mockRegistry(): { host: string; marker: string; noSetsid: string } {
+  if (!existsSync(MOCK_REGISTRY_FILE)) {
+    throw new Error(`[e2e] no mock registry recorded at ${MOCK_REGISTRY_FILE} — was standup() run?`);
+  }
+  return JSON.parse(readFileSync(MOCK_REGISTRY_FILE, 'utf8')) as { host: string; marker: string; noSetsid: string };
 }
 
 /** The stand-in for the HuggingFace Hub, handed across processes the same way
@@ -428,6 +442,10 @@ async function ensureServer(): Promise<void> {
   const mockProvider = await startMockProvider();
   stopMockProvider = mockProvider.stop;
   writeFileSync(MOCK_PROVIDER_FILE, JSON.stringify({ apiBase: mockProvider.apiBase }), 'utf8');
+  log('starting the mock container registry and pushing its test images');
+  const registry = await startMockRegistry();
+  stopMockRegistry = registry.stop;
+  writeFileSync(MOCK_REGISTRY_FILE, JSON.stringify({ host: registry.host, marker: registry.marker, noSetsid: registry.noSetsid }), 'utf8');
   const mcpPort = await freePort();
   mockMcpHttp = spawn(path.join(REPO_ROOT, 'apps/server/node_modules/.bin/tsx'), ['test-fixtures/mock-mcp-http-server.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
@@ -594,6 +612,11 @@ export async function teardown(): Promise<void> {
     stopMockProvider = null;
   }
   rmSync(MOCK_PROVIDER_FILE, { force: true });
+  if (stopMockRegistry) {
+    await stopMockRegistry();
+    stopMockRegistry = null;
+  }
+  rmSync(MOCK_REGISTRY_FILE, { force: true });
   if (stopMockHf) {
     await stopMockHf();
     stopMockHf = null;
