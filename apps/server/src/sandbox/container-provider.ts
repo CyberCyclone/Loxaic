@@ -116,6 +116,28 @@ async function requireDocker(): Promise<{ docker: Docker; label: string }> {
 }
 
 /**
+ * The engine this deployment talks to, or null when there is none.
+ *
+ * Exists for the one consumer that is not a sandbox: the browser provider
+ * (`browser/container.ts`) creates containers and Docker networks that are
+ * deliberately *not* sandboxes, so it cannot go through `SandboxProvider` —
+ * but it must share this engine discovery and its cache, because a second
+ * discovery path would find a second socket and the two would orphan each
+ * other's containers. Nothing outside that module should need it: sandbox
+ * execution stays behind `SandboxHandle`/`SandboxProvider`.
+ */
+export async function getEngine(): Promise<Docker | null> {
+  const found = await getDocker();
+  return found?.docker ?? null;
+}
+
+/** Why there is no engine, for the message a caller shows when `getEngine()`
+ * answers null and the reason matters to a human. */
+export function describeEngineCandidates(): string {
+  return describeCandidates();
+}
+
+/**
  * IDs of every container this provider ever created (all sandboxes carry the
  * loxaic.sandbox label), **running or stopped**. Used by the boot-time orphan
  * sweep. Empty when no engine is reachable — a sweep on a host-mode or
