@@ -20,7 +20,7 @@ export type PermissionMode = "planning" | "manual" | "auto";
  * the conversation is created and **immutable afterwards** — the agent's
  * system prompt is derived from it, and a prompt that changed mid-conversation
  * would invalidate the backend's cached prefix from the first token onward
- * (see AGENTS.md, "Prompt caching").
+ * (see apps/server/src/agent/AGENTS.md).
  *
  * - `scratch`: an empty directory in a sandbox on the server. The default, and
  *   what every conversation created before workspaces existed resolves to.
@@ -60,9 +60,10 @@ export type Workspace =
  * there means nobody has looked yet.
  *
  * `decision` is how the file is presented to the model, fixed per model so the
- * system prompt stays byte-identical between turns (AGENTS.md, "Project
- * instructions"): `full` is the whole text, `outline` its opening and headings
- * with line ranges for the model to page through with fs_read.
+ * system prompt stays byte-identical between turns
+ * (apps/server/src/agent/AGENTS.md): `full` is the whole text, `outline` its
+ * opening and headings with line ranges for the model to page through with
+ * fs_read.
  */
 export type InstructionsMode = "full" | "outline";
 export interface InstructionsDecision {

@@ -32,8 +32,8 @@ interface RewindModalProps {
  * conversation and files (the first, and what most people mean), the
  * conversation alone, or the files alone — and says what a restore cannot put
  * back. Both the height cap and `scrollEnabled` on the body, like every modal
- * that can grow (AGENTS.md): the limits sentence is what pushes the buttons
- * down on a phone.
+ * that can grow (apps/mobile/components/AGENTS.md): the limits sentence is
+ * what pushes the buttons down on a phone.
  */
 export function RewindModal({ dialog, onConfirm, onCancel }: RewindModalProps) {
   const reachable = useServerReachable();

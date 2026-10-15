@@ -5,8 +5,8 @@
  *
  * Reachability is asserted, not visibility: WebDriver calls an element past
  * the viewport edge "displayed", so a visibility check passes whether or not
- * anything can scroll to it (see AGENTS.md on SettingsModal and
- * McpServerModal, where exactly that hid a field).
+ * anything can scroll to it (see apps/e2e/AGENTS.md; in SettingsModal and
+ * McpServerModal exactly that hid a field).
  */
 import { browser } from '@wdio/globals';
 import { apiToken, uniqueCreds } from '../helpers/auth.ts';

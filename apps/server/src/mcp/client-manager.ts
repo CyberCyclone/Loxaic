@@ -17,9 +17,8 @@ export const CALL_TIMEOUT_MS = 60_000;
 /**
  * How long a failed connect is remembered. The registry connects every enabled
  * server at the start of every turn, and without this a server that cannot be
- * reached (a box with no route to api.githubcopilot.com, say) costs
- * CONNECT_TIMEOUT_MS on every turn — for the GitHub server, on a row the user
- * never added by hand. `dropEntry` clears it, so Test always really tries.
+ * reached costs CONNECT_TIMEOUT_MS on every turn. `dropEntry` clears it, so
+ * Test always really tries.
  */
 export const CONNECT_FAILURE_TTL_MS = 30_000;
 
@@ -29,8 +28,7 @@ interface Entry {
   configStamp: string;
   lastUsedAt: number;
   tools: SanitizedToolMeta[] | null;
-  /** Every value to scrub from an error: the row's secrets, plus a linked
-   * credential (the GitHub token) that never lives in the row. */
+  /** Every value to scrub from an error: the row's secrets. */
   redactions: Record<string, string>;
 }
 

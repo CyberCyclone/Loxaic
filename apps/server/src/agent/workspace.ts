@@ -5,8 +5,8 @@
  * A workspace is immutable after creation and there is no PATCH path for it,
  * on purpose. The system prompt is derived from it, and a prompt that changes
  * partway through a conversation invalidates the backend's cached prefix from
- * the first token onward (AGENTS.md, "Prompt caching"). Changing your mind
- * means a new conversation.
+ * the first token onward (see this directory's AGENTS.md). Changing your
+ * mind means a new conversation.
  */
 import { db, eq } from "@loxaic/db";
 import { conversations } from "@loxaic/db/schema";
@@ -272,6 +272,8 @@ export function describeWorkspace(workspace: Workspace, mode: SandboxMode): stri
 
   switch (workspace.kind) {
     case "scratch":
+      // Never claim a checkout here: the prompt once told every conversation
+      // a repository was checked out at /home/loxaic/repo when none was.
       return (
         `${where}. ${capitalize(dir)} is an empty scratch workspace, not a checked-out project. ` +
         "It belongs to this conversation and is kept between messages."

@@ -46,7 +46,8 @@ export const FIT_TEXT: Record<FitLabel, string> = {
   unknown: 'Fit unknown',
 };
 
-/** Semantic token classes per label — never numbered colours (AGENTS.md). */
+/** Semantic token classes per label — never numbered colours
+ * (apps/mobile/AGENTS.md). */
 export const FIT_CLASS: Record<FitLabel, string> = {
   'will-fit': 'bg-success/15 text-success',
   'might-fit': 'bg-warning/15 text-warning',

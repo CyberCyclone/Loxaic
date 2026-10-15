@@ -214,7 +214,9 @@ async function resolveMcpTools(
   if (rows.length === 0) return [];
 
   // The conversation's own choices, then the server's default for its kind —
-  // the one rule the client's switches render (`mcpServerActive`).
+  // the one rule the client's switches render (`mcpServerActive`). Overrides
+  // are read only against rows that exist, so an id naming a deleted server
+  // is inert and needs no cleanup when a server is removed.
   const state = await conversationMcpState(opts.conversationId, opts.surface ?? "chat");
   if (!state) {
     console.warn("Conversation MCP choices could not be read; running with builtins only");

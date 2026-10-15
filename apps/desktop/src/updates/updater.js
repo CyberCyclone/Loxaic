@@ -263,6 +263,8 @@ export function whyDisabled({ app, argv = [], env = {}, platform = process.platf
   if (!app?.isPackaged) {
     return "This is a development build. Released builds update themselves.";
   }
+  // A `--dir` build counts as packaged but has no app-update.yml (only a real
+  // target writes one), so enabling updates there always reports ENOENT. Not a bug.
   if (platform === "linux" && !env.APPIMAGE) {
     return "This build was installed from a package. Update it the way you installed it.";
   }

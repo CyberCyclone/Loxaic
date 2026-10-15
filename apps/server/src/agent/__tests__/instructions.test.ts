@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { SandboxHandle } from "../../sandbox/provider.ts";
 import type { ChatMessage } from "../../inference/provider.ts";
 import {
@@ -25,20 +24,25 @@ import {
 } from "../instructions.ts";
 
 /**
- * How a project's AGENTS.md is put in front of the model. The realistic case
- * is this repository's own file — ~300 KB, ~77k tokens — which is exactly the
- * size that makes "just include it" wrong for a local model and right for a
- * million-token one.
+ * How a project's AGENTS.md is put in front of the model. The realistic large
+ * case is a ~300 KB file (~75k tokens): exactly the size that makes "just
+ * include it" wrong for a local model and right for a million-token one. Built
+ * here rather than read from this repository, whose own file is kept small.
  */
-const REPO_AGENTS = readFileSync(
-  path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../../AGENTS.md"),
-  "utf8",
-);
+const LARGE_AGENTS = (() => {
+  const paragraph =
+    "- Keep this rule in mind when changing the code below; it explains a constraint that the code alone does not make obvious.\n";
+  const parts = ["# AGENTS.md\n\nProject notes.\n\n## Commands\n\npnpm test\n\n## Gotchas\n"];
+  for (let i = 0; i < 60; i++) {
+    parts.push(`\n### Area ${String(i)}\n\n`, paragraph.repeat(40));
+  }
+  return parts.join("");
+})();
 
 describe("choosing whole or outline by the window", () => {
-  const repoTokens = instructionTokens(REPO_AGENTS);
+  const repoTokens = instructionTokens(LARGE_AGENTS);
 
-  it("puts this repository's own file in whole for a million-token model", () => {
+  it("puts a large file in whole for a million-token model", () => {
     expect(repoTokens).toBeGreaterThan(60_000);
     expect(chooseMode(repoTokens, 1_000_000)).toBe("full");
   });
@@ -66,8 +70,6 @@ describe("choosing whole or outline by the window", () => {
   });
 
   it("honours a configured share", () => {
-    // A window sized from the file, not a fixed one: this file grows with
-    // every PR, and at a fixed 200k it crossed the 0.5 share and failed CI.
     const window = repoTokens * 3;
     process.env.AGENT_INSTRUCTIONS_WINDOW_SHARE = "0.5";
     try {
@@ -164,9 +166,9 @@ describe("outlines", () => {
     expect(tiny).toMatch(/… \d+ more; list them with grep -n '\^#' AGENTS\.md/);
   });
 
-  it("fits this repository's own file into a 32k slot's budget", () => {
+  it("fits a large file's outline into a 32k slot's budget", () => {
     const budget = instructionBudget(32_768, 0.15);
-    const outline = buildOutline("AGENTS.md", REPO_AGENTS, budget);
+    const outline = buildOutline("AGENTS.md", LARGE_AGENTS, budget);
     expect(instructionTokens(outline)).toBeLessThanOrEqual(budget);
     expect(outline).toContain("Gotchas");
   });

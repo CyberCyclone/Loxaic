@@ -1,6 +1,6 @@
 /**
  * Which skills a conversation can use, and the pure decisions made about them
- * — see AGENTS.md, "Skills".
+ * — see this directory's AGENTS.md.
  *
  * A name defined in more than one place resolves to the most specific
  * definition: a workspace's, then the person's own, then the built-in. That is

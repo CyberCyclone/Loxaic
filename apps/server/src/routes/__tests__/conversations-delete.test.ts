@@ -15,8 +15,8 @@ import { conversationShares, conversations, messages, usageRecords, user } from 
  * `updateConversationSettings`, for two reasons. The settings row is global and
  * these suites share one Postgres, so writing it would change what a
  * concurrently-running suite's deletes do; and `resetServerSettingsCache()` is
- * process-global, which AGENTS.md already records as having broken four
- * unrelated container tests. Env pins are read at call time and are per-case.
+ * process-global, which has already broken four unrelated container tests
+ * (see apps/server/AGENTS.md). Env pins are read at call time and are per-case.
  */
 const currentUser = { id: "" };
 
@@ -143,8 +143,7 @@ beforeEach(() => {
 afterEach(async () => {
   retentionOff();
   // Scoped to this suite's own owner — an unscoped delete here would wipe
-  // every other suite's rows out from under them (AGENTS.md records exactly
-  // that bug in git.test.ts).
+  // every other suite's rows out from under them (see apps/server/AGENTS.md).
   const own = await db.select({ id: conversations.id }).from(conversations).where(eq(conversations.ownerId, owner));
   const ids = own.map((c) => c.id);
   if (ids.length) {

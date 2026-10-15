@@ -12,9 +12,9 @@ import { configRoutes } from "../config.ts";
  * `version` is the one thing this file covers; the sandbox half is exercised
  * elsewhere. It is returned only to a signed-in caller, so one case signs a
  * user up for real — the same way admin-role.test.ts does — and presents the
- * token. See AGENTS.md: vitest shares one process, and pnpm itself sets
- * `npm_package_version` for every script it runs — so both env vars
- * `serverVersion()` reads are saved and restored around every test.
+ * token. vitest shares one process (see apps/server/AGENTS.md), and pnpm
+ * itself sets `npm_package_version` for every script it runs — so both env
+ * vars `serverVersion()` reads are saved and restored around every test.
  */
 const app = Fastify();
 configRoutes(app);

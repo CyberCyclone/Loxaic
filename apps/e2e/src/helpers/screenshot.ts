@@ -1,8 +1,8 @@
 /**
  * Named screenshots, written into a gitignored artifacts directory.
  *
- * These are the evidence a PR is expected to carry (see AGENTS.md, "End-to-end
- * tests"): capture at the moments that actually show the feature working, then
+ * These are the evidence a PR is expected to carry (see the root AGENTS.md,
+ * "Testing"): capture at the moments that actually show the feature working, then
  * drag the PNGs into the PR description. They are never committed.
  *
  * Files are numbered in capture order so the directory reads as a storyboard

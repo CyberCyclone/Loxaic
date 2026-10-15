@@ -544,7 +544,9 @@ function slugify(value: string): string {
  * use — it exists to prefix stored model references, and asking an admin to
  * choose one would be asking them to care about something they can never
  * change. `default` is reserved: `ws/chat.ts` sends the literal string
- * "default" when a client names no model.
+ * "default" when a client names no model. A provider deleted and re-added
+ * under the same name gets the same slug back, which rebinds every stored
+ * reference to the new row.
  */
 export async function allocateSlug(name: string): Promise<string> {
   const base = slugify(name) || "provider";

@@ -46,8 +46,9 @@ export async function loadSubagentPolicy(userId: string): Promise<SubagentModelP
  *
  * Only under `choose`, and never in a routine. A routine runs with nobody
  * watching, and a model its owner did not pick is exactly what a routine's own
- * model rule forbids (see AGENTS.md, "Routines") — so there `choose` behaves
- * as `parent`. `fixed` still applies in a routine: that one the person chose.
+ * model rule forbids (see apps/server/AGENTS.md) — so there
+ * `choose` behaves as `parent`. `fixed` still applies in a routine: that one
+ * the person chose.
  */
 export function offersModelChoice(policy: SubagentModelPolicy, routine: boolean): boolean {
   return policy.mode === "choose" && !routine;

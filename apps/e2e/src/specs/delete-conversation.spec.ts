@@ -7,8 +7,8 @@
  *
  * The overflow assertion checks **reachability, not visibility** — WebDriver
  * reports `isDisplayed()` true for an element pushed past the viewport edge,
- * so a visibility check passes with the bug and without it (AGENTS.md records
- * the same trap in mcp-servers.spec.ts). It compares bounding rectangles
+ * so a visibility check passes with the bug and without it (the same trap
+ * mcp-servers.spec.ts guards against). It compares bounding rectangles
  * instead: the title must end at or before the controls begin, and the last
  * control must be inside the viewport.
  *

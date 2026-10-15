@@ -105,7 +105,7 @@ export function useSubAgents(controller: SubAgentController, parentConvId: strin
     /**
      * One of this thread's sub-agent sheets is on screen, or about to be. No
      * other sheet may open over it: a second native overlay on top of the
-     * first is what stranded sheets on iOS (AGENTS.md, "Plan review").
+     * first is what stranded sheets on iOS (apps/mobile/components/AGENTS.md).
      */
     sheetOpen: listOpen || handingOver || openId !== null,
     openList,

@@ -82,11 +82,11 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
           `accessibilityLabel` → `aria-label` mapping in that path: the prop
           reaches the DOM as an unknown attribute and the card has no
           accessible name on web or Electron. (Same `.web.tsx` override caveat
-          AGENTS.md records for testIDs, which work only because they were
-          patched in by hand.) Native is no better — a plain View with a label
-          but no `accessible` is not an accessibility element. The Pressable is
-          already the focusable element that owns the row, so the failure folds
-          into what it announces. */}
+          apps/mobile/components/AGENTS.md records for testIDs, which work
+          only because they were patched in by hand.) Native is no better — a
+          plain View with a label but no `accessible` is not an accessibility
+          element. The Pressable is already the focusable element that owns
+          the row, so the failure folds into what it announces. */}
       <Pressable
         onPress={() => { setOpen((o) => !o); }}
         accessibilityLabel={failed ? 'Tool call failed' : undefined}

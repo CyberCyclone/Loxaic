@@ -256,7 +256,8 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
   return (
     <Modal isOpen onClose={onClose} size="lg">
       <ModalBackdrop />
-      {/* Both halves (see AGENTS.md): twenty-odd settings are far past any fold. */}
+      {/* Both halves (see apps/mobile/components/AGENTS.md): twenty-odd
+          settings are far past any fold. */}
       <ModalContent testID="localModels.settingsSheet" className="max-h-[85%]">
         <ModalHeader>
           <VStack className="min-w-0 flex-1 shrink pr-2">

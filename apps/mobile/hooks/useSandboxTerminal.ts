@@ -106,7 +106,8 @@ export function useSandboxTerminal(
     // Read through a call, never the variable: the type checker narrows
     // `cancelled` to false after the assignment above and cannot see that an
     // await lets the cleanup run in between — the same trap the run
-    // scheduler's `signal.aborted` check documents (AGENTS.md).
+    // scheduler's `signal.aborted` check documents
+    // (apps/server/src/inference/AGENTS.md).
     const isCancelled = () => cancelled;
     let socket: WebSocket | null = null;
 
@@ -140,6 +141,8 @@ export function useSandboxTerminal(
         return;
       }
 
+      // Not reported to the connection monitor (no trackSocket): this socket's
+      // 4503 means the workspace's machine is offline, not the server.
       socket = createSandboxTerminalSocket(sandboxId, token, (event: TerminalServerEvent) => {
         if (isCancelled()) return;
         switch (event.type) {

@@ -19,9 +19,9 @@ apps/mobile/ios/
 apps/mobile/android/
 
 # Keys from `expo-updates codesigning:generate`. Update signing is not in use —
-# EAS restricts it to Enterprise, see AGENTS.md — but a key generated while
-# trying it can still be sitting here, and a private key must never become a
-# commit.
+# EAS restricts it to Enterprise, see apps/mobile/AGENTS.md — but a key
+# generated while trying it can still be sitting here, and a private key must
+# never become a commit.
 apps/mobile/keys/
 # Uploaded attachments. UPLOADS_DIR is unset in dev, so storage.ts
 # falls back to <cwd>/uploads — i.e. inside the working tree. These are

@@ -1,5 +1,5 @@
 /**
- * A conversation's skills over its life — see AGENTS.md, "Skills".
+ * A conversation's skills over its life — see this directory's AGENTS.md.
  *
  * The `skill` tool's description lists the skills the model may load, and the
  * tools array is the front of every prompt: a description that changed between

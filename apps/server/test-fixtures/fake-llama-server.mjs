@@ -310,6 +310,8 @@ function load(id) {
     logEvent({ event: "load-failed", model: id, reason: "argument" });
     return "failed";
   }
+  // As b11342: only `spec-type = draft-mtp` loads, and a draft file that is
+  // not there fails the load. Keep refusing both.
   const badSpec =
     (spec["spec-type"] !== undefined && spec["spec-type"] !== "draft-mtp") ||
     (spec["spec-draft-model"] !== undefined && !existsSync(spec["spec-draft-model"])) ||

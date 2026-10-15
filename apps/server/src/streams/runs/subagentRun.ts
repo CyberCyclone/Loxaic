@@ -563,8 +563,8 @@ export function mirrorProgress(
 }
 
 /** The text of the child's last assistant message — its report. Ordered as
- * the engine replays, never by insertion (AGENTS.md, "A read without
- * `orderBy` has no order"). Empty when it never wrote one. */
+ * the engine replays, never by insertion (see the root AGENTS.md). Empty when
+ * it never wrote one. */
 async function finalText(childConvId: string): Promise<string> {
   const rows = await db
     .select({ content: messages.content })

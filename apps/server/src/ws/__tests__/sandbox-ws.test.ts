@@ -71,13 +71,14 @@ afterEach(async () => {
   // Scoped to this file's own conversations. `stopAllSandboxes("host")` would
   // have done it in one line and is wrong here: it sweeps every running host
   // row in the shared database, so it stops the sandbox another suite is
-  // asserting on (AGENTS.md — the same hazard the abandoned reaper has).
+  // asserting on (apps/server/AGENTS.md — the same hazard the abandoned
+  // reaper has).
   for (const id of conversationIds.splice(0)) await destroyConversationSandboxes(id);
   Reflect.deleteProperty(process.env, "SANDBOX_HOST_ROOT");
   Reflect.deleteProperty(process.env, "SANDBOX_MODE");
   rmSync(root, { recursive: true, force: true });
   // Scoped to this file's own rows — an unscoped delete would take another
-  // suite's sandboxes with it (AGENTS.md).
+  // suite's sandboxes with it (apps/server/AGENTS.md).
   await db.delete(sandboxes).where(eq(sandboxes.ownerId, ownerId));
   await db.delete(conversations).where(eq(conversations.ownerId, ownerId));
 });

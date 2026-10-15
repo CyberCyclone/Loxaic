@@ -13,7 +13,7 @@ on:
 # — which may be write-all.
 #
 # Worth stating plainly, since the trigger branch takes daily merges: OTA
-# bundles are not code-signed (see AGENTS.md), so whoever can push to this
+# bundles are not code-signed (see .github/AGENTS.md), so whoever can push to this
 # branch can put arbitrary JS into every build that follows it, with the EAS
 # account as the only thing in the way. That is why `dev` is behind a ruleset
 # requiring a pull request and a passing CI run, and why this job names the

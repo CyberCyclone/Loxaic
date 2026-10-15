@@ -315,6 +315,7 @@ export function snapshotMessageToMessage(
         ? sm.tool_calls.map((tc) => ({
             tool: tc.tool,
             summary: toolSummary(tc.tool, tc.args),
+            // Stripped on every path a tool result arrives by (history, snapshot, live).
             result: stripTodoReminder(tc.output ?? ''),
             diff: diffLinesFor(tc.diff),
             callId: tc.call_id,
@@ -350,7 +351,8 @@ export function snapshotMessageToMessage(
  * placed by it, and when `olderUnloaded` says there is history before the
  * loaded page, one older than that page is left out — scrolling back loads it
  * from history, in order. A message without a `lamport` (an older server) is
- * appended, as before.
+ * appended, as before. A finished run is never skipped for being absent alone:
+ * it may equally be a newer run this device missed while disconnected.
  */
 export function applySnapshotToMsgs(
   msgs: Message[],
@@ -496,6 +498,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
             t.callId === event.call_id
               ? {
                   ...t,
+                  // Stripped on every path a tool result arrives by (history, snapshot, live).
                   result: stripTodoReminder(event.output),
                   diff: diffLinesFor(event.diff),
                   ok: event.ok,

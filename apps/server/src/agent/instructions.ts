@@ -1,6 +1,6 @@
 /**
  * The project's own instructions file (AGENTS.md, else CLAUDE.md), put in
- * front of an agent — see AGENTS.md, "Project instructions".
+ * front of an agent — see this directory's AGENTS.md.
  *
  * Two routes in:
  *
@@ -18,8 +18,8 @@
  *
  * How much of a file the model is given depends on its window. A file that
  * fits comfortably goes in whole, as OpenCode and Claude Code always do. One
- * that would not — this repository's own AGENTS.md is ~77k tokens, more than
- * a whole 32k local slot — goes in as an outline: its opening, and its
+ * that would not — a 300 KB AGENTS.md is ~75k tokens, more than a whole 32k
+ * local slot — goes in as an outline: its opening, and its
  * headings with line ranges, which the model pages through with fs_read's
  * offset/limit. No second model call: the model reading two sections it
  * chose is cheaper than any summary, and loses none of the rules.
@@ -52,7 +52,8 @@ import { attachActiveSandbox } from "./sandbox-manager.ts";
  * per-directory override of it, so it wins when present — usually a person's
  * own uncommitted tweak, which on a local workspace is exactly who is asking.
  * `CLAUDE.md` and `GEMINI.md` are Claude Code's and Gemini CLI's own names, for
- * a repository written for only one of them.
+ * a repository written for only one of them. Not `.cursorrules` (deprecated)
+ * or `.cursor/rules/*.mdc`, whose per-rule settings a plain read would ignore.
  */
 export const INSTRUCTION_FILES = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md"] as const;
 
@@ -61,8 +62,8 @@ export const INSTRUCTION_FILES = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"
 export const ROOT_INSTRUCTION_FILES = [...INSTRUCTION_FILES, ".github/copilot-instructions.md"] as const;
 
 /** How much of a file is ever read. Past it the outline covers what was read
- * and says so. Large enough for this repository's own 307 KB file to go in
- * whole on a model whose window can take it. */
+ * and says so. Large enough for a several-hundred-KB file to go in whole on a
+ * model whose window can take it. */
 export const MAX_INSTRUCTIONS_SOURCE_BYTES = 1024 * 1024;
 
 /** Each step of a lookup — finding the file, then each chunk of it — gets its

@@ -844,8 +844,9 @@ export const skills = pgTable(
   "skills",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    // Cascades, or a person's skills would block deleting their account.
     ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
+    name:text("name").notNull(),
     description: text("description").notNull(),
     body: text("body").notNull(),
     /** False keeps it out of the model's list: only a person runs it, by
@@ -854,6 +855,8 @@ export const skills = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
+  // The last word on a name: routes/skills.ts answers its violation as a 409,
+  // which is what stops two racing saves both landing.
   (t) => [uniqueIndex("skills_owner_name_idx").on(t.ownerId, t.name)],
 );
 

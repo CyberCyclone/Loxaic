@@ -111,13 +111,22 @@ function configFor(rawVariant) {
         ...(variant.channel ? { channel: variant.channel } : {}),
       },
     ],
+    // No `identity` and no `forceCodeSigning`: a keychain certificate signs, and
+    // none packages unsigned with a warning. Never `identity: null` (it unsigns
+    // every release); skip signing locally with CSC_IDENTITY_AUTO_DISCOVERY=false.
     mac: {
+      // Keep `zip`: MacUpdater downloads the zip, not the dmg.
       target: ["dmg", "zip"],
       category: "public.app-category.developer-tools",
       hardenedRuntime: true,
+      // Deliberate: this assessment runs before notarization, so a signed app
+      // fails it by construction. Check the stapled build with `spctl -a -vv -t install`.
       gatekeeperAssess: false,
+      // The same file for both: no sandboxed helper process needs a narrower set.
       entitlements: "build/entitlements.mac.plist",
       entitlementsInherit: "build/entitlements.mac.plist",
+      // Needs APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID together:
+      // none set skips notarization silently (local builds), one or two throws.
       notarize: true,
       // macOS 15+ gates a third-party app's connections to LAN addresses
       // behind Local Network permission, and refuses them inside the Mac

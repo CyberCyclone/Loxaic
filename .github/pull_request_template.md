@@ -1,7 +1,7 @@
 <!--
 Pull requests target `dev`, and every commit needs a DCO sign-off (`git commit -s`) —
 see CONTRIBUTING.md. Keep this short. The E2E and Screenshots sections are the ones reviewers rely on —
-see AGENTS.md → "End-to-end tests".
+see "Testing" in AGENTS.md and apps/e2e/AGENTS.md.
 -->
 
 ## Summary

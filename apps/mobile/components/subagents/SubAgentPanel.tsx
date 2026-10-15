@@ -144,6 +144,8 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
         </HStack>
       ) : (
         <MessageList
+          // Its own testID: the parent's list is on screen behind this sheet,
+          // and two lists under one id would be one selector.
           testID="subagent.panel.messageList"
           conversation={conversation}
           // The typing line under the transcript, while a request is out.

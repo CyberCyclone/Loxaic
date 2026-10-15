@@ -146,7 +146,8 @@ export async function waitForModelStage(
 }
 
 /** Moves the model to a stage through the API, with nothing open — the way to
- * put it where a case needs it. */
+ * put it where a case needs it. Call it only after any new conversation in the
+ * case has started: a new conversation's first run steps the model back down. */
 export async function putModelAtStage(creds: Pick<Credentials, 'email' | 'password'>, id: string, stage: number): Promise<void> {
   if ((await modelInfo(creds, id))?.context_stage?.active === stage) return;
   const res = await userApi(creds, '/v1/models/context-stage', { method: 'POST', body: JSON.stringify({ model: id, stage }) });

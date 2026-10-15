@@ -369,7 +369,7 @@ export default function AgentScreen() {
   const executionModel =
     (openPlanId !== null && planModelChoice?.callId === openPlanId ? planModelChoice.model : undefined) ?? selectedModel;
   // Choosing a model swaps the panel for the model list and back: the two are
-  // siblings, never stacked (see RoutineModal in AGENTS.md).
+  // siblings, never stacked (see apps/mobile/components/AGENTS.md).
   const [pickingPlanModel, setPickingPlanModel] = useState<string | null>(null);
   // The model list opens a moment after the sheet starts closing (see
   // onPickModel), so the timer is kept to be called off. A plan that goes away

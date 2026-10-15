@@ -1,6 +1,6 @@
 /**
  * Keeping the project's instructions current without re-evaluating the
- * prompt — see AGENTS.md, "Project instructions".
+ * prompt — see this directory's AGENTS.md.
  *
  * The system prompt carries the version read before the conversation's first
  * request, and changing it would make the backend re-read everything after
@@ -379,6 +379,8 @@ export async function prepareInstructions(input: {
   // Taken just now: it is as current as a check could make it.
   const fresh = prior?.status !== "found" && prior?.status !== "none";
   const base = versionOf(snap);
+  // Compared against what the model was last told, not the base: otherwise
+  // every change since the snapshot would be announced again on every run.
   const known = snap.latest ?? base;
   let check: Check = { kind: "unchanged" };
   if (!fresh) {

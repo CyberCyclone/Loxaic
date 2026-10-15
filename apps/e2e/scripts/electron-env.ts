@@ -23,7 +23,7 @@ export const SELF_CONTAINED = process.env.E2E_SELF_CONTAINED === '1';
  * them), and the app itself (which reads one from its own environment) —
  * travel as environment variables and are only *minted* here when absent.
  * A module-level `mkdtempSync` would run once per process and hand each a
- * different directory; see AGENTS.md's note on WebdriverIO's process model.
+ * different directory.
  */
 function perRunDir(envKey: string, prefix: string): string {
   process.env[envKey] ??= mkdtempSync(path.join(os.tmpdir(), prefix));

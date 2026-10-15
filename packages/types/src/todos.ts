@@ -11,7 +11,8 @@ import type { Todo } from "./stream-protocol";
  * the one stored and replayed — the prefix the backend caches never changes
  * under it. Fixed text, never interpolated, so the client can strip it from the
  * tool card exactly: the person never asked for it and it says nothing about
- * the tool.
+ * the tool. Stored results keep whatever text was current, so changing it
+ * leaves old ones unstripped.
  */
 export const TODO_STALE_REMINDER =
   "\n\n<todo-reminder>Your todo list has not changed in a while and still has unfinished items. If you have " +

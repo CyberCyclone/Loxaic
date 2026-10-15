@@ -200,6 +200,9 @@ export class StreamBroker {
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
           break;
         case "prompt.stats": {
+          // Kept only until its message's first output (any delta, tool call or
+          // end clears it): it describes a prefill still under way, and is
+          // emit-only — nothing here changes the prompt's bytes.
           const { kind: _kind, ...stats } = event;
           void _kind;
           promptStats = stats;

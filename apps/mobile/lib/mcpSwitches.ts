@@ -67,6 +67,8 @@ export function toggleTarget(conversationId: string | null): 'pending' | 'patch'
   return conversationId !== null && isServerConvId(conversationId) ? 'patch' : 'pending';
 }
 
+/** A switch flipped in a chat is always stored as an explicit choice, even one
+ * matching the kind's default, so a later change of that default cannot undo it. */
 export function applyToggle(
   overrides: McpOverrides | null | undefined,
   serverId: string,
