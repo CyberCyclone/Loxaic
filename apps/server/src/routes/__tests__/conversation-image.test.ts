@@ -101,6 +101,18 @@ describe("changing a conversation's image", () => {
     unwatch();
   });
 
+  it("never reads a body without the image key as a move back to Loxaic's own", async () => {
+    const image = await readyImage(owner, "Mine");
+    const workspace: Workspace = { kind: "scratch", image: { id: image.id, scope: "personal", reference: image.reference, label: "Mine" } };
+    const id = await conversation("agent", workspace);
+    currentUser.id = owner;
+    for (const payload of [{}, { imageId: image.id }, "image"]) {
+      const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/image`, headers: { "content-type": "application/json" }, payload: JSON.stringify(payload) });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(await workspaceOf(id)).toEqual(workspace);
+  });
+
   it("is the owner's alone: an editor of a shared conversation gets the same 404 as a stranger", async () => {
     const image = await readyImage(null, "Shared");
     const id = await conversation("agent");

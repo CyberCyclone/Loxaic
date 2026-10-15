@@ -31,6 +31,11 @@ describe("rewriteHeader", () => {
     const out = rewriteHeader({ ...base, mode: 0o6755 }, 1234, 1234);
     expect(out).toMatchObject({ uid: 1234, gid: 1234, uname: "", gname: "", mode: 0o755, name: base.name });
   });
+
+  it("drops an extended header's owner and file capabilities, keeping the rest of it", () => {
+    const pax = { path: base.name, uid: "3000000", gid: "3000000", uname: "old", gname: "old", "SCHILY.xattr.security.capability": "x", mtime: "1.5" };
+    expect(rewriteHeader({ ...base, pax }, 1234, 1234).pax).toEqual({ path: base.name, mtime: "1.5" });
+  });
 });
 
 describe("rewriteOwnership", () => {
@@ -50,6 +55,17 @@ describe("rewriteOwnership", () => {
     ]);
     expect(entries[1].body.equals(big)).toBe(true);
     expect(entries[2].header).toMatchObject({ type: "symlink", linkname: "/etc/passwd" });
+  });
+
+  it("re-owns an entry whose owner came in an extended header", async () => {
+    // A uid past ustar's octal field is written as a pax record, as an engine
+    // with remapped users does; extraction would prefer it to the rewrite.
+    const source = pack();
+    source.entry({ ...base, name: "loxaic/high.txt", mode: 0o644, pax: { uid: "3000000", gid: "3000000" } }, Buffer.alloc(0));
+    source.finalize();
+    const [entry] = await read(rewriteOwnership(source as unknown as Readable, 1234, 1234));
+    expect((entry.header.pax as Record<string, string> | undefined)?.uid).toBeUndefined();
+    expect(entry.header).toMatchObject({ uid: 1234, gid: 1234 });
   });
 
   it("fails rather than ending early when the source does", async () => {

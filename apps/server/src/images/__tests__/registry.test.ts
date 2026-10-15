@@ -308,6 +308,42 @@ describe.skipIf(!dockerReady)("custom images against a real registry", () => {
     await expect(back.readFile(`${back.workdir}/work.txt`)).resolves.toBe("edited after moving back");
   }, 300_000);
 
+  it("copies from the container the chat is using when a stale paused row sits beside it", async () => {
+    const conversation = await conversationIn(alice, alicesImage);
+    const before = await getConversationSandbox(alice, conversation);
+    await before.writeFile(`${before.workdir}/work.txt`, "in the live container");
+    // A paused row left behind, and the live row rewritten after it, so an
+    // unordered read meets the stale one first.
+    const [stale] = await db
+      .insert(sandboxes)
+      .values({ ownerId: alice, conversationId: conversation, containerId: randomUUID().replaceAll("-", ""), provider: "container", image: "stale", status: "stopped" })
+      .returning();
+    await db.update(sandboxes).set({ lastUsedAt: new Date() }).where(and(eq(sandboxes.conversationId, conversation), eq(sandboxes.status, "running")));
+
+    const asWorkspace: WorkspaceImage = { id: alicesImage.id, scope: alicesImage.scope, reference: alicesImage.reference, label: alicesImage.label };
+    await expect(replaceConversationSandbox(conversation, { kind: "scratch", image: asWorkspace })).resolves.toEqual({ moved: true });
+    const after = await getConversationSandbox(alice, conversation);
+    await expect(after.readFile(`${after.workdir}/work.txt`)).resolves.toBe("in the live container");
+    await expect(docker.getContainer(before.ref).inspect()).rejects.toThrow();
+    expect((await db.query.sandboxes.findFirst({ where: eq(sandboxes.id, stale.id) }))?.status).toBe("stopped");
+  }, 300_000);
+
+  it("treats a sandbox whose container is gone as nothing to move, and can move again", async () => {
+    const conversation = await conversationIn(alice, alicesImage);
+    const before = await getConversationSandbox(alice, conversation);
+    await docker.getContainer(before.ref).remove({ force: true });
+
+    const asWorkspace: WorkspaceImage = { id: alicesImage.id, scope: alicesImage.scope, reference: alicesImage.reference, label: `${alicesImage.label} again` };
+    await expect(replaceConversationSandbox(conversation, { kind: "scratch", image: asWorkspace })).resolves.toEqual({ moved: false });
+    const rows = await db.query.sandboxes.findMany({ where: eq(sandboxes.conversationId, conversation) });
+    expect(rows.map((r) => r.status)).toEqual(["destroyed"]);
+    const stored = await db.query.conversations.findFirst({ where: eq(conversations.id, conversation), columns: { workspace: true } });
+    expect(stored?.workspace).toEqual({ kind: "scratch", image: asWorkspace });
+    // The next tool call gets a fresh container, not the dead one.
+    const next = await getConversationSandbox(alice, conversation);
+    expect(next.ref).not.toBe(before.ref);
+  }, 300_000);
+
   it.skipIf(!dockerReady)("moves a conversation back to Loxaic's own image when that is built here", async (ctx) => {
     if (!(await sandboxImageReady())) ctx.skip();
     const conversation = await conversationIn(alice, alicesImage);

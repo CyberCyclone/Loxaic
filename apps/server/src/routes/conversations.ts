@@ -268,10 +268,18 @@ export function conversationRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "A folder on your own machine runs in Loxaic's own image; choosing another is not supported yet." };
     }
-    const raw = (request.body ?? {}) as { image?: unknown };
+    const body: unknown = request.body ?? {};
+    const raw = (typeof body === "object" && body !== null ? body : {}) as { image?: unknown };
+    // Moving back to Loxaic's own image throws away whatever the custom one
+    // had outside the home directory, so it is asked for by name (null),
+    // never read into a body that left the key out.
+    if (!("image" in raw)) {
+      reply.code(400);
+      return { error: "Name the image to move to, or send image: null for Loxaic's own." };
+    }
     let image: WorkspaceImage | undefined;
     try {
-      image = raw.image === undefined || raw.image === null
+      image = raw.image === null
         ? undefined
         : await parseImageChoice(raw.image, userId, workspace.kind === "github");
     } catch (err) {

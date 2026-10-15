@@ -1,4 +1,4 @@
-import { and, db, eq, inArray, lt, ne } from "@loxaic/db";
+import { and, db, desc, eq, inArray, lt, ne, sql } from "@loxaic/db";
 import { conversations, sandboxes } from "@loxaic/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { CreateSandboxConfig, SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
@@ -659,19 +659,44 @@ export async function replaceConversationSandbox(
   const writeWorkspace = (tx: Pick<typeof db, "update"> = db) =>
     tx.update(conversations).set({ workspace: stored, updatedAt: new Date() }).where(eq(conversations.id, conversationId));
 
-  const existing = await db.query.sandboxes.findFirst({
+  // The row copied from and then destroyed must be the container the chat
+  // is working in: the one this process is using, else a running one before
+  // a paused one, newest first.
+  const live = await db.query.sandboxes.findMany({
     where: and(
       eq(sandboxes.conversationId, conversationId),
       eq(sandboxes.ownerId, ownerId),
       inArray(sandboxes.status, ["running", "stopped"]),
     ),
+    orderBy: [sql`${sandboxes.status} = 'running' desc`, desc(sandboxes.createdAt), desc(sandboxes.id)],
   });
+  const inUse = active.get(conversationId)?.rowId;
+  const existing = live.find((r) => r.id === inUse) ?? live.at(0);
   if (!existing) {
     await writeWorkspace();
     return { moved: false };
   }
   if (existing.provider !== "container") {
     throw new Error("This conversation's sandbox is not a container, so its image can't be changed.");
+  }
+  const { sandboxEngine } = await import("../sandbox/container-provider.ts");
+  const { docker } = await sandboxEngine();
+  // A row whose container is gone (the engine restarted, it was removed by
+  // hand) has nothing to copy: recorded as gone, the switch is a workspace
+  // change like the no-sandbox one above. Only the engine's own 404 counts;
+  // an engine that did not answer is an error to retry, not a lost container.
+  const gone = await docker.getContainer(existing.containerId).inspect().then(
+    () => false,
+    (err: unknown) => {
+      if ((err as { statusCode?: number } | null)?.statusCode === 404) return true;
+      throw err;
+    },
+  );
+  if (gone) {
+    await markDestroyed(existing.id);
+    if (active.get(conversationId)?.rowId === existing.id) active.delete(conversationId);
+    await writeWorkspace();
+    return { moved: false };
   }
 
   const provider = await getProviderByKind("container");
@@ -696,9 +721,7 @@ export async function replaceConversationSandbox(
       if (owner.exitCode !== 0 || !Number.isInteger(uid) || !Number.isInteger(gid)) {
         throw new Error("The new image's user could not be read.");
       }
-      const { sandboxEngine } = await import("../sandbox/container-provider.ts");
       const { copyHome } = await import("../sandbox/container-engine.ts");
-      const { docker } = await sandboxEngine();
       await copyHome(docker, existing.containerId, handle.ref, { uid, gid }, signal);
       const check = await handle.exec(["test", "-w", `${handle.root}/repo`], { workdir: "/" });
       if (check.exitCode !== 0) throw new Error("The copied workspace is not writable in the new image.");

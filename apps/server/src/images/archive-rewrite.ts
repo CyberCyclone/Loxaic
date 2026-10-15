@@ -11,8 +11,17 @@
 import { PassThrough, type Readable } from "node:stream";
 import { extract, pack, type Header } from "tar-stream";
 
+/** Pax keys that would undo the rewrite: an extended header's owner wins
+ * over the ustar one on extraction, and file capabilities grant what a
+ * setuid bit would. */
+const PAX_DROPPED = new Set(["uid", "gid", "uname", "gname", "SCHILY.xattr.security.capability"]);
+
 /** What a header becomes. Pure, so the rules are tested apart from streams. */
 export function rewriteHeader(header: Header, uid: number, gid: number): Header {
+  // The rest of an extended header stays: long paths and links need it.
+  const pax = header.pax
+    ? Object.fromEntries(Object.entries(header.pax).filter(([key]) => !PAX_DROPPED.has(key)))
+    : header.pax;
   return {
     ...header,
     uid,
@@ -22,6 +31,7 @@ export function rewriteHeader(header: Header, uid: number, gid: number): Header 
     uname: "",
     gname: "",
     mode: header.mode & ~0o6000,
+    pax,
   };
 }
 
