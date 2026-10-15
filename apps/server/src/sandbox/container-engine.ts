@@ -919,15 +919,19 @@ export async function createSandboxContainer(
       ...opts.labels,
     },
   });
-  if (custom?.home) {
-    try {
+  // Removed if it never gets going: no handle is returned to destroy it, no
+  // row claims it, and only the next boot's orphan sweep would find it. A
+  // custom image without `tail` fails right here, and anyone allowed their own
+  // images can try one as often as they like.
+  try {
+    if (custom?.home) {
       await container.putArchive(homeArchive(custom.home.uid, custom.home.gid), { path: "/" });
-    } catch (err) {
-      await container.remove({ force: true, v: true }).catch(() => undefined);
-      throw err;
     }
+    await container.start();
+  } catch (err) {
+    await container.remove({ force: true, v: true }).catch(() => undefined);
+    throw err;
   }
-  await container.start();
   return makeHandle(docker, container.id);
 }
 

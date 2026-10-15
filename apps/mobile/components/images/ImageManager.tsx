@@ -119,7 +119,7 @@ export function ImageManager({ scope }: { scope: ImageScope }) {
                   </HStack>
                 ))}
                 <Input>
-                  <InputField testID="images.login.registry" placeholder="Registry (docker.io, ghcr.io, …)" value={registry} onChangeText={setRegistry} autoCapitalize="none" autoCorrect={false} />
+                  <InputField testID="images.login.registry" placeholder="Registry: docker.io for Docker Hub, ghcr.io, …" value={registry} onChangeText={setRegistry} autoCapitalize="none" autoCorrect={false} />
                 </Input>
                 <Input>
                   <InputField testID="images.login.username" placeholder="Username" value={username} onChangeText={setUsername} autoCapitalize="none" autoCorrect={false} />
@@ -137,7 +137,7 @@ export function ImageManager({ scope }: { scope: ImageScope }) {
                 </Input>
                 <Button
                   testID="images.login.save"
-                  isDisabled={!writable || busy !== null || !username.trim() || !password}
+                  isDisabled={!writable || busy !== null || !registry.trim() || !username.trim() || !password}
                   onPress={() => {
                     void run('login', () => images.saveLogin({ registry: registry.trim(), username: username.trim(), password }), () => {
                       setRegistry('');

@@ -27,6 +27,7 @@ import {
   customImagesBlocked,
   deleteImage,
   ImageError,
+  isUuid,
   listImages,
   repull,
   updateImage,
@@ -128,7 +129,12 @@ export function imageRoutes(app: FastifyInstance) {
       const body = (request.body ?? {}) as { registry?: unknown; username?: unknown; password?: unknown };
       const password = typeof body.password === "string" ? body.password : "";
       try {
-        const registry = parseRegistry(body.registry ?? "");
+        // Required, never defaulted: a login saved with no registry would be
+        // stored as Docker Hub's and its secret sent there on the next pull.
+        if (typeof body.registry !== "string" || body.registry.trim() === "") {
+          throw new ImageError("registry is required (docker.io for Docker Hub)");
+        }
+        const registry = parseRegistry(body.registry);
         const username = text(body.username, "username", 256);
         if (password.length === 0) throw new ImageError("password is required");
         if (password.length > 8192) throw new ImageError("password is too long");
@@ -143,7 +149,7 @@ export function imageRoutes(app: FastifyInstance) {
 
     app.delete<{ Params: { id: string } }>(`${def.prefix}/logins/:id`, async (request, reply) => {
       const { owner } = await def.resolve(request, reply);
-      if (!/^[0-9a-f-]{36}$/i.test(request.params.id) || !(await deleteLogin(owner, request.params.id))) {
+      if (!isUuid(request.params.id) || !(await deleteLogin(owner, request.params.id))) {
         return fail(reply, 404, "Not found");
       }
       return { ok: true };

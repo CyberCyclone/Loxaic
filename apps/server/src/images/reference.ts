@@ -106,7 +106,9 @@ export function parseRegistry(input: unknown): string {
   if (typeof input !== "string") throw new ReferenceError("A registry must be text.");
   let raw = input.trim().toLowerCase();
   raw = raw.replace(/^https?:\/\//, "").replace(/\/v[12]\/?$/, "").replace(/\/+$/, "");
-  if (raw.length === 0) return DOCKER_HUB;
+  // Never a default: an empty registry read as Docker Hub would send a login
+  // meant for another registry there.
+  if (raw.length === 0) throw new ReferenceError("Name the registry the login is for (docker.io for Docker Hub).");
   if (!HOST.test(raw)) throw new ReferenceError(`"${input.trim()}" is not a registry host, such as ghcr.io.`);
   return HUB_ALIASES.has(raw) ? DOCKER_HUB : raw;
 }
