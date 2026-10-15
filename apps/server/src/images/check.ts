@@ -138,13 +138,13 @@ export async function probeImage(docker: Docker, ref: string, owner: string): Pr
     // Either way the question is whether the container is still up, asked
     // after a moment for it to finish stopping.
     const first = await handle.exec(["true"], { workdir: "/", timeoutMs: 30_000 }).catch(() => null);
-    if (first === null || first.exitCode !== 0) {
+    if (first?.exitCode !== 0) {
       await new Promise((r) => setTimeout(r, 500));
       if (!(await handle.isRunning())) {
         return { check: { missing: ["tail (the container stops as soon as it starts)"], warnings: [] }, uid: null, gid: null };
       }
     }
-    if (first === null || first.exitCode !== 0) {
+    if (first?.exitCode !== 0) {
       return { check: { missing: ["bash and setsid -w (util-linux)"], warnings: [] }, uid: null, gid: null };
     }
     const res = await handle.exec(["bash", "-c", PROBE_SCRIPT], { workdir: "/", timeoutMs: 60_000 });
