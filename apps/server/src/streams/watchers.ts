@@ -23,9 +23,10 @@ export function watchConversation(conversationId: string, onNewRun: (streamId: s
   return () => emitter.off(conversationId, onNewRun);
 }
 
-/** Something that happened to a conversation itself rather than in one run —
- * today only messages being removed from its end (conversations/rewind.ts). */
-export type ConversationEvent = Extract<ServerMessage, { type: "conversation.rewound" }>;
+/** Something that happened to a conversation itself rather than in one run:
+ * messages removed from its end (conversations/rewind.ts), or its workspace
+ * moved to another image (routes/conversations.ts). */
+export type ConversationEvent = Extract<ServerMessage, { type: "conversation.rewound" | "conversation.workspace" }>;
 
 const EVENT_CHANNEL = (conversationId: string) => `event:${conversationId}`;
 

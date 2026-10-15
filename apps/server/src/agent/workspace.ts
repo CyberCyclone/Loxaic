@@ -6,8 +6,10 @@
  * on purpose. The system prompt is derived from it, and a prompt that changes
  * partway through a conversation invalidates the backend's cached prefix from
  * the first token onward (see this directory's AGENTS.md). Changing your
- * mind means a new conversation. A custom image (#253) is chosen here, with
- * the rest of it.
+ * mind means a new conversation. The one exception is its custom image
+ * (#253): the owner can move a conversation to another one, between runs,
+ * through `replaceConversationSandbox` and nothing else — the trade being one
+ * full re-read of the prompt on the next request.
  */
 import { db, eq } from "@loxaic/db";
 import { conversations } from "@loxaic/db/schema";
@@ -207,7 +209,7 @@ export async function parseWorkspaceInput(raw: unknown, ctx: { userId: string })
  * names only which one. Sandbox creation checks all of this again, since the
  * row, the policy and the sandbox mode can all change after this.
  */
-async function parseImageChoice(raw: unknown, ownerId: string, github: boolean): Promise<WorkspaceImage> {
+export async function parseImageChoice(raw: unknown, ownerId: string, github: boolean): Promise<WorkspaceImage> {
   const id = (raw as { id?: unknown } | null)?.id;
   if (typeof id !== "string") throw new WorkspaceError("workspace.image must be { id }");
   const { getSandboxSettings } = await import("../settings.ts");

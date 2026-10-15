@@ -201,7 +201,9 @@ describe("rewinding a conversation", () => {
     // Every device watching is told, with the runs to forget.
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ type: "conversation.rewound", conversation_id: convId, from_message_id: must(two).id, reason: "rewind" });
-    expect(seen[0].removed_stream_ids.sort()).toEqual(streamsBefore.slice(1).sort());
+    const rewound = seen[0];
+    if (rewound.type !== "conversation.rewound") throw new Error("expected a rewind");
+    expect(rewound.removed_stream_ids.sort()).toEqual(streamsBefore.slice(1).sort());
   });
 
   it("with audit retention, stamps the rows: gone for the model and the thread, kept for admins", async () => {
@@ -252,7 +254,8 @@ describe("rewinding a conversation", () => {
       await rewindConversation({ userId, conversationId: convId, messageId: target });
       unwatch();
       expect(await getStreamBroker().getMeta(childStream)).toBeNull();
-      expect(seen.at(0)?.removed_stream_ids).toContain(childStream);
+      const rewound = seen.at(0);
+      expect(rewound?.type === "conversation.rewound" ? rewound.removed_stream_ids : []).toContain(childStream);
 
       const after = await db.query.conversations.findFirst({ where: eq(conversations.id, child.id) });
       if (mode === "erase") {

@@ -1,4 +1,4 @@
-import type { FileDiff } from "./index";
+import type { FileDiff, Workspace } from "./index";
 import type { TimeoutBasis } from "./waits";
 import type { McpOverrides } from "./mcp-state";
 import type { ThinkingLevel } from "./thinking";
@@ -955,6 +955,17 @@ export type ServerMessage =
       removed_stream_ids: string[];
       /** "rewind" removed `from_message_id` too; "retry" kept it. */
       reason: "rewind" | "retry";
+    }
+  /**
+   * The conversation's workspace changed: its owner moved it to another
+   * image (#253). Sent to every socket watching it, so the Inspector and
+   * pill on another device say which image the next run uses. Null is a
+   * plain scratch workspace in Loxaic's own image.
+   */
+  | {
+      type: "conversation.workspace";
+      conversation_id: string;
+      workspace: Workspace | null;
     }
   | {
       type: "error";

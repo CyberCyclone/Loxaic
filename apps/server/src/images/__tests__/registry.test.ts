@@ -6,7 +6,8 @@ import { pack } from "tar-stream";
 import { and, db, eq, inArray } from "@loxaic/db";
 import { conversations, registryLogins, sandboxes, sandboxImages, user } from "@loxaic/db/schema";
 import type { WorkspaceImage } from "@loxaic/types";
-import { destroyConversationSandboxes, getConversationSandbox } from "../../agent/sandbox-manager.ts";
+import { destroyConversationSandboxes, getConversationSandbox, replaceConversationSandbox } from "../../agent/sandbox-manager.ts";
+import { sandboxImageReady } from "../../sandbox/__tests__/docker-available.ts";
 import { engineKind } from "../../sandbox/container-engine.ts";
 import { getSandboxProvider } from "../../sandbox/provider.ts";
 import { saveLogin } from "../logins.ts";
@@ -50,6 +51,7 @@ const conversationIds: string[] = [];
 const savedEnv = process.env.SANDBOX_CUSTOM_IMAGES;
 let registry: Docker.Container | null = null;
 let reference = "";
+let rootReference = "";
 let host = "";
 
 async function follow(stream: NodeJS.ReadableStream): Promise<void> {
@@ -132,6 +134,13 @@ async function buildAndPush(): Promise<void> {
     authconfig: { username: USERNAME, password: PASSWORD, serveraddress: host },
   });
   await follow(pushed);
+  // A second image whose user is root, so a move between the two has to
+  // re-own every file it carries.
+  rootReference = `${host}/loxaic-test/root:${randomUUID().slice(0, 8)}`;
+  await follow(await docker.buildImage(tarOf({ Dockerfile: "FROM debian:bookworm-slim\nRUN echo root-image > /opt/marker\n" }), { t: rootReference }));
+  await follow(await docker.getImage(rootReference).push({
+    authconfig: { username: USERNAME, password: PASSWORD, serveraddress: host },
+  }));
 }
 
 async function makeUser(id: string, role: string | null = null): Promise<void> {
@@ -179,7 +188,10 @@ afterAll(async () => {
   await registry?.remove({ force: true, v: true }).catch(() => undefined);
   for (const id of conversationIds) await destroyConversationSandboxes(id).catch(() => undefined);
   if (host) {
-    const leftovers = await docker.listImages({ filters: { reference: [`${host}/loxaic-test/marker`] } }).catch(() => []);
+    const leftovers = [
+      ...(await docker.listImages({ filters: { reference: [`${host}/loxaic-test/marker`] } }).catch(() => [])),
+      ...(await docker.listImages({ filters: { reference: [`${host}/loxaic-test/root`] } }).catch(() => [])),
+    ];
     for (const image of leftovers) await docker.getImage(image.Id).remove({ force: true }).catch(() => undefined);
   }
   await db.delete(sandboxes).where(inArray(sandboxes.ownerId, [alice, bob]));
@@ -247,6 +259,46 @@ describe.skipIf(!dockerReady)("custom images against a real registry", () => {
     expect(row?.image).toBe((await findImage(alicesImage.id))?.digest);
     const info = await docker.getContainer(handle.ref).inspect();
     expect(info.HostConfig.Memory).toBe(512 * 1024 * 1024);
+  }, 300_000);
+
+  it("moves a conversation to another image with its files, re-owned for the new user, and back", async () => {
+    const rootImage = await addImage(alice, { reference: rootReference, label: "Root" }, alice);
+    expect((await pulled(rootImage)).status).toBe("ready");
+    const conversation = await conversationIn(alice, alicesImage);
+    const before = await getConversationSandbox(alice, conversation);
+    await before.writeFile(`${before.workdir}/work.txt`, "made in the first image");
+    await before.exec(["bash", "-c", "mkdir -p /home/loxaic/.loxaic/checkpoints && echo kept > /home/loxaic/.loxaic/checkpoints/copy"]);
+
+    const asWorkspace = (img: ImageView): WorkspaceImage => ({ id: img.id, scope: img.scope, reference: img.reference, label: img.label });
+    await expect(replaceConversationSandbox(conversation, { kind: "scratch", image: asWorkspace(rootImage) })).resolves.toEqual({ moved: true });
+
+    const after = await getConversationSandbox(alice, conversation);
+    expect(after.ref).not.toBe(before.ref);
+    expect((await after.exec(["cat", "/opt/marker"])).stdout.trim()).toBe("root-image");
+    await expect(after.readFile(`${after.workdir}/work.txt`)).resolves.toBe("made in the first image");
+    expect((await after.exec(["stat", "-c", "%u", `${after.workdir}/work.txt`])).stdout.trim()).toBe("0");
+    expect((await after.exec(["cat", "/home/loxaic/.loxaic/checkpoints/copy"])).stdout.trim()).toBe("kept");
+    await expect(docker.getContainer(before.ref).inspect()).rejects.toThrow();
+    const rows = await db.query.sandboxes.findMany({ where: eq(sandboxes.conversationId, conversation) });
+    expect(rows.map((r) => r.status).sort()).toEqual(["destroyed", "running"]);
+
+    // And back: the file is the first image's user's again, and still writable.
+    await replaceConversationSandbox(conversation, { kind: "scratch", image: asWorkspace(alicesImage) });
+    const back = await getConversationSandbox(alice, conversation);
+    expect((await back.exec(["stat", "-c", "%u", `${back.workdir}/work.txt`])).stdout.trim()).toBe("1234");
+    await back.writeFile(`${back.workdir}/work.txt`, "edited after moving back");
+    await expect(back.readFile(`${back.workdir}/work.txt`)).resolves.toBe("edited after moving back");
+  }, 300_000);
+
+  it.skipIf(!dockerReady)("moves a conversation back to Loxaic's own image when that is built here", async (ctx) => {
+    if (!(await sandboxImageReady())) ctx.skip();
+    const conversation = await conversationIn(alice, alicesImage);
+    const before = await getConversationSandbox(alice, conversation);
+    await before.writeFile(`${before.workdir}/work.txt`, "from the custom image");
+    await replaceConversationSandbox(conversation, { kind: "scratch" });
+    const after = await getConversationSandbox(alice, conversation);
+    await expect(after.readFile(`${after.workdir}/work.txt`)).resolves.toBe("from the custom image");
+    expect((await after.exec(["test", "-w", `${after.workdir}/work.txt`])).exitCode).toBe(0);
   }, 300_000);
 
   it("applies an admin's limits to a shared image's sandboxes, pulled with the deployment's login", async () => {

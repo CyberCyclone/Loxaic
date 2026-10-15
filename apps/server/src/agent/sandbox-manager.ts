@@ -586,28 +586,142 @@ async function createEntryReserved(
   // out of their own conversation's sandbox.
   const [row] = await db
     .insert(sandboxes)
-    .values({
-      ownerId,
-      conversationId,
-      containerId: handle.ref,
-      provider: provider.kind,
-      // What really ran: a custom image's pinned digest, or Loxaic's own tag.
-      image: provider.kind === "container" ? (config.image?.ref ?? sandboxImage()) : provider.kind,
-      status: "running",
+    .values(sandboxRowValues(provider.kind, ownerId, conversationId, handle.ref, config, {
       repoUrl: config.repoUrl ?? null,
       branch: config.newBranch ?? config.branch ?? null,
-      limits: {
-        memory: Math.round((config.limits?.memory ?? 512 * 1024 * 1024) / (1024 * 1024)),
-        cpu: (config.limits?.cpu ?? 1e9) / 1e9,
-        ...(config.limits?.pids ? { pids: config.limits.pids } : {}),
-        network: networkFor(provider.kind),
-      },
-    })
+    }))
     .returning();
 
   const entry: Entry = { rowId: row.id, provider: provider.kind, ref: handle.ref, lastUsedAt: Date.now() };
   active.set(conversationId, entry);
   return entry;
+}
+
+/** A new sandbox row: what really ran (a custom image's pinned digest, or
+ * Loxaic's own tag) and the limits it was given. */
+function sandboxRowValues(
+  kind: SandboxKind,
+  ownerId: string,
+  conversationId: string,
+  ref: string,
+  config: CreateSandboxConfig,
+  checkout: { repoUrl: string | null; branch: string | null },
+): typeof sandboxes.$inferInsert {
+  return {
+    ownerId,
+    conversationId,
+    containerId: ref,
+    provider: kind,
+    image: kind === "container" ? (config.image?.ref ?? sandboxImage()) : kind,
+    status: "running",
+    repoUrl: checkout.repoUrl,
+    branch: checkout.branch,
+    limits: {
+      memory: Math.round((config.limits?.memory ?? 512 * 1024 * 1024) / (1024 * 1024)),
+      cpu: (config.limits?.cpu ?? 1e9) / 1e9,
+      ...(config.limits?.pids ? { pids: config.limits.pids } : {}),
+      network: networkFor(kind),
+    },
+  };
+}
+
+/**
+ * Moves a conversation to another image (#253): a new container from it,
+ * with the old one's home directory copied across, and then the old one
+ * destroyed. `next` is the workspace as it will be — the same one with only
+ * its `image` changed. The caller holds the conversation's claim, so no run
+ * can start meanwhile, and has checked the image is the owner's to use.
+ *
+ * With no sandbox yet there is nothing to move: only the workspace changes,
+ * and the next tool call creates the container from it. Otherwise nothing
+ * changes until the copy has landed and been checked, so a failure at any
+ * step leaves the conversation exactly as it was, its old container included.
+ *
+ * What carries across is `/home/loxaic`: the checkout (its `.git` too, so a
+ * GitHub branch keeps unpushed commits) and the file checkpoints under
+ * `.loxaic`. What was installed outside it does not.
+ */
+export async function replaceConversationSandbox(
+  conversationId: string,
+  next: Workspace,
+  signal?: AbortSignal,
+): Promise<{ moved: boolean }> {
+  if (next.kind === "local") throw new Error("A folder on your own machine always runs in Loxaic's own image.");
+  const loaded = await loadWorkspace(conversationId);
+  if (!loaded) throw new Error("That conversation no longer exists.");
+  const { ownerId } = loaded;
+  const stored = next.kind === "scratch" && !next.image ? null : next;
+  const writeWorkspace = (tx: Pick<typeof db, "update"> = db) =>
+    tx.update(conversations).set({ workspace: stored, updatedAt: new Date() }).where(eq(conversations.id, conversationId));
+
+  const existing = await db.query.sandboxes.findFirst({
+    where: and(
+      eq(sandboxes.conversationId, conversationId),
+      eq(sandboxes.ownerId, ownerId),
+      inArray(sandboxes.status, ["running", "stopped"]),
+    ),
+  });
+  if (!existing) {
+    await writeWorkspace();
+    return { moved: false };
+  }
+  if (existing.provider !== "container") {
+    throw new Error("This conversation's sandbox is not a container, so its image can't be changed.");
+  }
+
+  const provider = await getProviderByKind("container");
+  // The new container is running before the old one is gone; when the old
+  // one was paused, that is one more running sandbox for the owner's cap.
+  const wakes = existing.status === "stopped";
+  if (wakes) await assertUnderUserLimit(ownerId);
+  try {
+    // The image and its limits only: the checkout comes across with the home
+    // directory, so nothing is cloned again.
+    const full = await createConfigFor(ownerId, conversationId, next, "container");
+    const config: CreateSandboxConfig = {
+      ...(full.image ? { image: full.image } : {}),
+      ...(full.limits ? { limits: full.limits } : {}),
+    };
+    if (signal?.aborted) throw new Error("Stopped before the image was changed.");
+    const handle = await provider.create(ownerId, config);
+    let row: typeof sandboxes.$inferSelect;
+    try {
+      const owner = await handle.exec(["bash", "-c", "id -u; id -g"], { workdir: "/" });
+      const [uid, gid] = owner.stdout.trim().split("\n").map(Number);
+      if (owner.exitCode !== 0 || !Number.isInteger(uid) || !Number.isInteger(gid)) {
+        throw new Error("The new image's user could not be read.");
+      }
+      const { sandboxEngine } = await import("../sandbox/container-provider.ts");
+      const { copyHome } = await import("../sandbox/container-engine.ts");
+      const { docker } = await sandboxEngine();
+      await copyHome(docker, existing.containerId, handle.ref, { uid, gid }, signal);
+      const check = await handle.exec(["test", "-w", `${handle.root}/repo`], { workdir: "/" });
+      if (check.exitCode !== 0) throw new Error("The copied workspace is not writable in the new image.");
+      if (signal?.aborted) throw new Error("Stopped before the image was changed.");
+      row = await db.transaction(async (tx) => {
+        await writeWorkspace(tx);
+        await tx.update(sandboxes).set({ status: "destroyed", stoppedAt: new Date() }).where(eq(sandboxes.id, existing.id));
+        const [inserted] = await tx
+          .insert(sandboxes)
+          .values(sandboxRowValues("container", ownerId, conversationId, handle.ref, config, {
+            repoUrl: existing.repoUrl,
+            branch: existing.branch,
+          }))
+          .returning();
+        return inserted;
+      });
+    } catch (err) {
+      await handle.destroy();
+      throw err;
+    }
+    active.set(conversationId, { rowId: row.id, provider: "container", ref: handle.ref, lastUsedAt: Date.now() });
+    forgetOverflowWrites(existing.containerId);
+    const old = await provider.attach(existing.containerId).catch(() => null);
+    await old?.destroy().catch(() => undefined);
+    return { moved: true };
+  } finally {
+    if (wakes) releaseSandboxSlot(ownerId);
+  }
 }
 
 /**

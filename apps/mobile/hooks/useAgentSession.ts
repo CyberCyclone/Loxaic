@@ -27,7 +27,7 @@ import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
 import { useEndpoint } from './useEndpoint';
 import { NOT_SENT_RECONNECTING, connectionState, disconnectedCopy, isOffline } from '@/lib/connection';
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
-import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
+import type { Conversation, Message, ChangedFile, Workspace, WorkspaceChoice } from '@/lib/types';
 import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
 import { applyRewound, rewindClearsLiveRun, restoreReportLine } from '@/lib/rewind';
 import { useOlderMessages } from './useOlderMessages';
@@ -666,6 +666,11 @@ export function useAgentSession(
         onStreamEndRef.current?.();
       } else if (event.type === 'agent.mode_changed') {
         setModeState(event.mode);
+      } else if (event.type === 'conversation.workspace') {
+        // Its owner moved it to another image (#253), maybe on another
+        // device: the pill and the Inspector follow.
+        const { conversation_id: convId, workspace } = event;
+        setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, workspace } : r)));
       } else if (event.type === 'conversation.rewound') {
         // See useChatSession. Run-level state is cleared when it belongs to a
         // removed run, never when a retry's new run is already the one being
@@ -1124,6 +1129,12 @@ export function useAgentSession(
 
   /** Shown at once, and put back if the server did not take it — see
    * useChatSession's setConversationModel. */
+  /** A conversation's workspace as the server now has it: after its image
+   * changed, here or on another device. */
+  const setRunWorkspace = useCallback((id: string, workspace: Workspace | null) => {
+    setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, workspace } : r)));
+  }, []);
+
   const setRunModel = useCallback((id: string, modelId: string) => {
     const previous = runsRef.current.find((r) => r.id === id)?.model;
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, model: modelId } : r)));
@@ -1217,6 +1228,7 @@ export function useAgentSession(
     handleDelete,
     handleRename,
     setRunModel,
+    setRunWorkspace,
     /** A send refused for lack of room behind pinned host models. */
     noRoom,
     dismissNoRoom,

@@ -17,6 +17,8 @@ import { ThreadList } from '@/components/chat/ThreadList';
 import { AgentStream } from '@/components/agent/AgentStream';
 import { Inspector } from '@/components/agent/Inspector';
 import { WorkspaceChooser } from '@/components/agent/WorkspaceChooser';
+import { ImageSwitchModal } from '@/components/agent/ImageSwitchModal';
+import { imageSwitchState } from '@/lib/imageSwitch';
 import { WorkspacePill } from '@/components/agent/WorkspacePill';
 import { TerminalPanel } from '@/components/agent/TerminalPanel';
 import { Composer } from '@/components/composer/Composer';
@@ -121,6 +123,7 @@ export default function AgentScreen() {
     handleDelete,
     handleRename,
     setRunModel,
+    setRunWorkspace,
     history,
     noRoom,
     dismissNoRoom,
@@ -149,6 +152,7 @@ export default function AgentScreen() {
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [imageSwitchOpen, setImageSwitchOpen] = useState(false);
   // Set by both the header's ⋮ and the thread list's Delete, so one dialog
   // words what deleting does on this deployment.
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -192,7 +196,7 @@ export default function AgentScreen() {
   // Refetched whenever a run ends: a turn that used a tool is exactly what
   // creates a workspace, or brings a paused one back, and nothing else in the
   // stream says so.
-  const { sandbox } = useWorkspaceStatus(activeId, runState);
+  const { sandbox, refresh: refreshSandbox } = useWorkspaceStatus(activeId, runState);
   // Looked for on the conversation's first run, so asked again as runs end.
   const instructions = useProjectInstructions(activeRun ? activeId : null, runState);
   // The list the Inspector shows: the newest loaded, else the server's, asked
@@ -215,8 +219,35 @@ export default function AgentScreen() {
   // Before a run exists the pill and Inspector show the *pending* choice;
   // once it does, they show the run's own, which is fixed.
   const currentWorkspace = activeRun ? (activeRun.workspace ?? null) : pendingWorkspace;
+  // Moving the conversation to another image (#253). The workspace is fixed
+  // otherwise; its image is the one part its owner can change, between runs.
+  const imageSwitch = imageSwitchState({
+    saved: Boolean(activeRun && activeId && isServerConvId(activeId)),
+    isOwner: isOwner(activeRun),
+    workspaceKind: currentWorkspace?.kind ?? 'scratch',
+    hasImage: Boolean(currentWorkspace && currentWorkspace.kind !== 'local' && currentWorkspace.image),
+    policy: config?.sandbox.customImages,
+    blocked: config?.sandbox.customImagesBlocked,
+    running: busy,
+    reachable: connection === 'online',
+  });
+  const openImageSwitch = () => {
+    // Never a dialog over the narrow layout's Inspector sheet: it goes first.
+    if (wide) {
+      setImageSwitchOpen(true);
+      return;
+    }
+    setInspectorOpen(false);
+    setTimeout(() => { setImageSwitchOpen(true); }, SHEET_EXIT_MS);
+  };
   const workspace = config
-    ? { retention: config.sandbox.retention, sandbox, workspace: currentWorkspace, instructions }
+    ? {
+        retention: config.sandbox.retention,
+        sandbox,
+        workspace: currentWorkspace,
+        instructions,
+        imageSwitch: imageSwitch.offered ? { disabledReason: imageSwitch.disabledReason, onPress: openImageSwitch } : null,
+      }
     : null;
   // Only a real (server-assigned) github workspace has anything to fetch —
   // an optimistic `pending-*`/`lm*` id has never been seen by the server, and
@@ -672,6 +703,19 @@ export default function AgentScreen() {
         />
       )}
 
+      {activeId && currentWorkspace?.kind !== 'local' && (
+        <ImageSwitchModal
+          open={imageSwitchOpen}
+          onClose={() => { setImageSwitchOpen(false); }}
+          conversationId={activeId}
+          currentImageId={currentWorkspace?.image?.id ?? null}
+          source={currentWorkspace?.kind === 'github' ? 'github' : 'scratch'}
+          onChanged={(next) => {
+            setRunWorkspace(activeId, next);
+            void refreshSandbox();
+          }}
+        />
+      )}
       <WorkspaceChooser
         open={chooserOpen}
         onClose={() => { setChooserOpen(false); }}
