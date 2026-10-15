@@ -243,6 +243,8 @@ export async function* streamCompletion(
   // NoRoomError says pinned ones are in the way (llama/room.ts).
   const release = trackRequest(upstreamModel);
   try {
+    // Before `ensureRoom`: sent during a discard of this model, the request
+    // would reach the dead process the discard is removing.
     await afterDiscard(upstreamModel, options.signal);
     await ensureRoom(upstreamModel, options.signal);
     yield* liveStream(provider, routerModelName(upstreamModel), messages, options);

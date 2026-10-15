@@ -148,6 +148,8 @@ export const MAX_MAX_ITERATIONS = 500;
  * lamport is a coin flip in `loadHistory`'s `ORDER BY lamport, createdAt`,
  * which is a prompt-prefix break the moment it lands the wrong way. Exported
  * for the unit test; `runToolLoop` holds the running `previous` value itself.
+ * Only for a run's own inserts: the starters' lamports and packages/sync's LWW
+ * compare lamports from different, slower actors and must not take this.
  */
 export function monotonicLamport(previous: number, now: number = Date.now()): number {
   return Math.max(now, previous + 1);
@@ -1732,7 +1734,9 @@ export async function runToolLoop(ctx: {
           // Emitted from inside `yieldWhile`, before the run re-enters the
           // queue. A decision emitted after re-entry would leave a client
           // catching up mid-wait showing "Queued" *and* the check-in bar for
-          // however long the queue took.
+          // however long the queue took. An unattended "keep going" is told
+          // only by this event, never by a message row, which would enter the
+          // next prompt and break its prefix.
           if (answered.kind !== "aborted") {
             producer.emit({
               kind: "steps.decision",
@@ -2432,6 +2436,8 @@ function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "approved">): str
   switch (outcome) {
     case "denied":
       return "User denied this tool call.";
+    // Unreachable today (an aborted wait throws RunSlotAbortedError on
+    // re-entering the queue first); kept so a stop can never read as a refusal.
     case "aborted":
       return "Stopped by the user before this tool call ran.";
     case "timeout":

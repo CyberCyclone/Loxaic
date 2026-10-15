@@ -317,7 +317,7 @@ partway through a UI flow — see `resetSandboxSettings()` in `helpers/app.ts`.
 against `apps/e2e/scripts/mock-github.ts` — a minimal in-process HTTP server standing in for
 `api.github.com`, started by `standup.ts` before the test server and passed to it as
 `GITHUB_API_URL` (the same env var `apps/server/src/github/client.ts` reads at call time; see
-`apps/server/src/github/AGENTS.md`). No spec ever reaches real GitHub. Anything that is not
+`apps/server/AGENTS.md`). No spec ever reaches real GitHub. Anything that is not
 one of the two exported tokens 401s, so the "bad token" case exercises the server's real
 validation path rather than a canned rejection.
 

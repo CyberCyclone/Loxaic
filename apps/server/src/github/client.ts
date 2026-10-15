@@ -1,7 +1,7 @@
 /**
  * Thin, unauthenticated-by-caller wrapper over the GitHub REST API. Plain
  * `fetch`, no octokit — the surface needed here (viewer identity, repo
- * listing/lookup, branches, opening a PR) is small enough that a dependency
+ * listing/lookup, branches) is small enough that a dependency
  * buys nothing but an upgrade treadmill.
  */
 

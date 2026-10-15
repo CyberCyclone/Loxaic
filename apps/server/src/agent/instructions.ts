@@ -52,7 +52,8 @@ import { attachActiveSandbox } from "./sandbox-manager.ts";
  * per-directory override of it, so it wins when present — usually a person's
  * own uncommitted tweak, which on a local workspace is exactly who is asking.
  * `CLAUDE.md` and `GEMINI.md` are Claude Code's and Gemini CLI's own names, for
- * a repository written for only one of them.
+ * a repository written for only one of them. Not `.cursorrules` (deprecated)
+ * or `.cursor/rules/*.mdc`, whose per-rule settings a plain read would ignore.
  */
 export const INSTRUCTION_FILES = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md"] as const;
 

@@ -144,6 +144,8 @@ export async function containerCapability(): Promise<boolean> {
  * Overriding the user also costs the image's home directory, which that uid
  * cannot write to — hence a writable `HOME`. `/tmp` rather than the mounted
  * folder: the alternative scatters tool dotfiles through someone's project.
+ *
+ * Unverified: the Linux branch has never actually run (developed on macOS).
  */
 function userAndEnv(): { user?: string; env?: string[] } {
   if (process.platform !== "linux") return {};

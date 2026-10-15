@@ -35,6 +35,8 @@ if [ -z "${LLAMA_API_KEY:-}" ]; then
   export LLAMA_API_KEY
 fi
 
+# Keep `--models-max 0`: Loxaic does all unloading (apps/server/src/llama/room.ts),
+# so llama.cpp must never evict a model by count.
 exec "$BIN" \
   --host "${LLAMA_ROUTER_HOST:-0.0.0.0}" \
   --port "${LLAMA_ROUTER_PORT:-8080}" \

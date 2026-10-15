@@ -11,7 +11,6 @@ The per-run `Toolset` (builtins plus the user's MCP servers), approval policy, M
 - Planning offers only MCP tools the user marked read-only; a server's `readOnlyHint` is display-only, never trusted.
 - "Allow always" grants: an MCP tool → its server's per-tool policy; a builtin → `user_prefs.tool_allowlist` (read by `buildToolset`); `bash` → command rules. Clients send it with the answer (`agent.approve {always}`); never write the allowlist with a REST read-modify-write.
 - The allowlist clears `requiresApproval` only, never the `isWrite` gate — planning still filters on `isWrite`.
-- `Toolset.grantTrust` flips the run's own tool object and writes one tool's entry in one statement (`jsonb_set` / upsert), setting `changed: false`; a saved-only grant would keep asking for the rest of the run.
 - `ToolPolicy.grantedFrom: "prompt"` marks an allow that came from an approval; a save in the tools sheet or a revocation clears it.
 - `change-detection.ts` revokes a tool's allowlist entry when its description or schema hash changes.
 
@@ -22,7 +21,6 @@ The per-run `Toolset` (builtins plus the user's MCP servers), approval policy, M
 - A failed read of a conversation's MCP choices offers no MCP servers (builtins only); never fall back to the run's surface kind.
 - A `subagent`-kind conversation gets no servers from `conversationMcpState`; build a child's toolset against its parent conversation.
 - The toolset is built for the sender: a shared editor is offered their own servers and defaults.
-- A conversation's `mcp_overrides` naming a deleted server id is inert.
 
 ## Untrusted output
 
@@ -36,12 +34,6 @@ The per-run `Toolset` (builtins plus the user's MCP servers), approval policy, M
 - HTTP transports re-run the SSRF guard on every request unless the user confirmed `allowPrivateNetwork`.
 - Spawn catalog servers (`catalog.ts`, stdio-only) from the installed package's bin (e.g. `@brave/brave-search-mcp-server`), never `npx`.
 - There is no built-in GitHub MCP server; GitHub goes through git/gh and the egress proxy.
-
-## Connections
-
-- Connections are cached per `userId:serverId` with an idle reaper (`client-manager.ts`); a dead or hung server fails only its own calls, never the run.
-- A failed connect is cached for `CONNECT_FAILURE_TTL_MS` (30 s) — every turn connects every enabled server; a row with a new `updatedAt` bypasses it so Test always really tries.
-- `dropEntry`/`closeServerClients` delete entries; the idle reaper must also sweep expired failure entries.
 
 ## Tests
 

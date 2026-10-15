@@ -106,6 +106,8 @@ describe("the Compose sidecar (attach mode)", () => {
   it("waits for the key even when a preset is already there", async () => {
     // A volume from before the key existed: the preset is there, the key is
     // not. The sidecar must still wait rather than start unauthenticated.
+    // Keep this starting order: the server writes the key before the preset,
+    // so from an empty directory this passes with the key wait deleted.
     writeFileSync(path.join(dir, "models.ini"), "version = 1\n\n[*]\njinja = true\n");
     sidecar = spawn("sh", [SCRIPT], {
       env: {

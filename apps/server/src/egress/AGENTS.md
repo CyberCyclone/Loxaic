@@ -21,7 +21,6 @@ The HTTP proxy through which a GitHub workspace's sandbox reaches GitHub: it hol
 - git pushes only to `refs/heads/<workspace branch>` of its repository; force pushes allowed, deletes and tags refused.
 - Parse receive-pack commands (pkt-lines to the flush, ≤ 64 KB, ≤ 100 updates) before forwarding any pack bytes; refuse with a receive-pack report (side-band when asked) so git prints the reason.
 - Inflate a gzipped push only as far as its commands (`readGzipPushHead`) and forward the original bytes; never `gunzipSync` the whole body.
-- `readBody` drains past its cap (to 8×) and answers 413; never destroy the request — the client then sees a reset, not the reason.
 - REST writes allowed: open a PR from the branch, edit the branch's own PR (never `state`), comments, and reviewers/labels/assignees on its own PR.
 - GraphQL: queries pass; mutations only from the allowlist, each checked (`createPullRequest` against the repo node id and branch, `addComment` against the subject's repo, own-PR mutations via a `node(id)` lookup).
 - Parse GraphQL with the linear tokenizer (`graphql.ts`, 64 KB cap) that resolves aliases; refuse a mutation with literal input, a top-level fragment or a missing variable; check every operation in the document, not only `operationName`'s.
@@ -30,13 +29,10 @@ The HTTP proxy through which a GitHub workspace's sandbox reaches GitHub: it hol
 ## Sandbox environment (`env.ts`)
 
 - Give the egress env per command (`withEgress`, applied in `getConversationSandbox` and `attachRunningSandbox`), never baked into the container — a paused container resumes with its old env and the port changes per server start.
-- Write the CA and the system-roots bundle to `<root>/.loxaic/` once per sandbox per CA.
-- A CA that cannot be written raises `EgressCaError`: a clone fails with its sentence; other commands still run and get it appended to stderr on failure. Never skip silently — the clone would fail as "repository not found".
 
 ## Listening and the CA
 
 - Listen on loopback always, plus the Docker bridge gateway on Linux; never a public address. Give containers the gateway address directly, not a hosts entry (a paused container must still find it).
-- `EGRESS_PROXY_PORT` is ephemeral by default — don't fix it (servers on one machine would collide); `EGRESS_PROXY_BIND`/`EGRESS_PROXY_HOST` override. A proxy that fails to start is logged and the server runs on.
 - The CA lives in `EGRESS_CA_DIR` (default `<cwd>/egress-ca`, gitignored), per deployment, key 0600; X.509 is built with `node-forge`.
 - A sealed sandbox (no network) has no GitHub by design.
 - Unverified on Linux, Podman and OrbStack; Linux depends on a host firewall letting containers reach the bridge gateway.

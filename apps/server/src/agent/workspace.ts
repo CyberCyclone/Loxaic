@@ -272,6 +272,8 @@ export function describeWorkspace(workspace: Workspace, mode: SandboxMode): stri
 
   switch (workspace.kind) {
     case "scratch":
+      // Never claim a checkout here: the prompt once told every conversation
+      // a repository was checked out at /home/loxaic/repo when none was.
       return (
         `${where}. ${capitalize(dir)} is an empty scratch workspace, not a checked-out project. ` +
         "It belongs to this conversation and is kept between messages."

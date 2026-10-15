@@ -165,6 +165,8 @@ export function useMcpSwitches(
 
   const rows = useMemo(() => (servers ? switchRows(servers, kind, overrides) : []), [servers, kind, overrides]);
 
+  // PATCH is owner-only on the server, so a shared editor gets the switches
+  // locked with this reason, never switches whose save would be refused.
   const lockedReason =
     kind === 'routine' && conversationId === null
       ? "Open one of this routine's chats to choose its servers."

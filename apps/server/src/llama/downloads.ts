@@ -242,7 +242,9 @@ function queuedHead(file: QuantFile, revision: string): MtpHead {
   return { path: file.path, size: file.size, sha256: file.sha256, revision, status: "queued", bytesDone: 0, error: null, layers: null };
 }
 
-/** The `active`/`liveBytes` key of a model's head job — beside its own. */
+/** The `active`/`liveBytes` key of a model's head job — beside its own. A head
+ * is its own job and never re-queues the model's row: a queued row leaves the
+ * preset, which unloads the model. */
 function headKey(id: string): string {
   return `${id}#mtp`;
 }

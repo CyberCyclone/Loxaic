@@ -21,8 +21,6 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 - When the node under a testID is replaced (download status → finished pill, a panel reopening), use `waitForFreshText`; `waitForTextIn` holds one reference. Under a sheet on native, `waitForTextIn` finds the card behind it; use `waitForFreshText`.
 - Wait for a dismissed sheet's or closed modal's contents with `waitForAbsent` (re-queries), never `waitForGone`: UiAutomator2 keeps reporting a closed window's element as displayed.
 - Use `sendInNewRun` to find a new conversation (the one absent before the send), never "the newest run".
-- Login waits for `composer.input` or `composer.readOnly` (a viewer has no input).
-- `goToSurface('routines')` waits on `routines.new`; `openThreadList('routineChat')` anchors on `threadList.runNow`.
 - Size windows with `helpers/window.ts`, never `browser.setWindowSize`. Phone-width web cases use `browser.setViewport` (Chrome won't go below 500 px).
 - A spec must pass alone and in any order: run `provisionAdmin()` in its own `before` if it uses the admin API.
 - On a phone (iOS and Android) the thread list is a slide-over covering the menu button: close it (open a row) before a case needs the sidebar.
@@ -33,11 +31,9 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 - Assert an MCP switch's effect against the stored breakdown (`lastToolSourceKeys`), never only the switch.
 - Parse elapsed labels (`elapsedSeconds`) and compare with the stored start; never assert "contains an s".
 - A reconnect-flash check uses a `MutationObserver` and slows the socket `open`; localhost reconnects take milliseconds, so polling passes with the bug.
-- Thread-history scroll uses real wheel input or sets the scroll position directly; never `scrollIntoView` (it passes while a reader cannot scroll).
 - A real-model spec checks its pass bar once after `waitForRunDone`, never by polling a command until it passes (races the model's next step).
 - Only a cold start proves a snapshot carries a pending approval; lock and switch-away cases keep it in React state.
-- `mtp.spec.ts` asserts on `models.ini` and the fake router's load log, not on the switch.
-- Runs that never ask leave the iOS keyboard up and hide the reply; check them from the server (`runsWithoutAsking`).
+- Never use `scrollIntoView` to prove a list scrolls: it puts the target on screen whatever the list does.
 
 ## Reaching the real thing
 
@@ -54,7 +50,7 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 - Specs that sign in for admin calls go through `adminApi` (it caches the token); per-call sign-ins hit better-auth's rate limit. Cleanup runs first and throws rather than logging.
 - `E2E_SELF_CONTAINED=1` runs only a subset: admin and GitHub specs fail by construction. Compare with default mode before concluding anything.
 - Screenshots (`shot('name')`) go to gitignored `artifacts/`; capture the state that would look wrong if it regressed. Never commit them.
-- `standup.ts` sets `CONTEXT_STAGE_COOLDOWN_MS=0` for specs that switch stages back to back; wait prefs have a 5 s floor, so shorten waits with `APPROVAL_TIMEOUT_MS`, never a pref.
+- Wait prefs have a 5 s floor: shorten waits with `APPROVAL_TIMEOUT_MS`, never a pref.
 
 ## Mock triggers (keep these working)
 
@@ -65,17 +61,13 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 - Sub-agent trigger is "sub-agent"/"delegate"; text after the first colon is the child's task. Keep child tasks clear of every scenario `match` regex (matched against the child prompt too). Read a card's call id from `listSubAgents`.
 - The slow-child scenario (`survey in passes`) stays seven requests long so native lanes can open the panel in time.
 - Fake router / mock: "fill the context" 80%, "overflow the context" 90% of the loaded window; "take your time N" holds a reply N ms per word; `LOXAIC_FAKE_LOAD_MS` slows loads; "overflow the provider" refuses llama.cpp- or OpenAI-style; "give a different answer" numbers replies; "thinking level" echoes the received fields (mock provider records `thinkingFields`).
-- `mock-provider.ts`'s 401 must quote the rejected key, as OpenAI's does; that is what the redaction has to survive.
 - HTTP MCP mock (`mock-mcp-http-server.ts`) is added by a spec as slug `httpmock`; "http mcp who am i" calls `get_me`; it refuses every bearer but `MOCK_MCP_HTTP_TOKEN`.
 - Mock HF: `POST /__e2e/unreachable?repo=…&on=1` makes a repo's file list answer 503. Show both machines by rewriting the `LOXAIC_FAKE_HARDWARE` file and pressing Restart.
-- Runtime-version specs assert `runtime.version.reported`, not the label; `LOXAIC_FAKE_REJECT_KEY=jinja` simulates a build refusing a key; the spec ends on the bundled build with nothing downloaded.
-- In `context-stages.spec.ts`, put the model at a stage through the API only after any new conversation has started (a new conversation's first run steps it down).
 - Never special-case a fixed text (e.g. `PLAN_REJECTED_MESSAGE`) in a mock; react to its words, so the wording is what the test checks.
 
 ## Android traps
 
 - Beside a spinner or a ticking counter (running cards, badges, sub-agents) set `waitForIdleTimeout: 0` and restore it after; UiAutomator2 otherwise waits ~11 s per query. Probe `getPageSource()` before concluding an element is missing.
-- Scroll to a row's error before reading it; it sits below the sheet's fold.
 - Emulator stuck on sign-in with `MissingWebViewPackageException` in logcat: `adb reboot`.
 
 ## iOS traps

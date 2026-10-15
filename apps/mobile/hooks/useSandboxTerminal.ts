@@ -141,6 +141,8 @@ export function useSandboxTerminal(
         return;
       }
 
+      // Not reported to the connection monitor (no trackSocket): this socket's
+      // 4503 means the workspace's machine is offline, not the server.
       socket = createSandboxTerminalSocket(sandboxId, token, (event: TerminalServerEvent) => {
         if (isCancelled()) return;
         switch (event.type) {

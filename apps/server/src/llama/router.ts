@@ -73,6 +73,8 @@ import {
  * an admin).
  */
 
+/** Older clients switch on these values: keep them as they are. A restart is
+ * `RuntimeView.restart`, a phase beside the state, never a new state. */
 export type RuntimeState =
   | "off"
   | "not-installed"

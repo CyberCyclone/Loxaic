@@ -9,9 +9,8 @@ Shared tool definitions and permission-mode logic used by the server and the cli
 ## Tools outside TOOLS
 
 - Keep `PLAN_TOOL`, `QUESTIONS_TOOL`, `subagentTool` and `skillTool` out of `TOOLS`. Being outside `TOOLS` is what keeps them off "Allow always" (`isToolName`); none asks for approval and none is a write tool.
-- `resolveBuiltinTools(mode)` appends the plan and questions tools in planning mode only; the skill tool is offered in planning too.
-- `skillTool`'s description lists the conversation's frozen catalog; its `name` is a plain string, not an enum, so a skill announced later still loads.
 - Pass every name and description in the skill list through `inert` so it cannot close a marker; the list sits at the front of every request.
+- The `skill` tool is deliberately offered in planning mode too: it never asks and writes nothing.
 
 ## Prompt prefix
 

@@ -21,6 +21,7 @@
  *   - a folder on the person's own machine, used directly, has no "beside":
  *     its root is the folder. Those go under `~/.loxaic/checkpoints` on that
  *     machine, never inside the person's folder.
+ * Plain `exec` only, never a new executor verb, so installed desktops work.
  * The database holds only the manifest (`checkpoint_files`).
  */
 import posix from "node:path/posix";

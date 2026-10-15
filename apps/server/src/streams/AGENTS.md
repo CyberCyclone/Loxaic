@@ -5,19 +5,11 @@ The stream log, run registry and conversation authorization shared by every run 
 ## Stream log
 
 - Every run writes to a sequenced log (`broker.ts` over a `StreamLogDriver`); clients read it via `stream.subscribe` → one `stream.sync` snapshot per run, then live `stream.event`s. Wire types live in `packages/types/src/stream-protocol.ts`.
-- `STREAM_BACKEND=redis` with Redis unreachable must fail boot; never fall back to memory silently.
-- Redis stores, it does not deliver: live fan-out is an in-process EventEmitter (single-process assumption). The desktop always runs `memory`.
-- Append a record to storage before sending it live. `seq` is our own contiguous counter in the record, never a Redis entry id.
-- Coalesce only `text.delta`/`thinking.delta` (`STREAM_COALESCE_MS`, default 25); any other event flushes the buffer first.
-- Retention is `STREAM_TTL_SECONDS` (default 86400). Real cleanup is `recovery.ts`: rows still `streaming` after a restart are finished as `error`.
 - `producer.end` writes no record, so `foldSnapshot` cannot see a terminal status; anything that depends on it is decided in `ws/delivery.ts`.
-- `watchers.ts` announces new runs per conversation; a newly announced run always gets a snapshot (`forceSync`), even at seq 0.
-- Keep emitting the `todos` event and snapshot `todos` for older app builds until they are gone.
 
 ## Snapshot folds
 
 - Any event other than `run.queued` clears the queue position in `foldSnapshot` (and both client hooks); `subagent.*` events never clear it.
-- Fold `prompt.stats` into the snapshot only until the message's first output; it is emit-only and changes no prompt bytes.
 - `stream.end.error_code` rides only the live event and is deliberately never replayed from a snapshot.
 
 ## Run registry
@@ -50,3 +42,45 @@ The stream log, run registry and conversation authorization shared by every run 
 - An abort listener added to an already-aborted signal never fires: re-check `signal.aborted` after every await that precedes adding the listener.
 - Treat a failure as a stop when `err.name === "AbortError" || signal.aborted` — a mid-stream Stop surfaces as `TypeError: terminated`. Never key on the name alone.
 - Always handle `runToolLoop`'s promise: `engine.ts` rethrows anything but `RunSlotAbortedError`, and there is no `unhandledRejection` handler (the stream would stay "active" forever).
+
+## Runs (`runs/`)
+
+### Starters
+
+- Chat and Agent share `runToolLoop`; `chatRun.ts`/`agentRun.ts` differ only in setup and system prompt. Chat always has manual-mode approval semantics. Chat, agent and retry all start through `startRunOnRow`.
+- Call `assertModelUsable` in every starter beside `assertAttachmentsOwned`, before any row is written — it makes the provider allowlist a spending limit.
+- `recordModelUse` only on a send, keyed to the sender; never for compaction or the literal `"default"`. One SQL statement, awaited, skipped when unchanged.
+
+### History and prefix
+
+- Never change an older part of the prompt (an attachment verdict, a replayed row's bytes) — it breaks the cache like a trim.
+- On replay strip partner-less tool calls (`resolvedCallIds`) and partner-less results (`presentCallIds`). A skipped or stopped call still persists a `tool_result`; never leave a `tool_call` unpartnered.
+- The thinking level is fixed per run in `RequestShape` and recorded on `conversations.thinking_level`; send it unchanged in compaction and context-stage warm-up.
+
+### Usage
+
+- One `usage_records` row per completion, written through `usageRecordValues` (rounds fractional llama.cpp timings for integer columns). Inserts are best-effort and never fail a turn or a summary.
+- `cached_tokens` null means "backend doesn't report"; never write `?? 0` on that path.
+
+### Waits: approvals and check-ins
+
+- A standing grant comes only from `always: true` and only from the run's sender (`always && answeredBy === userId`); an editor's "always" approves once.
+- `approval.request` carries the run's `mode` and `granter_user_id`; clients must not infer either.
+
+### Planning handover
+
+- Never park a run on plan review; each decision is a new message.
+
+### Tools inside the loop
+
+- Run read-only bash with `READ_ONLY_BASH_ENV` (fsmonitor off, `cat` pager).
+
+### Sub-agents
+
+- Offer `subagent` on the agent surface and in routines only; never in chat or to a child.
+- A child is its own conversation row (`kind: "subagent"`), never rows in the parent's. It shares only, via `role`: the parent's sandbox (`workspaceConvId`), the parent's MCP state, the parent run's sender as `userId`, and the parent's abort signal.
+- A child: no plan tools or nudge (`subagentSystemPrompt`, never `planningSystemPrompt`), no step check-in (answers now), no request shape, no after-turn compaction, never extends a context stage.
+
+### Tests
+
+- Stop-batch tests are Docker-gated, wait on the sandbox row (not a sleep), and assert nothing ran behind the stop rather than an exact skip count.

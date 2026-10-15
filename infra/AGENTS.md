@@ -4,15 +4,13 @@ Dockerfiles and container entrypoints (`docker/`), the sandbox image and its doc
 
 ## Sandbox image
 
-- The image must create `/home/loxaic/repo`: every exec defaults to it as `WorkingDir`, and Docker refuses an exec whose working directory is missing.
-- The image needs util-linux `setsid -w` for killing a command's process group (absent from busybox/Alpine); re-check it, and `ps -o pgid`, on any base-image change.
-- The image tag is a hash of `sandbox.Dockerfile`, so editing it rebuilds every deployment's image once. Anything the Dockerfile `COPY`s must also be staged by `apps/desktop/scripts/build-server.mjs`, or packaged installs fail to build the image.
+- The image needs util-linux `setsid -w` for killing a command's process group (absent from busybox/Alpine); re-check it on any base-image change.
+- The image tag is a hash of `sandbox.Dockerfile` and everything under `sandbox/`, so editing either rebuilds every deployment's image once. Anything the Dockerfile `COPY`s must also be staged by `apps/desktop/scripts/build-server.mjs`, or packaged installs fail to build the image.
 
 ## Document extraction (`docker/sandbox/extract.py`)
 
 - **Run the zip decompression-bomb guard (entry count, total declared size, per-entry ratio, read from the central directory) before opening any zip-based format.** Every format except PDF and RTF is a zip; never inflate to decide.
 - Extraction reads and never executes: no macros, embedded scripts or PDF JavaScript.
-- Deliberately not markitdown: its base dependencies bloat the image about 5× and it lacks ODT/RTF/EPUB. Don't swap the per-format libraries for it.
 
 ## llama.cpp sidecar (`docker/llama-router.sh`, attach mode)
 
@@ -20,7 +18,6 @@ Dockerfiles and container entrypoints (`docker/`), the sandbox image and its doc
 - Compose publishes 4002 on loopback only (`127.0.0.1:4002`); never bind it to `0.0.0.0`.
 - The script writes `--list-devices` to `router-devices.txt` and `--help` to `router-help.txt` in the shared volume; the server reads both (CPU warning, extra-option checks). Keep the file names in step with the server.
 - The models volume is mounted at the same path in the server and the sidecar, because the preset names model files absolutely.
-- Keep `--models-max 0`: Loxaic does all unloading (`llama/room.ts`); llama.cpp must never evict by count.
 
 ## Environments (`envs/compose.yml`)
 

@@ -364,6 +364,8 @@ async function main() {
   for (const key of bundled.keys()) web.delete(key);
 
   const manifest = JSON.parse(readFileSync(path.join(licensesDir, "native-libraries.json"), "utf8"));
+  // Found through collectNpm, never require.resolve: embedded-postgres' platform
+  // packages export no package.json, so require.resolve cannot reach them.
   const pgPackages = [...bundled.values()].filter((p) => p.name.startsWith("@embedded-postgres/"));
   const native = pgPackages.flatMap((p) => {
     const nativeDir = path.join(p.dir, "native");

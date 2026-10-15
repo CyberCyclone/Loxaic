@@ -34,7 +34,5 @@ Per-command `bash` permissions (`bash/`), command rules, isolation, and the mode
 
 ## Permission check (`check.ts`)
 
-- The check extends the run's own request (prefix reuse): the messages sent plus the tool-call message, a placeholder result for every unanswered call in the batch, the instruction as the last user turn, the run's tools and thinking fields, `tool_choice: "none"`. Persist nothing.
 - Only an exact `VERDICT: ALLOW` in the reply text allows; the last `VERDICT:` line wins and reasoning is never read. A refusal, tool call, missing verdict, timeout or error asks the person, with `check` on the approval saying why. A stop records the call as stopped.
 - It runs under the run's slot; its usage row has `purpose = 'permission_check'` and no `message_id`.
-- An admin-set `permissionCheckModel` gets a short standalone prompt instead. `PERMISSION_CHECK_TIMEOUT_MS` pins the timeout, read at call time, reported in `envOverrides`; the API answers 409 for a pinned field.

@@ -17,8 +17,5 @@ The Drizzle schema (`src/schema.ts`), the shared `db` instance and re-exported q
 
 - The users table is `user` (singular), Drizzle-owned and passed explicitly to `drizzleAdapter` in `apps/server/src/auth/index.ts`; its columns go through normal migrations. `user.id` is `text`, not `uuid`.
 - Only `conversation_shares` has a foreign key to `conversations`. `messages`, `usage_records`, `sandboxes`, `checkpoint_files` and `conversations.parent_conversation_id` have none, so deleting a conversation must clean them explicitly (`apps/server/src/conversations/delete.ts`).
-- `inference_providers.created_by` is `ON DELETE SET NULL`: `no action` makes its admin undeletable, `cascade` deletes deployment config.
-- `user_prefs` and `skills` cascade with their user; `skills` is unique on `(owner_id, name)`.
-- Keep the `usage_records` indexes on `(model, created_at)` and `(conversation_id, created_at)`; both are queried on hot paths.
 - `checkpoint_files` holds only the manifest; its `created_at` uses the app's clock, like messages, because rewinds compare the two.
 - Every last-turn or context reader of `usage_records` (`lastTurnTokens`, `conversationTokens`, `recentUses`) filters out `purpose = 'permission_check'` rows.

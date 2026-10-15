@@ -7,8 +7,6 @@ Fixtures for server tests and the e2e lane: the fake llama.cpp router (`fake-lla
 - The fake is only coverage while it is as untidy as the real router. Never make it tidier than b11342.
 - Keep the ":"-name rewrite (quant uppercased, `UD-` dropped); mock HF must keep a non-canonical `UD-` quant, or the `routerModelName` path loses coverage.
 - Refuse unknown preset keys like the real router (fatal at boot, 500 on reload). Its key list is tested against `LOAD_SETTINGS` plus the YaRN keys; add every new setting there.
-- MTP: accept exactly `spec-type = draft-mtp`, `spec-draft-n-max`, `spec-draft-model`; refuse another `spec-type` or a missing draft file.
-- Print `stopping model instance name=…` on every unload; the placement tracker needs it.
 - `--help` comes from `PRESET_KEYS` plus `keep`/`metrics`/`cont-batching`; a non-integer `keep` fails the load. `parseHelp` is held to `llama-help-b11342.txt` (real output); do not edit that file.
 
 ## Triggers by file name and prompt
@@ -28,6 +26,3 @@ Fixtures for server tests and the e2e lane: the fake llama.cpp router (`fake-lla
 - `LOXAIC_FAKE_RELOAD_FAIL` / `LOXAIC_FAKE_UNLOAD_STUCK`: while the named file exists, reloads are refused / unloads never take.
 - `LOXAIC_FAKE_LOAD_MS`: make a load take time.
 - Server side: `LLAMA_DISCARD_WAIT_MS` shortens discard waits; `LOXAIC_AMDGPU_PARAMS_DIR` (plus a `modinfo` file) stands in for sysfs; `LOXAIC_TEST_HTTP_BUILDS=1` allows loopback http builds.
-
-## Tests that depend on ordering
-

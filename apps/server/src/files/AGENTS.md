@@ -5,7 +5,6 @@ Uploaded attachments: storage, byte verification, document extraction in a sandb
 ## Storage
 
 - Bytes live on disk under `UPLOADS_DIR`; only metadata is in Postgres (`attachments`). Unset, it falls back to `<cwd>/uploads` (`apps/server/uploads` in a checkout), which must stay gitignored.
-- A document's extracted text is cached beside the original as `<ref>.txt`.
 - `isValidRef` takes `unknown` and type-guards — `RegExp.test` stringifies, so `["<uuid>"]` passes a string-typed check.
 - Sanitize filenames once at upload (`sanitizeFilename`) and read them back from the DB row for the prompt, the UI chip and `Content-Disposition`; never trust the client's copy.
 
@@ -23,7 +22,6 @@ Uploaded attachments: storage, byte verification, document extraction in a sandb
 - Document uploads require `mode === "container" && available` — host mode does not count. Otherwise reject with 415 `code: "sandbox_required"`; never store a file nothing can read.
 - Extraction reads and never executes (no macros, embedded scripts or PDF JavaScript).
 - Name the sandbox copy with the extension from our mime table (`<uuid>.xlsx`), never the user's filename — openpyxl and others dispatch on extension.
-- An extractor writes to a file that is read back in base64 chunks, never off stdout — `exec` caps output at `MAX_OUTPUT_BYTES` (256 KB) and a chunk can split a UTF-8 sequence.
 - Put scratch files under `handle.root`, never an absolute `/tmp` — on the host provider that is the shared host `/tmp`.
 - Keep `MAX_CACHED_EXTRACTION_BYTES` (4 MB sidecar cap) and `MAX_EXTRACTED_BYTES` (256 KB prompt cap) separate — sandbox paging reads past the prompt cap.
 - Extraction-pool sandboxes destroy on idle, unlike conversation sandboxes: rowless and keyed by user, nothing could resume them. A sandbox-settings change must stop them (`stopAllExtractionSandboxes`) before `resetEngineCache()`, or they are stranded on the old engine.
@@ -31,7 +29,6 @@ Uploaded attachments: storage, byte verification, document extraction in a sandb
 ## Prompt
 
 - Wrap document text in `<attached-file>` markers (`wrapDocument` in `storage.ts`), neutralise a literal closing marker with a zero-width space, and keep the untrusted-content system-prompt addendum — even for the user's own uploads.
-- `selectAffordableAttachments` spends a current-turn reserve plus a history pool oldest-first, so an older turn's verdict never depends on a newer one; never switch to recency-first (it rewrites the cached prefix).
 
 ## Reaper
 

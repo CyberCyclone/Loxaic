@@ -379,6 +379,8 @@ export async function prepareInstructions(input: {
   // Taken just now: it is as current as a check could make it.
   const fresh = prior?.status !== "found" && prior?.status !== "none";
   const base = versionOf(snap);
+  // Compared against what the model was last told, not the base: otherwise
+  // every change since the snapshot would be announced again on every run.
   const known = snap.latest ?? base;
   let check: Check = { kind: "unchanged" };
   if (!fresh) {

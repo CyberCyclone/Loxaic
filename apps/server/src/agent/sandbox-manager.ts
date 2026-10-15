@@ -701,8 +701,8 @@ export async function reapAbandonedSandboxes(
         // Unfiltered in production — this is a server-wide janitor. `kind`
         // exists so a test can aim it at host sandboxes only, and `ownerId`
         // narrows further still: suites share one Postgres and this is a
-        // DB-wide query (unlike stopIdleSandboxes/stopAllSandboxes, which
-        // only ever touch this process's own in-memory `active` map), so
+        // DB-wide query (unlike stopIdleSandboxes, which only ever touches
+        // this process's own in-memory `active` map), so
         // two host-mode suites running in different worker processes are
         // otherwise still visible to each other here. An unscoped call with
         // one of these suites' deliberately tiny retention windows would

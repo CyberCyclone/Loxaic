@@ -112,6 +112,9 @@ export interface CheckinDecisionNote {
  * string: it becomes part of the conversation's replay, and the prompt prefix
  * only stays cacheable if the live push and the next turn's history load
  * produce the same bytes (see prompt-prefix.test.ts).
+ *
+ * Changing this or any nudge below leaves stored rows with the old text, which
+ * `isNudgeText` and the client then no longer recognise.
  */
 export const CHECKIN_ANSWER_NUDGE =
   "Please stop using tools and give your best final answer now from what you have so far.";

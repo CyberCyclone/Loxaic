@@ -9,8 +9,9 @@ import path from "node:path";
  * the native directory dialog — the *only* way a path gets in here. The
  * renderer cannot write it (there is no IPC that takes a path to add), and
  * neither can the server: the executor reads this file and enforces it on
- * every call, so a hostile host can ask for `~/.ssh` all day and get a
- * refusal (apps/server/src/executor/service.ts). 0600, like secrets.json —
+ * every call, so a hostile host's file reads and writes outside them are
+ * refused (apps/server/src/executor/service.ts). The roots bound file verbs
+ * and where a command starts, not what a direct workspace's `exec` can run. 0600, like secrets.json —
  * not secret, but it is the list of what an agent may read and write.
  *
  * The executor id is the desktop's `instanceId` whenever the install has a
