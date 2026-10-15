@@ -8,7 +8,7 @@ import { loadWorkspace } from "./workspace.ts";
 import { dropConversationCopies } from "./checkpoints.ts";
 import { getConnection } from "../github/connection.ts";
 import { withEgress } from "../egress/env.ts";
-import { listSandboxContainers } from "../sandbox/container-provider.ts";
+import { listSandboxContainers, sandboxImage } from "../sandbox/container-provider.ts";
 import { getSandboxRetention, getSandboxSettings } from "../settings.ts";
 
 /**
@@ -472,7 +472,12 @@ async function createEntry(
  * editor's, and the row's `ownerId` is the owner's for the same reason (see
  * below). No token enters the sandbox (sandbox/git.ts).
  */
-async function createConfigFor(ownerId: string, conversationId: string, workspace: Workspace): Promise<CreateSandboxConfig> {
+async function createConfigFor(
+  ownerId: string,
+  conversationId: string,
+  workspace: Workspace,
+  kind: SandboxKind,
+): Promise<CreateSandboxConfig> {
   if (workspace.kind === "local") {
     // The executor re-validates the path against its own roots on every
     // call; this is the request, and the owner check is the provider's.
@@ -480,7 +485,8 @@ async function createConfigFor(ownerId: string, conversationId: string, workspac
       local: { executorId: workspace.executorId, path: workspace.path, isolation: workspace.isolation, ownerId },
     };
   }
-  if (workspace.kind !== "github") return {};
+  const image = workspace.image ? await imageConfigFor(ownerId, workspace, kind) : {};
+  if (workspace.kind !== "github") return image;
   const connection = await getConnection(ownerId);
   if (!connection) {
     throw new Error(
@@ -489,6 +495,7 @@ async function createConfigFor(ownerId: string, conversationId: string, workspac
     );
   }
   return {
+    ...image,
     repoUrl: workspace.cloneUrl,
     branch: workspace.baseBranch,
     newBranch: workspace.branch,
@@ -506,6 +513,54 @@ async function createConfigFor(ownerId: string, conversationId: string, workspac
   };
 }
 
+/**
+ * The custom image a workspace runs in, re-checked every time a container is
+ * made from it: the row may have been deleted, the policy narrowed, or (for a
+ * personal image) it must still be the conversation *owner's* — never whoever
+ * sent the message that is creating the sandbox. The container is made from
+ * the row's pinned digest only, which its own pull proved access to.
+ */
+async function imageConfigFor(
+  ownerId: string,
+  workspace: Extract<Workspace, { kind: "scratch" | "github" }>,
+  kind: SandboxKind,
+): Promise<Pick<CreateSandboxConfig, "image" | "limits">> {
+  const chosen = workspace.image;
+  if (!chosen) return {};
+  if (kind !== "container") {
+    throw new Error(
+      `This conversation runs in the image "${chosen.label}", which needs the container sandbox; ` +
+        "this server's sandbox mode has changed since. Start a new conversation, or ask an admin.",
+    );
+  }
+  const { findImage, readLimits, DEFAULT_IMAGE_LIMITS, ensureImagePresent } = await import("../images/store.ts");
+  const { useRefusal } = await import("../images/access.ts");
+  const row = await findImage(chosen.id);
+  const refusal = useRefusal(row, getSandboxSettings().customImages, ownerId, { github: workspace.kind === "github" });
+  if (refusal || !row?.digest || row.uid === null || row.gid === null) {
+    throw new Error(`This conversation's image "${chosen.label}" can't be used: ${refusal ?? "it has no good pull."}`);
+  }
+  const limits = row.ownerId === null ? (readLimits(row.limits) ?? DEFAULT_IMAGE_LIMITS) : DEFAULT_IMAGE_LIMITS;
+  const digest = row.digest;
+  return {
+    image: {
+      ref: digest,
+      uid: row.uid,
+      gid: row.gid,
+      ensure: async () => {
+        const { sandboxEngine } = await import("../sandbox/container-provider.ts");
+        const { docker } = await sandboxEngine();
+        await ensureImagePresent(docker, row);
+      },
+    },
+    limits: {
+      memory: Math.round(limits.memoryMb * 1024 * 1024),
+      cpu: Math.round(limits.cpus * 1e9),
+      pids: limits.pids,
+    },
+  };
+}
+
 async function createEntryReserved(
   provider: SandboxProvider,
   ownerId: string,
@@ -515,7 +570,7 @@ async function createEntryReserved(
   // `ownerId` is the *conversation's* owner, never whoever triggered the tool
   // call — see the insert below for why, and createEntry for where it is
   // loaded. The clone credentials are the owner's too.
-  const config = await createConfigFor(ownerId, conversationId, workspace);
+  const config = await createConfigFor(ownerId, conversationId, workspace, provider.kind);
   // The owner here too, not the sender: the container's `loxaic.user` label
   // is all `create` uses it for, and labelling the sender meant a shared
   // editor's first tool call left a container labelled for one person and
@@ -536,11 +591,17 @@ async function createEntryReserved(
       conversationId,
       containerId: handle.ref,
       provider: provider.kind,
-      image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "loxaic-sandbox") : provider.kind,
+      // What really ran: a custom image's pinned digest, or Loxaic's own tag.
+      image: provider.kind === "container" ? (config.image?.ref ?? sandboxImage()) : provider.kind,
       status: "running",
       repoUrl: config.repoUrl ?? null,
       branch: config.newBranch ?? config.branch ?? null,
-      limits: { memory: 512, cpu: 1, network: networkFor(provider.kind) },
+      limits: {
+        memory: Math.round((config.limits?.memory ?? 512 * 1024 * 1024) / (1024 * 1024)),
+        cpu: (config.limits?.cpu ?? 1e9) / 1e9,
+        ...(config.limits?.pids ? { pids: config.limits.pids } : {}),
+        network: networkFor(provider.kind),
+      },
     })
     .returning();
 

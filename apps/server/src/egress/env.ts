@@ -89,7 +89,7 @@ function prepareCa(handle: SandboxHandle, certPem: string): Promise<string | nul
     const paths = caPaths(handle.root);
     const script =
       `mkdir -p "${paths.dir}" && ` +
-      `{ cat /etc/ssl/certs/ca-certificates.crt 2>/dev/null || cat /etc/ssl/cert.pem 2>/dev/null || true; printf '%s\\n' "$LOXAIC_EGRESS_CA"; } > "${paths.bundle}" && ` +
+      `{ cat /etc/ssl/certs/ca-certificates.crt 2>/dev/null || cat /etc/ssl/cert.pem 2>/dev/null || cat /etc/pki/tls/certs/ca-bundle.crt 2>/dev/null || cat /etc/ssl/ca-bundle.pem 2>/dev/null || true; printf '%s\\n' "$LOXAIC_EGRESS_CA"; } > "${paths.bundle}" && ` +
       `printf '%s\\n' "$LOXAIC_EGRESS_CA" > "${paths.ca}"`;
     p = handle
       .exec(["sh", "-c", script], { env: { LOXAIC_EGRESS_CA: certPem.trim() }, workdir: handle.root })

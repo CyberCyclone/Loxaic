@@ -179,9 +179,10 @@ export function conversationRoutes(app: FastifyInstance) {
         // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty title must still fall back to the default; ?? would store "".
         title: title || "New conversation",
         kind: resolvedKind,
-        // Scratch is stored as null, the same value every pre-workspace row
-        // has, so the two are indistinguishable everywhere they are read.
-        workspace: parsed && parsed.kind !== "scratch" ? parsed : null,
+        // Plain scratch is stored as null, the same value every pre-workspace
+        // row has, so the two are indistinguishable everywhere they are read.
+        // A scratch workspace with a custom image (#253) is stored as itself.
+        workspace: parsed && (parsed.kind !== "scratch" || parsed.image) ? parsed : null,
         mcpOverrides: normalizeMcpOverrides(mcp_overrides),
       })
       .returning();

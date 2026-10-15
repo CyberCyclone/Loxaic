@@ -1,5 +1,5 @@
 import { pgTable, uuid, text, timestamp, integer, bigint, real, jsonb, boolean, serial, index, primaryKey, uniqueIndex } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 
 // ── Better-Auth (auto-managed, needed for adapter schema) ──
 export const user = pgTable("user", {
@@ -884,6 +884,76 @@ export const githubConnections = pgTable("github_connections", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// ── Custom sandbox images (#253) ──
+/**
+ * A container registry login. `ownerId` null is a deployment login, entered by
+ * an admin and used only to pull shared images; otherwise it is one person's,
+ * used only for their own images. Neither kind is ever used for the other, nor
+ * for anyone else — see apps/server/src/images/logins.ts.
+ */
+export const registryLogins = pgTable(
+  "registry_logins",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").references(() => user.id, { onDelete: "cascade" }),
+    /** Normalised registry host (`docker.io`, `ghcr.io`, `localhost:5000`). */
+    registry: text("registry").notNull(),
+    username: text("username").notNull(),
+    /** Encrypted blob (apps/server/src/images/login-secrets.ts); never returned
+     * by any route. */
+    encryptedSecret: text("encrypted_secret").notNull(),
+    createdBy: text("created_by").references(() => user.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("registry_logins_owner_registry_idx").on(t.ownerId, t.registry).where(sql`owner_id IS NOT NULL`),
+    uniqueIndex("registry_logins_shared_registry_idx").on(t.registry).where(sql`owner_id IS NULL`),
+  ],
+);
+
+/**
+ * An image a sandbox can be created from. `ownerId` null is a shared image an
+ * admin loaded; otherwise it is one person's own.
+ *
+ * A container is only ever created from `digest`, which this row's own pull
+ * recorded with its own scope's login. The engine is shared, so an image
+ * someone else pulled is on disk for anyone who can name it; requiring a
+ * digest this row proved access to is what keeps one person's private image
+ * out of another's reach.
+ */
+export const sandboxImages = pgTable(
+  "sandbox_images",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").references(() => user.id, { onDelete: "cascade" }),
+    /** Normalised reference, tag included (`docker.io/library/ubuntu:24.04`). */
+    reference: text("reference").notNull(),
+    label: text("label").notNull(),
+    /** The latest pull: "pulling" | "ready" | "failed". Separate from the last
+     * good pull below, so a failed update leaves a working image usable. */
+    status: text("status").notNull().default("pulling"),
+    error: text("error"),
+    /** From the last good pull: `repo@sha256:…` is what containers run. */
+    digest: text("digest"),
+    /** Whom the image runs as, for the home directory made before start. */
+    uid: integer("uid"),
+    gid: integer("gid"),
+    /** `{ missing: string[], warnings: string[] }` from the last good pull's check. */
+    check: jsonb("check"),
+    /** Shared images only: `{ memoryMb, cpus, pids }`, set by an admin. */
+    limits: jsonb("limits"),
+    pulledAt: timestamp("pulled_at"),
+    createdBy: text("created_by").references(() => user.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("sandbox_images_owner_reference_idx").on(t.ownerId, t.reference).where(sql`owner_id IS NOT NULL`),
+    uniqueIndex("sandbox_images_shared_reference_idx").on(t.reference).where(sql`owner_id IS NULL`),
+  ],
+);
 
 // ── Relations ──
 export const conversationsRelations = relations(conversations, ({ many }) => ({

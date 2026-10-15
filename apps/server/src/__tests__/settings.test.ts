@@ -20,6 +20,7 @@ const ENV_KEYS = [
   "SANDBOX_IDLE_STOP_MS",
   "SANDBOX_REAP_ENABLED",
   "SANDBOX_REAP_AFTER_MS",
+  "SANDBOX_CUSTOM_IMAGES",
 ] as const;
 
 /** The no-env, nothing-persisted shape. Spread into the per-test expectations
@@ -31,6 +32,7 @@ const NO_OVERRIDES = {
   idleStop: false,
   reapEnabled: false,
   reapAfter: false,
+  customImages: false,
 } as const;
 
 /** Restores whatever the ambient environment had, so a developer running
@@ -242,6 +244,43 @@ describe("updateSandboxSettings validation", () => {
     });
   });
 
+  it("keeps custom images off unless an admin or the environment turns them on (#253)", async () => {
+    expect(getSandboxSettings().customImages).toBe("off");
+
+    __setSandboxApplyForTest(false);
+    try {
+      const view = await updateSandboxSettings({ customImages: "everyone" });
+      expect(view.customImages).toBe("everyone");
+      await expect(updateSandboxSettings({ customImages: "anyone" })).rejects.toMatchObject({ code: "invalid" });
+
+      process.env.SANDBOX_CUSTOM_IMAGES = "shared";
+      expect(getSandboxSettings().customImages).toBe("shared");
+      expect(getSandboxSettings().envOverrides.customImages).toBe(true);
+      await expect(updateSandboxSettings({ customImages: "off" })).rejects.toMatchObject({ code: "envOverride" });
+
+      process.env.SANDBOX_CUSTOM_IMAGES = "nonsense";
+      expect(getSandboxSettings().customImages).toBe("everyone");
+      expect(getSandboxSettings().envOverrides.customImages).toBe(false);
+    } finally {
+      __setSandboxApplyForTest(true);
+    }
+  });
+
+  it("resolves custom images to off when the settings row could not be read", async () => {
+    __setSandboxApplyForTest(false);
+    try {
+      await updateSandboxSettings({ customImages: "everyone" });
+    } finally {
+      __setSandboxApplyForTest(true);
+    }
+    __setLoadFailedForTest(true);
+    try {
+      expect(getSandboxSettings().customImages).toBe("off");
+    } finally {
+      __setLoadFailedForTest(false);
+    }
+  });
+
   it("ignores junk in a duration env var rather than pinning it to nonsense", () => {
     process.env.SANDBOX_IDLE_STOP_MS = "four hours";
     const s = getSandboxSettings();
@@ -319,6 +358,7 @@ describe("updateSandboxSettings persistence", () => {
       idleStopMs: 4 * 60 * 60 * 1000,
       reapEnabled: true,
       reapAfterMs: 30 * 24 * 60 * 60 * 1000,
+      customImages: "off",
     });
   });
 

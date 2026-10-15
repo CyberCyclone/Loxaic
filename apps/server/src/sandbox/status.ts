@@ -1,7 +1,8 @@
 import { getSandboxProvider } from "./provider.ts";
+import { customImagesBlocked } from "../images/store.ts";
 import type { SandboxMode } from "./provider.ts";
 import { getSandboxRetention, getSandboxSettings, sandboxDisabledReason } from "../settings.ts";
-import type { SandboxRetention } from "../settings.ts";
+import type { CustomImagesPolicy, SandboxRetention } from "../settings.ts";
 
 export interface SandboxStatus {
   mode: SandboxMode;
@@ -16,6 +17,10 @@ export interface SandboxStatus {
    */
   retention: SandboxRetention;
   reason?: string;
+  /** Who may use custom images (#253), and why nobody can right now when the
+   * server can't run them (not the container sandbox, not Docker). */
+  customImages: CustomImagesPolicy;
+  customImagesBlocked?: string;
 }
 
 /**
@@ -28,7 +33,7 @@ export interface SandboxStatus {
  * endpoint everything else reads.
  */
 export async function getSandboxStatus(): Promise<SandboxStatus> {
-  const { mode, allowNetwork } = getSandboxSettings();
+  const { mode, allowNetwork, customImages } = getSandboxSettings();
   const effectiveAllowNetwork = mode === "host" ? true : allowNetwork;
 
   const retention = getSandboxRetention();
@@ -40,16 +45,23 @@ export async function getSandboxStatus(): Promise<SandboxStatus> {
       allowNetwork: effectiveAllowNetwork,
       retention,
       reason: sandboxDisabledReason(),
+      customImages,
+      ...(customImages === "off" ? {} : { customImagesBlocked: "Custom images need the container sandbox." }),
     };
   }
 
   const provider = await getSandboxProvider();
   const status = (await provider?.available()) ?? { ok: false, reason: "no sandbox provider" };
+  // Asked only when the policy would allow them, since it means a question
+  // to the engine on an unauthenticated route.
+  const blocked = customImages === "off" ? null : await customImagesBlocked();
   return {
     mode,
     available: status.ok,
     allowNetwork: effectiveAllowNetwork,
     retention,
     ...(status.reason ? { reason: status.reason } : {}),
+    customImages,
+    ...(blocked ? { customImagesBlocked: blocked } : {}),
   };
 }

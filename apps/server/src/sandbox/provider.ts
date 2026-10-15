@@ -152,6 +152,13 @@ export interface SandboxHandle {
 }
 
 export interface CreateSandboxConfig {
+  /**
+   * A custom image (#253), container provider only. `ref` is the image row's
+   * pinned `repo@sha256:…`, `uid`/`gid` whom it runs as (from its check), and
+   * `ensure` makes sure it is on the engine — pulling it again, with the
+   * row's own login, if it was pruned. Absent: Loxaic's own image.
+   */
+  image?: { ref: string; uid: number; gid: number; ensure: () => Promise<void> };
   limits?: {
     memory?: number; // bytes
     cpu?: number;    // nano CPUs (container provider only)

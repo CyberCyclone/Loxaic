@@ -13,6 +13,8 @@ import {
   SandboxLimitError,
 } from "../agent/sandbox-manager.ts";
 import { getProviderByKind, getSandboxMode } from "../sandbox/provider.ts";
+import { sandboxImage } from "../sandbox/container-provider.ts";
+import { loadWorkspace } from "../agent/workspace.ts";
 import type { SandboxKind } from "../sandbox/provider.ts";
 import { sandboxDisabledReason, sandboxReapAt } from "../settings.ts";
 
@@ -69,6 +71,15 @@ export function sandboxRoutes(app: FastifyInstance) {
       if (typeof conversation_id !== "string" || !(await hasRole(userId, conversation_id, "owner"))) {
         return reply.code(404).send({ error: "Not found" });
       }
+      // A conversation that runs in a custom image (#253) must not have a
+      // container of Loxaic's own planted for it: the tool loop would adopt
+      // it, and run in an image nobody chose.
+      const loaded = await loadWorkspace(conversation_id);
+      if (loaded && loaded.workspace.kind !== "local" && loaded.workspace.image) {
+        return reply.code(409).send({
+          error: "This conversation runs in a custom image; its sandbox is created by the agent, not here.",
+        });
+      }
     }
     // Host mode has real network access unlike a container's NetworkMode:
     // none, so it *could* clone — but the REST surface is broad (any
@@ -107,7 +118,7 @@ export function sandboxRoutes(app: FastifyInstance) {
           conversationId: conversation_id ?? null,
           containerId: handle.ref,
           provider: kind,
-          image: kind === "container" ? (process.env.SANDBOX_IMAGE ?? "loxaic-sandbox") : "host",
+          image: kind === "container" ? sandboxImage() : "host",
           status: "running",
           repoUrl: repo_url ?? null,
           branch: branch ?? null,

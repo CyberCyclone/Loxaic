@@ -146,6 +146,10 @@ export interface SandboxRetention {
   reapAfterMs: number;
 }
 
+/** `off`: only Loxaic's own image. `shared`: also images an admin loaded.
+ * `everyone`: also each person's own. */
+export type CustomImagesPolicy = "off" | "shared" | "everyone";
+
 export interface ConfigResponse {
   /** False while the server refuses new accounts (Funnel is on). */
   signUpOpen: boolean;
@@ -156,6 +160,11 @@ export interface ConfigResponse {
     allowNetwork: boolean;
     retention: SandboxRetention;
     reason?: string;
+    /** Who may use custom images. Absent from a server that predates them. */
+    customImages?: CustomImagesPolicy;
+    /** Why custom images cannot be used on this server right now (not the
+     * container sandbox, or an engine that is not Docker), when they cannot. */
+    customImagesBlocked?: string;
   };
   /**
    * How long this deployment keeps a deleted conversation for an admin to
@@ -223,6 +232,8 @@ export interface SandboxSettings extends SandboxRetention {
   engine: SandboxEngine;
   customSocket: string | null;
   allowNetwork: boolean;
+  /** Who may run sandboxes in an image other than Loxaic's own (#253). */
+  customImages: CustomImagesPolicy;
   /** Fields pinned by an environment variable — render read-only; PATCHing
    * one returns 409. */
   envOverrides: {
@@ -232,6 +243,7 @@ export interface SandboxSettings extends SandboxRetention {
     idleStop: boolean;
     reapEnabled: boolean;
     reapAfter: boolean;
+    customImages: boolean;
   };
   available: boolean;
   reason?: string;
@@ -243,7 +255,7 @@ export interface SandboxSettings extends SandboxRetention {
 export type SandboxSettingsPatch = Partial<
   Pick<
     SandboxSettings,
-    "mode" | "engine" | "customSocket" | "allowNetwork" | "idleStopMs" | "reapEnabled" | "reapAfterMs"
+    "mode" | "engine" | "customSocket" | "allowNetwork" | "idleStopMs" | "reapEnabled" | "reapAfterMs" | "customImages"
   >
 >;
 
@@ -1489,8 +1501,8 @@ export async function getSandboxes(conversationId?: string): Promise<SandboxRow[
  * fills in everything it refuses to take on trust: GitHub's clone URL and
  * default branch, and a local machine's name. */
 export type WorkspaceRequest =
-  | import("@loxaic/types").Workspace
-  | { kind: "github"; repo: string; baseBranch?: string; branch?: string }
+  | { kind: "scratch"; image?: { id: string } }
+  | { kind: "github"; repo: string; baseBranch?: string; branch?: string; image?: { id: string } }
   | { kind: "local"; executorId: string; path: string; isolation?: import("@loxaic/types").WorkspaceIsolation };
 
 export async function createConversation(input: {
@@ -2142,6 +2154,134 @@ export async function getGithubBranches(
   repo: string,
 ): Promise<{ default_branch: string; branches: string[] }> {
   return githubFetch(`/v1/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`);
+}
+
+// ── Custom sandbox images (#253) ─────────────────────────
+/** Whose an image or login is: `personal` is the caller's own (no one else's,
+ * admins included); `shared` is the deployment's, managed by admins. */
+export type ImageScope = "shared" | "personal";
+
+export interface RegistryLogin {
+  id: string;
+  registry: string;
+  username: string;
+  updatedAt: string;
+}
+
+export interface ImageCheckResult {
+  /** What the image lacks that Loxaic needs; any entry makes it unusable. */
+  missing: string[];
+  warnings: { code: "git" | "gh" | "rg" | "ca" | "path"; message: string }[];
+}
+
+export interface ImageLimits {
+  memoryMb: number;
+  cpus: number;
+  pids: number;
+}
+
+export interface SandboxImage {
+  id: string;
+  scope: ImageScope;
+  reference: string;
+  label: string;
+  /** The latest pull. */
+  status: "pulling" | "ready" | "failed";
+  error: string | null;
+  /** Whether a sandbox can be made from it now — from its last good pull,
+   * whatever the latest one did. */
+  usable: boolean;
+  digest: string | null;
+  check: ImageCheckResult | null;
+  /** Shared images only. */
+  limits: ImageLimits | null;
+  pulledAt: string | null;
+  progress: { current: number; total: number } | null;
+}
+
+/** One image the new-chat chooser may offer, from `GET /v1/images`. */
+export interface ImageChoice {
+  id: string;
+  scope: ImageScope;
+  label: string;
+  reference: string;
+  /** GitHub workspaces need git; one without it can't be chosen for one. */
+  hasGit: boolean;
+}
+
+export class ImageApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function imageFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await getAuthToken();
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${String(token)}`);
+  if (init?.body) headers.set("Content-Type", "application/json");
+  const res = await serverFetch(`${BASE_URL}${path}`, { ...init, headers });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new ImageApiError(body.error ?? `${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`, res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
+function imagesBase(scope: ImageScope): string {
+  return scope === "shared" ? "/v1/admin/images" : "/v1/images/mine";
+}
+
+/** The images the caller may choose when starting an agent conversation. */
+export async function getImageChoices(): Promise<ImageChoice[]> {
+  return (await imageFetch<{ images: ImageChoice[] }>("/v1/images")).images;
+}
+
+export async function getRegistryLogins(scope: ImageScope): Promise<RegistryLogin[]> {
+  return (await imageFetch<{ logins: RegistryLogin[] }>(`${imagesBase(scope)}/logins`)).logins;
+}
+
+/** Adds a login, or replaces this scope's login for the same registry. */
+export async function putRegistryLogin(
+  scope: ImageScope,
+  input: { registry: string; username: string; password: string },
+): Promise<RegistryLogin> {
+  return imageFetch(`${imagesBase(scope)}/logins`, { method: "PUT", body: JSON.stringify(input) });
+}
+
+export async function deleteRegistryLogin(scope: ImageScope, id: string): Promise<{ ok: true }> {
+  return imageFetch(`${imagesBase(scope)}/logins/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function getSandboxImages(scope: ImageScope): Promise<SandboxImage[]> {
+  return (await imageFetch<{ images: SandboxImage[] }>(imagesBase(scope))).images;
+}
+
+/** Adds an image and starts pulling it; poll the list for the outcome. */
+export async function addSandboxImage(
+  scope: ImageScope,
+  input: { reference: string; label?: string; limits?: Partial<ImageLimits> },
+): Promise<SandboxImage> {
+  return imageFetch(imagesBase(scope), { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function updateSandboxImage(
+  scope: ImageScope,
+  id: string,
+  input: { label?: string; limits?: Partial<ImageLimits> },
+): Promise<SandboxImage> {
+  return imageFetch(`${imagesBase(scope)}/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+/** Pulls the image again: a newer build of its tag, or after a failure. */
+export async function pullSandboxImage(scope: ImageScope, id: string): Promise<SandboxImage> {
+  return imageFetch(`${imagesBase(scope)}/${encodeURIComponent(id)}/pull`, { method: "POST" });
+}
+
+export async function deleteSandboxImage(scope: ImageScope, id: string): Promise<{ ok: true }> {
+  return imageFetch(`${imagesBase(scope)}/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 // ── Local executors (the user's own machines, via the desktop app) ────

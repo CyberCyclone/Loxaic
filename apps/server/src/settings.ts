@@ -25,6 +25,14 @@ import { __resetLocalModelsSettingsForTest, loadLocalModelsSettings } from "./ll
  * the rest pin a specific one. */
 export type SandboxEngine = "auto" | "docker" | "podman" | "custom";
 
+/**
+ * Who may run agent sandboxes in an image other than Loxaic's own (#253).
+ * "off" (the default): nobody. "shared": images an admin loads, for everyone.
+ * "everyone": those, plus each person's own. Checked when a container is
+ * created, never when a paused one resumes — see apps/server/src/images/.
+ */
+export type CustomImagesPolicy = "off" | "shared" | "everyone";
+
 export interface SandboxSettings {
   mode: SandboxMode;
   engine: SandboxEngine;
@@ -54,6 +62,7 @@ export interface SandboxSettings {
   reapEnabled: boolean;
   /** How long a sandbox may go unused before {@link reapEnabled} destroys it. */
   reapAfterMs: number;
+  customImages: CustomImagesPolicy;
 }
 
 export interface SandboxSettingsView extends SandboxSettings {
@@ -66,6 +75,7 @@ export interface SandboxSettingsView extends SandboxSettings {
     idleStop: boolean;
     reapEnabled: boolean;
     reapAfter: boolean;
+    customImages: boolean;
   };
 }
 
@@ -77,6 +87,7 @@ export type SandboxSettingsPatch = Partial<{
   idleStopMs: number;
   reapEnabled: boolean;
   reapAfterMs: number;
+  customImages: CustomImagesPolicy;
 }>;
 
 /**
@@ -166,6 +177,7 @@ const DEFAULTS: SandboxSettings = {
   idleStopMs: 4 * HOUR_MS,
   reapEnabled: true,
   reapAfterMs: 30 * DAY_MS,
+  customImages: "off",
 };
 
 export class SettingsError extends Error {
@@ -301,6 +313,18 @@ function envPositiveInt(name: string): number | null {
   return value;
 }
 
+function isCustomImagesPolicy(value: unknown): value is CustomImagesPolicy {
+  return value === "off" || value === "shared" || value === "everyone";
+}
+
+function envCustomImages(): CustomImagesPolicy | null {
+  const value = envStr("SANDBOX_CUSTOM_IMAGES");
+  if (value === undefined) return null;
+  if (isCustomImagesPolicy(value)) return value;
+  warnOnce("SANDBOX_CUSTOM_IMAGES", `[settings] ignoring SANDBOX_CUSTOM_IMAGES="${value}" (expected off|shared|everyone)`);
+  return null;
+}
+
 function envReapEnabled(): boolean | null {
   const value = envStr("SANDBOX_REAP_ENABLED")?.toLowerCase();
   if (value === undefined) return null;
@@ -330,6 +354,7 @@ export function getSandboxSettings(): SandboxSettingsView {
   const idleStopMs = envPositiveInt("SANDBOX_IDLE_STOP_MS");
   const reapEnabled = envReapEnabled();
   const reapAfterMs = envPositiveInt("SANDBOX_REAP_AFTER_MS");
+  const customImages = envCustomImages();
 
   // Fail *closed* when the settings row couldn't be read: falling through to
   // DEFAULTS.mode ("container") would silently restart agent execution that
@@ -348,6 +373,9 @@ export function getSandboxSettings(): SandboxSettingsView {
     idleStopMs: idleStopMs ?? persisted.idleStopMs ?? DEFAULTS.idleStopMs,
     reapEnabled: reapEnabled ?? persisted.reapEnabled ?? DEFAULTS.reapEnabled,
     reapAfterMs: reapAfterMs ?? persisted.reapAfterMs ?? DEFAULTS.reapAfterMs,
+    // A failed read resolves to off, like the mode: an unreadable row must
+    // not hand out what an admin may have withdrawn.
+    customImages: customImages ?? (loadFailed ? "off" : (persisted.customImages ?? DEFAULTS.customImages)),
     envOverrides: {
       mode: mode !== null,
       socket: socket !== null,
@@ -355,6 +383,7 @@ export function getSandboxSettings(): SandboxSettingsView {
       idleStop: idleStopMs !== null,
       reapEnabled: reapEnabled !== null,
       reapAfter: reapAfterMs !== null,
+      customImages: customImages !== null,
     },
   };
 }
@@ -672,6 +701,7 @@ function coerce(raw: unknown): Partial<SandboxSettings> {
   if (typeof value.reapAfterMs === "number" && Number.isFinite(value.reapAfterMs) && value.reapAfterMs > 0) {
     out.reapAfterMs = value.reapAfterMs;
   }
+  if (isCustomImagesPolicy(value.customImages)) out.customImages = value.customImages;
   return out;
 }
 
@@ -866,6 +896,16 @@ function validate(input: unknown): SandboxSettingsPatch {
       throw new SettingsError("reapEnabled is pinned by the SANDBOX_REAP_ENABLED environment variable", "envOverride");
     }
     patch.reapEnabled = raw.reapEnabled;
+  }
+
+  if (raw.customImages !== undefined) {
+    if (!isCustomImagesPolicy(raw.customImages)) {
+      throw new SettingsError("customImages must be one of off, shared, everyone", "invalid");
+    }
+    if (env.customImages) {
+      throw new SettingsError("customImages is pinned by the SANDBOX_CUSTOM_IMAGES environment variable", "envOverride");
+    }
+    patch.customImages = raw.customImages;
   }
 
   if (raw.reapAfterMs !== undefined) {

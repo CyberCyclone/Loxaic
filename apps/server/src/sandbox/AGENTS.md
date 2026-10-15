@@ -8,6 +8,7 @@ Sandbox providers behind `provider.ts`'s `SandboxHandle`/`SandboxProvider`: cont
 - Never let a caller choose the provider kind per request; derive it from `getSandboxMode()`.
 - Choose `executor-provider.ts` (`kind: "executor"`) only from the conversation's `local` workspace in `getConversationSandbox`, never from `SANDBOX_MODE`, a setting or a request field. Keep `"executor"` out of `SandboxMode`, so `POST /v1/sandboxes` cannot mint one and `invalidatedKinds()` never returns it.
 - Write large payloads with `writeFileBinary`; the container `writeFile` passes data as an argv element and hits `ARG_MAX`.
+- A custom image (`CreateSandboxConfig.image`, #253) is a row's pinned digest resolved by `sandbox-manager.ts`; never let a request name an image. See `src/images/AGENTS.md`.
 
 ## Isolation
 

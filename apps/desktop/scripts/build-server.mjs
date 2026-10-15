@@ -134,7 +134,10 @@ cpSync(path.join(repoRoot, "infra/docker"), path.join(outDir, "sandbox"), {
 // node-forge builds the GitHub egress proxy's certificates: without it the
 // proxy cannot start, and sandboxes have no GitHub. yaml parses every skill's
 // frontmatter, the built-ins included: without it no skill loads at all.
-for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "node_modules/node-forge", "node_modules/yaml", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
+// tar-stream writes a custom image's home into its container before start
+// (sandbox/container-engine.ts, which the executor bundles too): without it
+// neither process loads.
+for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "node_modules/node-forge", "node_modules/yaml", "node_modules/tar-stream", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
   if (!existsSync(path.join(outDir, required))) {
     throw new Error(`[build-server] missing ${required} in ${outDir}`);
   }
