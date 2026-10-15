@@ -15,7 +15,7 @@ import { platform, scrollTo, tap, waitForAbsent, waitForFreshText, waitForTextIn
 import {
   BASH_PROMPT,
   MOCK_BASH_OUTPUT,
-  SLOW_PROMPT,
+  MOCK_TOOL_DONE,
   closeInspector,
   execInSandbox,
   goToSurface,
@@ -44,11 +44,17 @@ async function api(creds: Pick<Credentials, 'email' | 'password'>, method: strin
   return text ? JSON.parse(text) : null;
 }
 
-async function runBash(): Promise<void> {
-  await sendMessage(BASH_PROMPT);
-  await waitForVisible('agent.permission.bar', 120_000);
-  await tap('agent.permission.allow');
-  await waitForToolResult(MOCK_BASH_OUTPUT);
+const native = () => platform() === 'ios' || platform() === 'android';
+
+/** The conversation's stored messages, as text: what it holds whatever is
+ * on screen (XCUITest cannot see a line scrolled above the fold). */
+async function storedHistory(creds: Credentials, id: string): Promise<{ ids: string[]; text: string }> {
+  const page = (await api(creds, 'GET', `/v1/conversations/${id}/messages`)) as { messages: { id: string }[] };
+  return { ids: page.messages.map((m) => m.id), text: JSON.stringify(page.messages) };
+}
+
+function occurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
 }
 
 describe("changing a conversation's image (#253)", function () {
@@ -56,6 +62,7 @@ describe("changing a conversation's image (#253)", function () {
   let user: Credentials;
   let sharedId = '';
   let conversationId = '';
+  let historyBefore: string[] = [];
 
   before(async () => {
     const registry = mockRegistry();
@@ -87,24 +94,30 @@ describe("changing a conversation's image (#253)", function () {
   it("refuses while a run is going, and offers it once the run ends", async () => {
     await goToSurface('agent');
     await startNewAgentRun();
+    // A run waiting on a permission prompt is still a run, and holds there
+    // for as long as the check below needs, on every platform.
     await sendMessage(BASH_PROMPT);
     await waitForVisible('agent.permission.bar', 120_000);
-    await tap('agent.permission.allow');
-    await waitForToolResult(MOCK_BASH_OUTPUT);
     conversationId = (await listConversations(user)).find((c) => c.kind === 'agent')?.id ?? '';
     expect(conversationId).not.toBe('');
 
-    // A slow reply holds the run open long enough to look.
-    await sendMessage(SLOW_PROMPT);
     await openInspector();
     await scrollTo('agent.inspector.workspace.changeImage');
     await waitForFreshText('agent.inspector.workspace.changeImage.reason', 'Stop the run first');
     await shot('image-switch-refused-while-running');
     // And the server refuses too, whatever a client sends.
     await expect(api(user, 'POST', `/v1/conversations/${conversationId}/image`, { image: { id: sharedId } })).rejects.toThrow(/409/);
+    await closeInspector();
 
+    await tap('agent.permission.allow');
     await waitForRunDone(user, conversationId);
+    if (!native()) await waitForToolResult(MOCK_BASH_OUTPUT);
+    // A side panel on web and Electron stays open (closeInspector leaves it);
+    // pressing its toggle again would close it.
+    if (native()) await openInspector();
+    await scrollTo('agent.inspector.workspace.changeImage');
     await waitForAbsent('agent.inspector.workspace.changeImage.reason', 30_000);
+    historyBefore = (await storedHistory(user, conversationId)).ids;
   });
 
   it('moves the workspace into the new image, keeping its files and the history', async () => {
@@ -120,7 +133,9 @@ describe("changing a conversation's image (#253)", function () {
     await waitForFreshText('agent.inspector.workspace.image', 'Marker');
     await shot('image-switch-moved');
     await closeInspector();
-    await waitForTextIn('chat.messageList', MOCK_BASH_OUTPUT);
+    // The history is the same conversation's, untouched.
+    expect((await storedHistory(user, conversationId)).ids).toEqual(historyBefore);
+    if (!native()) await waitForTextIn('chat.messageList', MOCK_BASH_OUTPUT);
 
     const token = await apiToken(user);
     const [sandbox] = await listSandboxes(token, conversationId);
@@ -131,8 +146,13 @@ describe("changing a conversation's image (#253)", function () {
   });
 
   it('runs the next turn in the new image', async () => {
-    await runBash();
+    await sendMessage(BASH_PROMPT);
+    await waitForVisible('agent.permission.bar', 120_000);
+    await tap('agent.permission.allow');
     await waitForRunDone(user, conversationId);
+    // Its tool ran and answered, here as in the turn before the move.
+    expect(occurrences((await storedHistory(user, conversationId)).text, MOCK_TOOL_DONE)).toBe(2);
+    if (!native()) await waitForToolResult(MOCK_BASH_OUTPUT);
     const token = await apiToken(user);
     const [sandbox] = await listSandboxes(token, conversationId);
     const inside = await execInSandbox(token, sandbox.id, 'id -u && cat /opt/marker');
