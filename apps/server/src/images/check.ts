@@ -6,10 +6,11 @@
  * Probing through a real sandbox rather than a bare container tests what will
  * actually run: every exec goes through the `setsid -w bash` wrapper, so the
  * first one failing *is* the answer "this image lacks bash or util-linux's
- * setsid" — and no `/bin/sh` is assumed anywhere.
+ * setsid" — and the probe itself needs no `/bin/sh`.
  *
  * Required tools are the ones the code reaches for unconditionally: the exec
  * wrapper and its killer (setsid, seq, sleep, cat, kill, a writable /tmp),
+ * `sh` (egress/env.ts writes a GitHub workspace's CA bundle with it),
  * the file tools (base64, mkdir, dirname, cat, awk, GNU find), checkpoints
  * (cp -p, rm, wc, tr), and the project-instruction and skill reads (realpath,
  * cksum, head, tail). Missing any one breaks a tool silently mid-run, so the
@@ -30,7 +31,7 @@ export interface ProbeResult {
 const PROBE_LABEL = "loxaic.imageCheck";
 
 const REQUIRED = [
-  "tail", "cat", "mkdir", "rm", "cp", "dirname", "base64", "head", "wc", "tr",
+  "sh", "tail", "cat", "mkdir", "rm", "cp", "dirname", "base64", "head", "wc", "tr",
   "seq", "sleep", "kill", "awk", "realpath", "cksum", "find", "id",
 ];
 
@@ -55,7 +56,7 @@ export const PROBE_SCRIPT = [
   'lp=$(bash -lc \'printf %s "$PATH"\' 2>/dev/null); IFS=: read -ra dirs <<< "$PATH"; for d in "${dirs[@]}"; do case ":$lp:" in *":$d:"*) ;; *) echo "warn=path:$d";; esac; done',
 ].join("\n");
 
-const WARNINGS: Record<Exclude<ImageWarningCode, "path">, string> = {
+const WARNINGS: Record<Exclude<ImageWarningCode, "path" | "root">, string> = {
   git: "No git, so GitHub workspaces can't use this image.",
   gh: "No gh, so the agent can't open pull requests from this image.",
   rg: "No ripgrep (rg), so the agent's search and file-finding tools won't work.",
@@ -94,6 +95,15 @@ export function parseProbe(stdout: string): ProbeResult {
       message: `A login shell drops ${lostPath.join(", ")} from PATH, so the agent's commands won't find what is there.`,
     });
   }
+  // Allowed (the owner's choice), but never silently: a non-root user is the
+  // built-in image's biggest control, and with it gone only the dropped
+  // capabilities and no-new-privileges remain between the model and the box.
+  if (uid === 0) {
+    warnings.push({
+      code: "root",
+      message: "Runs as root. Every capability is still dropped, but the agent's commands run as root inside the container.",
+    });
+  }
   if (uid === null || gid === null) {
     if (!missing.includes("id")) missing.push("id");
   }
@@ -120,7 +130,16 @@ export async function probeImage(docker: Docker, ref: string, owner: string): Pr
     labels: { [PROBE_LABEL]: "1" },
   });
   try {
-    const first = await handle.exec(["true"], { workdir: "/", timeoutMs: 30_000 });
+    // The sandbox's main process is `tail`; without it the container exits
+    // as soon as it starts (under tini, so the start itself succeeds), and
+    // every exec is refused as "not running". Said as what it is.
+    const first = await handle.exec(["true"], { workdir: "/", timeoutMs: 30_000 }).catch(async (err: unknown) => {
+      if (!(await handle.isRunning())) return null;
+      throw err;
+    });
+    if (first === null) {
+      return { check: { missing: ["tail (the container stops as soon as it starts)"], warnings: [] }, uid: null, gid: null };
+    }
     if (first.exitCode !== 0) {
       return { check: { missing: ["bash and setsid -w (util-linux)"], warnings: [] }, uid: null, gid: null };
     }

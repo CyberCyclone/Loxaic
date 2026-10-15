@@ -136,6 +136,28 @@ describe("a person's own images and logins", () => {
     expect(mine[0].error).toMatch(/was not found on ghcr.io/);
   });
 
+  it("refuses a login with no registry rather than storing it as Docker Hub's", async () => {
+    for (const registry of [undefined, "", "   "]) {
+      const res = await call(alice, "PUT", "/v1/images/mine/logins", { registry, username: "alice", password: "ghp-not-for-hub" });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/registry is required/);
+    }
+    expect((await call(alice, "GET", "/v1/images/mine/logins")).body.logins).toEqual([]);
+  });
+
+  it("answers 404, not 500, for a login id that is not a uuid", async () => {
+    expect((await call(alice, "DELETE", `/v1/images/mine/logins/${"-".repeat(36)}`)).status).toBe(404);
+    expect((await call(alice, "DELETE", `/v1/images/mine/logins/${"a".repeat(36)}`)).status).toBe(404);
+  });
+
+  it("caps how many images, and pulls at once, one person can ask for", async () => {
+    const { MAX_PERSONAL_IMAGES } = await import("../../images/store.ts");
+    for (let i = 0; i < MAX_PERSONAL_IMAGES; i++) await readyImage(bob, `Cap${String(i)}`);
+    const res = await call(bob, "POST", "/v1/images/mine", { reference: "ubuntu" });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/at most/);
+  });
+
   it("never return a login's password, in any response", async () => {
     const saved = await call(alice, "PUT", "/v1/images/mine/logins", { registry: "https://index.docker.io/v1/", username: "alice", password: "never-shown-pw" });
     expect(saved.body).toMatchObject({ registry: "docker.io", username: "alice" });

@@ -25,7 +25,7 @@ export interface ImageCheck {
 }
 
 /** `git`: GitHub workspaces refuse the image. The rest are said, not acted on. */
-export type ImageWarningCode = "git" | "gh" | "rg" | "ca" | "path";
+export type ImageWarningCode = "git" | "gh" | "rg" | "ca" | "path" | "root";
 
 export interface ImageRowLike {
   ownerId: string | null;

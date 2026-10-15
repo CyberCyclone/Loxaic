@@ -51,7 +51,19 @@ export function chooseDigest(repository: string, statusLines: string[], repoDige
     const match = /^Digest: (sha256:[a-f0-9]{64})$/.exec(line.trim());
     if (match) return `${repository}@${match[1]}`;
   }
-  const ours = repoDigests.filter((d) => d.startsWith(`${repository}@sha256:`));
+  // Docker records a Hub image's digest unqualified (`ubuntu@sha256:…`, not
+  // `docker.io/library/ubuntu@sha256:…`), so the Hub's short forms count too.
+  // What is returned is always the qualified name, as stored everywhere else.
+  const names = new Set([repository]);
+  if (repository.startsWith("docker.io/")) {
+    const short = repository.slice("docker.io/".length);
+    names.add(short);
+    if (short.startsWith("library/")) names.add(short.slice("library/".length));
+  }
+  const ours = repoDigests.flatMap((d) => {
+    const at = d.indexOf("@sha256:");
+    return at !== -1 && names.has(d.slice(0, at)) ? [`${repository}${d.slice(at)}`] : [];
+  });
   return ours.length === 1 ? ours[0] : null;
 }
 
@@ -63,7 +75,9 @@ export function chooseDigest(repository: string, statusLines: string[], repoDige
 export function describePullFailure(raw: string, reference: string, registry: string, secret: string | null): string {
   const text = redactSecrets(raw, [secret]);
   const lower = text.toLowerCase();
-  if (/unauthorized|authentication required|no basic auth credentials|denied|401|403|incorrect username or password/.test(lower)) {
+  // Status codes as whole tokens: a digest or port quoted in the message can
+  // contain "401" or "403" and must not turn "not found" into "refused".
+  if (/unauthorized|authentication required|no basic auth credentials|denied|\b(401|403)\b|incorrect username or password/.test(lower)) {
     return `${registry} refused to let this login pull ${reference}. Check the registry login, or add one if the image is private.`;
   }
   if (lower.includes("no matching manifest")) {
@@ -99,6 +113,9 @@ export async function pullImage(
       else resolve(statuses);
     };
     const arm = () => {
+      // Events already queued can arrive after the stall timer settled the
+      // pull; re-arming then would leave a timer nothing ever clears.
+      if (settled) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         (stream as unknown as { destroy?: () => void }).destroy?.();

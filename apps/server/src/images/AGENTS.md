@@ -9,7 +9,9 @@ Custom sandbox images (#253): registry logins (`logins.ts`), image rows and thei
 - Pull a personal row with its owner's logins only and a shared row with the deployment's (null-owner) logins only. `logins.ts`'s `authFor` is the only decrypt site, and it takes exactly one owner.
 - A conversation's image is checked against its *owner* (`useRefusal`), never the sender; re-check at sandbox creation, since the row, the policy and the sandbox mode can all change after the workspace was made.
 - Personal routes have no admin bypass; an admin's own images are as private as anyone's.
-- Never `rmi` when a row is deleted: the content may back another row.
+- Never `rmi` when a row is deleted: the content may back another row. So keep the caps at the front door (`MAX_PERSONAL_IMAGES`, `MAX_PULLS_PER_OWNER`); deleting rows frees no disk.
+- Read anything decided about an image (labels, its config) from the pinned digest, never the tag: the tag is shared with every row that names it and another pull can move it.
+- Never default a login's registry: an empty one read as Docker Hub sends another registry's secret there.
 - Custom images are Docker only (`customImagesBlocked`): Podman's compat API may fall back to the host user's own registry login when a pull sends none. Never run `docker login` on a machine whose engine serves sandboxes, tests included.
 
 ## Running a stranger's image

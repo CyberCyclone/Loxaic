@@ -2171,7 +2171,7 @@ export interface RegistryLogin {
 export interface ImageCheckResult {
   /** What the image lacks that Loxaic needs; any entry makes it unusable. */
   missing: string[];
-  warnings: { code: "git" | "gh" | "rg" | "ca" | "path"; message: string }[];
+  warnings: { code: "git" | "gh" | "rg" | "ca" | "path" | "root"; message: string }[];
 }
 
 export interface ImageLimits {

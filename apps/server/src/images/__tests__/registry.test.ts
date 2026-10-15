@@ -50,6 +50,7 @@ const conversationIds: string[] = [];
 const savedEnv = process.env.SANDBOX_CUSTOM_IMAGES;
 let registry: Docker.Container | null = null;
 let reference = "";
+let noTailReference = "";
 let host = "";
 
 async function follow(stream: NodeJS.ReadableStream): Promise<void> {
@@ -132,6 +133,12 @@ async function buildAndPush(): Promise<void> {
     authconfig: { username: USERNAME, password: PASSWORD, serveraddress: host },
   });
   await follow(pushed);
+  // One whose container cannot even start: the sandbox runs `tail`.
+  noTailReference = `${host}/loxaic-test/notail:${randomUUID().slice(0, 8)}`;
+  await follow(await docker.buildImage(tarOf({ Dockerfile: "FROM debian:bookworm-slim\nRUN rm -f /usr/bin/tail\n" }), { t: noTailReference }));
+  await follow(await docker.getImage(noTailReference).push({
+    authconfig: { username: USERNAME, password: PASSWORD, serveraddress: host },
+  }));
 }
 
 async function makeUser(id: string, role: string | null = null): Promise<void> {
@@ -179,7 +186,10 @@ afterAll(async () => {
   await registry?.remove({ force: true, v: true }).catch(() => undefined);
   for (const id of conversationIds) await destroyConversationSandboxes(id).catch(() => undefined);
   if (host) {
-    const leftovers = await docker.listImages({ filters: { reference: [`${host}/loxaic-test/marker`] } }).catch(() => []);
+    const leftovers = [
+      ...(await docker.listImages({ filters: { reference: [`${host}/loxaic-test/marker`] } }).catch(() => [])),
+      ...(await docker.listImages({ filters: { reference: [`${host}/loxaic-test/notail`] } }).catch(() => [])),
+    ];
     for (const image of leftovers) await docker.getImage(image.Id).remove({ force: true }).catch(() => undefined);
   }
   await db.delete(sandboxes).where(inArray(sandboxes.ownerId, [alice, bob]));
@@ -216,6 +226,16 @@ describe.skipIf(!dockerReady)("custom images against a real registry", () => {
     expect(row.error).toMatch(/refused/);
     expect(row.error).not.toContain(PASSWORD);
     expect(useRefusal(row, "everyone", bob, { github: false })).toMatch(/not been pulled/);
+  }, 300_000);
+
+  it("refuses an image whose container cannot start, and leaves no container behind", async () => {
+    const before = await docker.listContainers({ all: true, filters: { label: [`loxaic.user=${alice}`] } });
+    const view = await addImage(alice, { reference: noTailReference }, alice);
+    const row = await pulled(view);
+    expect(row.status).toBe("failed");
+    expect(row.error).toMatch(/tail/);
+    const after = await docker.listContainers({ all: true, filters: { label: [`loxaic.user=${alice}`] } });
+    expect(after.map((c) => c.Id).sort()).toEqual(before.map((c) => c.Id).sort());
   }, 300_000);
 
   it("never lets someone else's conversation run in a personal image", async () => {
