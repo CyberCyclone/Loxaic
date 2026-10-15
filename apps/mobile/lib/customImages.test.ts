@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ImageChoice, SandboxImage } from '@loxaic/api-client';
-import { effectiveImageChoice, imageOptions, imageScreens, imageStatusLine, parseLimitsInput } from './customImages';
+import { chooserImages, effectiveImageChoice, imageOptions, imageScreens, imageStatusLine, parseLimitsInput } from './customImages';
 
 const choice = (id: string, extra: Partial<ImageChoice> = {}): ImageChoice => ({
   id, scope: 'shared', label: id, reference: `docker.io/library/${id}:1`, hasGit: true, ...extra,
@@ -58,5 +58,33 @@ describe('parseLimitsInput', () => {
     expect(parseLimitsInput({ memoryMb: '100', cpus: '1', pids: '100' }).ok).toBe(false);
     expect(parseLimitsInput({ memoryMb: '512', cpus: '0.1', pids: '100' }).ok).toBe(false);
     expect(parseLimitsInput({ memoryMb: '512', cpus: '1', pids: '1.5' }).ok).toBe(false);
+  });
+});
+
+describe('chooserImages', () => {
+  const current = { id: 'mine', label: 'Mine' };
+
+  it('holds Confirm while the list loads, keeping the image already chosen', () => {
+    const state = chooserImages({ choices: null, failed: false, current, chosen: 'mine', source: 'scratch' });
+    expect(state.ready).toBe(false);
+    expect(state.chosenId).toBe('mine');
+  });
+
+  it("keeps the image already chosen when the list can't be loaded, rather than swapping it out", () => {
+    const state = chooserImages({ choices: null, failed: true, current, chosen: 'mine', source: 'scratch' });
+    expect(state.ready).toBe(true);
+    expect(state.chosenId).toBe('mine');
+    expect(state.options.map((o) => o.id)).toEqual([null, 'mine']);
+  });
+
+  it("offers Loxaic's own alone when nothing was chosen and the list failed", () => {
+    const state = chooserImages({ choices: null, failed: true, current: null, chosen: null, source: 'scratch' });
+    expect(state).toMatchObject({ ready: true, chosenId: null });
+    expect(state.options.map((o) => o.id)).toEqual([null]);
+  });
+
+  it('decides from the loaded list once it arrives', () => {
+    const loaded = chooserImages({ choices: [choice('b', { hasGit: false })], failed: false, current, chosen: 'b', source: 'github' });
+    expect(loaded).toMatchObject({ ready: true, chosenId: null });
   });
 });

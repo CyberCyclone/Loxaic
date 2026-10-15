@@ -33,7 +33,7 @@ import {
   type GithubRepo,
   type ImageChoice,
 } from '@loxaic/api-client';
-import { effectiveImageChoice, imageOptions } from '@/lib/customImages';
+import { chooserImages } from '@/lib/customImages';
 import type { WorkspaceChoice } from '@/lib/types';
 import { describeRetention } from '@/lib/retention';
 import { useLocalExecutor } from '@/hooks/useLocalExecutor';
@@ -101,7 +101,9 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
   // Custom images (#253): what this person may choose, and which one is.
-  const [imageChoices, setImageChoices] = useState<ImageChoice[]>([]);
+  // Null while loading; see chooserImages for what each state offers.
+  const [imageChoices, setImageChoices] = useState<ImageChoice[] | null>(null);
+  const [imageChoicesFailed, setImageChoicesFailed] = useState(false);
   const [imageId, setImageId] = useState<string | null>(value.kind !== 'local' ? (value.image?.id ?? null) : null);
 
   const allowNetwork = config?.sandbox.allowNetwork ?? false;
@@ -143,15 +145,6 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     setWhere(value.kind === 'local' ? 'local' : 'remote');
     setSource(value.kind === 'github' ? 'github' : 'scratch');
     setImageId(value.kind !== 'local' ? (value.image?.id ?? null) : null);
-    // Only asked when the server may offer any. A failure offers Loxaic's
-    // own image alone, which is always a valid choice.
-    if (config?.sandbox.customImages && config.sandbox.customImages !== 'off' && !config.sandbox.customImagesBlocked) {
-      getImageChoices()
-        .then(setImageChoices)
-        .catch(() => { setImageChoices([]); });
-    } else {
-      setImageChoices([]);
-    }
     getCluster()
       .then((c) => { setHostName(c?.hosts.find((h) => h.self)?.name ?? null); })
       .catch(() => { setHostName(null); });
@@ -163,6 +156,26 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     void loadExecutors();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, token]);
+
+  // The images on offer: asked when the dialog opens, and again when the
+  // server's config lands, which on a cold start can be after it opened.
+  // Only asked when the server may offer any.
+  const imagePolicy = config?.sandbox.customImages;
+  const imagesBlocked = config?.sandbox.customImagesBlocked;
+  useEffect(() => {
+    if (!open || !token) return;
+    setImageChoicesFailed(false);
+    if (!imagePolicy || imagePolicy === 'off' || imagesBlocked) {
+      setImageChoices([]);
+      return;
+    }
+    setImageChoices(null);
+    let current = true;
+    getImageChoices()
+      .then((list) => { if (current) setImageChoices(list); })
+      .catch(() => { if (current) setImageChoicesFailed(true); });
+    return () => { current = false; };
+  }, [open, token, imagePolicy, imagesBlocked]);
 
   // The executor coming online while the dialog is open is exactly the
   // moment the list should refresh — it is what the user is waiting for.
@@ -281,14 +294,23 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     }
   };
 
-  const options = imageOptions(imageChoices, source);
-  const chosenImage = effectiveImageChoice(imageId, options);
+  const chosenBefore = value.kind !== 'local' && value.image ? value.image : null;
+  const images = chooserImages({
+    choices: imageChoices,
+    failed: imageChoicesFailed,
+    current: chosenBefore,
+    chosen: imageId,
+    source,
+  });
+  const options = images.options;
+  const chosenImage = images.chosenId;
   const imageLabel = options.find((o) => o.id === chosenImage)?.label ?? '';
+  const showImages = options.length > 1 || imageChoices === null;
 
   const canConfirm =
     where === 'local'
       ? selectedExecutor !== null && localPath !== null
-      : source === 'scratch' || (repo !== null && baseBranch !== '' && branchName.trim() !== '');
+      : images.ready && (source === 'scratch' || (repo !== null && baseBranch !== '' && branchName.trim() !== ''));
 
   const confirm = () => {
     if (where === 'local') {
@@ -587,11 +609,16 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
               </VStack>
             )}
 
-            {where === 'remote' && imageChoices.length > 0 && (
+            {where === 'remote' && showImages && (
               <VStack space="xs">
                 <Text size="xs" className="text-muted-foreground">
                   Image
                 </Text>
+                {imageChoices === null && (
+                  <Text testID="agent.workspace.image.loading" size="xs" className="text-muted-foreground">
+                    Checking which images you can use…
+                  </Text>
+                )}
                 {options.map((o) => (
                   <OptionRow
                     key={o.id ?? 'builtin'}
