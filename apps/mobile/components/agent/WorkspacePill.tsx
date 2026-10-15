@@ -37,6 +37,8 @@ export function WorkspacePill({ workspace, editable, unavailable = false, onPres
       : ws.kind === 'local'
         ? `${ws.executorName} · ${folderName(ws.path)}`
         : 'Empty workspace';
+  // A custom image (#253) is part of what the run works in.
+  const imageLabel = ws.kind !== 'local' && ws.image ? ` · ${ws.image.label}` : '';
   const icon = ws.kind === 'github' ? FolderGit2 : ws.kind === 'local' ? Laptop : FolderOpen;
   return (
     // `shrink` and `min-w-0` are load-bearing, not tidiness: React Native
@@ -60,7 +62,7 @@ export function WorkspacePill({ workspace, editable, unavailable = false, onPres
             Text's web base class sets `whitespace-pre-wrap`. See
             lib/truncate.ts. */}
         <Text size="xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
-          {label}
+          {label}{imageLabel}
         </Text>
         {editable && <Icon as={ChevronDown} size="xs" className="text-muted-foreground" />}
       </HStack>

@@ -232,8 +232,9 @@ export interface SandboxSettings extends SandboxRetention {
   engine: SandboxEngine;
   customSocket: string | null;
   allowNetwork: boolean;
-  /** Who may run sandboxes in an image other than Loxaic's own (#253). */
-  customImages: CustomImagesPolicy;
+  /** Who may run sandboxes in an image other than Loxaic's own (#253).
+   * Absent from a server that predates them. */
+  customImages?: CustomImagesPolicy;
   /** Fields pinned by an environment variable — render read-only; PATCHing
    * one returns 409. */
   envOverrides: {
@@ -243,10 +244,12 @@ export interface SandboxSettings extends SandboxRetention {
     idleStop: boolean;
     reapEnabled: boolean;
     reapAfter: boolean;
-    customImages: boolean;
+    customImages?: boolean;
   };
   available: boolean;
   reason?: string;
+  /** Why custom images cannot run on this server right now, when they cannot. */
+  customImagesBlocked?: string;
   /** Which engines are installed/running, for greying out the picker. Empty
    * outside container mode. */
   engines: EngineProbe[];

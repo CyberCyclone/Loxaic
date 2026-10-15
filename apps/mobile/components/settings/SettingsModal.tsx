@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { BookOpen, Boxes, ChevronRight, GitBranch, HardDrive, Hourglass, Plug, Server, ShieldCheck, UserRound } from 'lucide-react-native';
+import { BookOpen, Boxes, ChevronRight, Container, GitBranch, HardDrive, Hourglass, Layers, Plug, Server, ShieldCheck, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -34,6 +34,8 @@ import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@
 import { useToastHelper } from '@/hooks/useToastHelper';
 import type { AgentMode, Settings, ThinkingLevel } from '@/lib/types';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { useServerConfig } from '@/hooks/useServerConfig';
+import { imageScreens } from '@/lib/customImages';
 
 const MODES: AgentMode[] = ['planning', 'manual', 'auto'];
 const THINKING: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High'];
@@ -52,6 +54,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [testingEndpoint, setTestingEndpoint] = useState(false);
   const [confirmEndpoint, setConfirmEndpoint] = useState(false);
   const [endpointError, setEndpointError] = useState<string | null>(null);
+  // Which image screens to offer follows the deployment's policy, asked
+  // again on every opening: an admin may have just changed it.
+  const { config, refresh: refreshConfig } = useServerConfig();
+  const screens = imageScreens(config?.sandbox.customImages, isAdmin);
+
+  useEffect(() => {
+    if (open) void refreshConfig();
+  }, [open, refreshConfig]);
 
   useEffect(() => {
     // Every opening starts clean. There is one instance for the life of the
@@ -534,6 +544,56 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               </HStack>
               <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
             </Pressable>
+
+            {/* Shared images are loaded here by an admin, for everyone. */}
+            {screens.shared && (
+              <Pressable
+                testID="settings.nav.containerImages"
+                onPress={() => {
+                  onClose();
+                  router.push('/container-images');
+                }}
+                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+              >
+                <HStack space="sm" className="min-w-0 shrink items-center">
+                  <Icon as={Layers} size="sm" className="shrink-0 text-muted-foreground" />
+                  <VStack className="min-w-0 shrink">
+                    <Text size="sm" className="text-foreground">
+                      Container Images
+                    </Text>
+                    <Text size="2xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+                      Images everyone can run agents in
+                    </Text>
+                  </VStack>
+                </HStack>
+                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
+              </Pressable>
+            )}
+
+            {/* A person's own, admins included: nobody else sees these. */}
+            {screens.personal && (
+              <Pressable
+                testID="settings.nav.myImages"
+                onPress={() => {
+                  onClose();
+                  router.push('/my-images');
+                }}
+                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+              >
+                <HStack space="sm" className="min-w-0 shrink items-center">
+                  <Icon as={Container} size="sm" className="shrink-0 text-muted-foreground" />
+                  <VStack className="min-w-0 shrink">
+                    <Text size="sm" className="text-foreground">
+                      My Images
+                    </Text>
+                    <Text size="2xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+                      Your own images and registry logins
+                    </Text>
+                  </VStack>
+                </HStack>
+                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
+              </Pressable>
+            )}
 
             <Box className="h-px bg-border" />
 

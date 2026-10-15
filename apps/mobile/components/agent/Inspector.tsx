@@ -154,6 +154,12 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
           Empty workspace
         </Text>
       )}
+      {ws.image && (
+        <Text testID="agent.inspector.workspace.image" size="xs" className="text-muted-foreground">
+          Image: {ws.image.label}
+          {'reference' in ws.image && typeof ws.image.reference === 'string' ? ` (${ws.image.reference})` : ''}
+        </Text>
+      )}
       {sandbox ? (
         <Text testID="agent.inspector.workspace.state" size="xs" className="text-muted-foreground">
           {paused

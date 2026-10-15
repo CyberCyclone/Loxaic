@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Check, Server, Laptop, Monitor, FolderGit2, FolderOpen, FolderPlus, ShieldOff, Container, X } from 'lucide-react-native';
+import { Check, Server, Laptop, Monitor, FolderGit2, FolderOpen, FolderPlus, ShieldOff, Container, Layers, X } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -26,11 +26,14 @@ import {
   getGithubBranches,
   getGithubConnection,
   getGithubRepos,
+  getImageChoices,
   isUnreachableError,
   type ConfigResponse,
   type ExecutorView,
   type GithubRepo,
+  type ImageChoice,
 } from '@loxaic/api-client';
+import { effectiveImageChoice, imageOptions } from '@/lib/customImages';
 import type { WorkspaceChoice } from '@/lib/types';
 import { describeRetention } from '@/lib/retention';
 import { useLocalExecutor } from '@/hooks/useLocalExecutor';
@@ -97,6 +100,9 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
   const [isolation, setIsolation] = useState<'direct' | 'container'>(value.kind === 'local' ? value.isolation : 'direct');
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
+  // Custom images (#253): what this person may choose, and which one is.
+  const [imageChoices, setImageChoices] = useState<ImageChoice[]>([]);
+  const [imageId, setImageId] = useState<string | null>(value.kind !== 'local' ? (value.image?.id ?? null) : null);
 
   const allowNetwork = config?.sandbox.allowNetwork ?? false;
   const sandboxAvailable = config?.sandbox.available ?? false;
@@ -136,6 +142,16 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     setBranchName('');
     setWhere(value.kind === 'local' ? 'local' : 'remote');
     setSource(value.kind === 'github' ? 'github' : 'scratch');
+    setImageId(value.kind !== 'local' ? (value.image?.id ?? null) : null);
+    // Only asked when the server may offer any. A failure offers Loxaic's
+    // own image alone, which is always a valid choice.
+    if (config?.sandbox.customImages && config.sandbox.customImages !== 'off' && !config.sandbox.customImagesBlocked) {
+      getImageChoices()
+        .then(setImageChoices)
+        .catch(() => { setImageChoices([]); });
+    } else {
+      setImageChoices([]);
+    }
     getCluster()
       .then((c) => { setHostName(c?.hosts.find((h) => h.self)?.name ?? null); })
       .catch(() => { setHostName(null); });
@@ -265,6 +281,10 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     }
   };
 
+  const options = imageOptions(imageChoices, source);
+  const chosenImage = effectiveImageChoice(imageId, options);
+  const imageLabel = options.find((o) => o.id === chosenImage)?.label ?? '';
+
   const canConfirm =
     where === 'local'
       ? selectedExecutor !== null && localPath !== null
@@ -275,10 +295,10 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
       if (selectedExecutor && localPath) {
         onChange({ kind: 'local', executorId: selectedExecutor.id, executorName: selectedExecutor.name, path: localPath, isolation });
       }
-    } else if (source === 'scratch') {
-      onChange({ kind: 'scratch' });
-    } else if (repo) {
-      onChange({ kind: 'github', repo: repo.full_name, baseBranch, branch: branchName.trim() });
+    } else {
+      const image = chosenImage ? { image: { id: chosenImage, label: imageLabel } } : {};
+      if (source === 'scratch') onChange({ kind: 'scratch', ...image });
+      else if (repo) onChange({ kind: 'github', repo: repo.full_name, baseBranch, branch: branchName.trim(), ...image });
     }
     onClose();
   };
@@ -564,6 +584,26 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
                     </Input>
                   </VStack>
                 )}
+              </VStack>
+            )}
+
+            {where === 'remote' && imageChoices.length > 0 && (
+              <VStack space="xs">
+                <Text size="xs" className="text-muted-foreground">
+                  Image
+                </Text>
+                {options.map((o) => (
+                  <OptionRow
+                    key={o.id ?? 'builtin'}
+                    testID={`agent.workspace.image.${o.id ?? 'builtin'}`}
+                    icon={Layers}
+                    title={o.label}
+                    detail={o.disabledReason ?? o.detail}
+                    selected={chosenImage === o.id}
+                    disabled={o.disabledReason !== null}
+                    onPress={() => { setImageId(o.id); }}
+                  />
+                ))}
               </VStack>
             )}
 

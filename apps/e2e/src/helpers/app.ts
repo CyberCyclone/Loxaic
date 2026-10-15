@@ -1040,6 +1040,7 @@ export async function resetSandboxSettings(): Promise<void> {
       idleStopMs: 4 * 60 * 60 * 1000,
       reapEnabled: true,
       reapAfterMs: 30 * 24 * 60 * 60 * 1000,
+      customImages: 'off',
     }),
   });
   if (!res.ok) {
