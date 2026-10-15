@@ -218,6 +218,41 @@ describe("a github workspace produces a byte-identical system prompt every turn"
   });
 });
 
+describe("changing a conversation's image re-reads it once (#253)", () => {
+  it("changes only the system message at the switch, and every request after extends the last", async () => {
+    // A move to another image is a new line in the system message, which is
+    // the trade the owner makes: one full re-read on the next request, then
+    // the cached prefix again. No sandbox exists here (the todo trigger needs
+    // none), so the move changes only the workspace.
+    const imageA = { id: "00000000-0000-4000-8000-0000000002a1", scope: "shared" as const, reference: "ghcr.io/octo/a:1", label: "Image A" };
+    const imageB = { id: "00000000-0000-4000-8000-0000000002b2", scope: "shared" as const, reference: "ghcr.io/octo/b:1", label: "Image B" };
+    const [conv] = await db
+      .insert(conversations)
+      .values({ ownerId: userId, title: "image switch prefix", kind: "agent", workspace: { kind: "scratch", image: imageA } })
+      .returning();
+    convIds.push(conv.id);
+    const { startAgentRun } = await import("../agentRun.ts");
+    const { replaceConversationSandbox } = await import("../../../agent/sandbox-manager.ts");
+    const run = async (content: string) => {
+      await startAgentRun({ userId, content, model: "llama-3.1-8b-instruct", mode: "auto", conversationId: conv.id });
+      await waitForRun(conv.id);
+    };
+    await run("make a todo list for alpha");
+    const beforeSwitch = requests.length;
+    await expect(replaceConversationSandbox(conv.id, { kind: "scratch", image: imageB })).resolves.toEqual({ moved: false });
+    await run("make a todo list for bravo");
+    await run("make a todo list for charlie");
+
+    expect(requests[0][0]).toContain("Image A");
+    const atSwitch = requests[beforeSwitch];
+    expect(atSwitch[0]).toContain("Image B");
+    // Everything after the system message is the old request's, extended.
+    const previous = requests[beforeSwitch - 1];
+    expect(atSwitch.slice(1, previous.length)).toEqual(previous.slice(1));
+    expectEachRequestExtendsTheLast(requests.slice(beforeSwitch));
+  });
+});
+
 describe("two conversations do not interleave their requests", () => {
   it("finishes one run's requests before starting the other's", async () => {
     // The prefix invariant every other case here asserts is *per conversation*

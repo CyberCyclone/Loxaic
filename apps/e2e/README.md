@@ -348,6 +348,12 @@ chooser offers anyone else's own images. The pull-progress and refusal states ar
 the GUI on web and Electron and seeded through the API on a phone. Under `E2E_SELF_CONTAINED=1`
 it fails by construction, like the admin specs.
 
+`custom-images-switch.spec.ts` moves a conversation to the shared image: refused while the run
+waits on a permission prompt (a run that holds still on every platform, unlike a slow reply),
+then the files carried across, the history unchanged, and the next turn run in the new image.
+History and tool results are checked through the API, since XCUITest cannot see text scrolled
+above the fold. A second page following the change is a web-only case.
+
 ## The mock HTTP MCP server
 
 `standup.ts` runs `apps/server/test-fixtures/mock-mcp-http-server.ts` as a process (apps/e2e has

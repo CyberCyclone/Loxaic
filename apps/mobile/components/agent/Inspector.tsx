@@ -69,6 +69,9 @@ export interface WorkspaceView {
   workspace?: Workspace | WorkspaceChoice | null;
   /** The project's AGENTS.md as the agent is shown it (useProjectInstructions). */
   instructions?: ProjectInstructionsSummary | null;
+  /** Moving the conversation to another image (#253), when offered: why it
+   * can't be used right now, or null, and what pressing it does. */
+  imageSwitch?: { disabledReason: string | null; onPress: () => void } | null;
 }
 
 /**
@@ -159,6 +162,24 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
           Image: {ws.image.label}
           {'reference' in ws.image && typeof ws.image.reference === 'string' ? ` (${ws.image.reference})` : ''}
         </Text>
+      )}
+      {workspace.imageSwitch && (
+        <VStack space="xs" className="items-start">
+          <Button
+            testID="agent.inspector.workspace.changeImage"
+            size="sm"
+            variant="outline"
+            isDisabled={workspace.imageSwitch.disabledReason !== null}
+            onPress={workspace.imageSwitch.onPress}
+          >
+            <ButtonText>Change image</ButtonText>
+          </Button>
+          {workspace.imageSwitch.disabledReason && (
+            <Text testID="agent.inspector.workspace.changeImage.reason" size="xs" className="text-muted-foreground">
+              {workspace.imageSwitch.disabledReason}
+            </Text>
+          )}
+        </VStack>
       )}
       {sandbox ? (
         <Text testID="agent.inspector.workspace.state" size="xs" className="text-muted-foreground">

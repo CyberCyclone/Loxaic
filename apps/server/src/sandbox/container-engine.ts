@@ -954,6 +954,42 @@ export function homeArchive(uid: number, gid: number): NodeJS.ReadableStream {
 }
 
 /**
+ * Copies `/home/loxaic` from one sandbox container into another, re-owned for
+ * the target image's user — what carries a workspace across a change of image
+ * (#253). Through the Engine API's archive calls, which work on a stopped
+ * container too and run nothing inside either, so a slim image on either
+ * side does not matter. The tar never touches this host's disk.
+ */
+export async function copyHome(
+  docker: Docker,
+  from: string,
+  to: string,
+  owner: { uid: number; gid: number },
+  signal?: AbortSignal,
+): Promise<void> {
+  const { rewriteOwnership } = await import("../images/archive-rewrite.ts");
+  if (signal?.aborted) throw new Error("stopped");
+  const archive = await docker.getContainer(from).getArchive({ path: CONTAINER_ROOT });
+  const source = archive as unknown as import("node:stream").Readable;
+  const onAbort = () => { source.destroy(new Error("stopped")); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  // Re-checked after the await, as every abort listener added late must be.
+  if (signal?.aborted) onAbort();
+  try {
+    const rewritten = rewriteOwnership(source, owner.uid, owner.gid);
+    // A failure on the reading side (the old container gone, a stop) destroys
+    // the stream, which the upload it is piped into never hears of: without
+    // this race the request would wait forever for the rest of the archive.
+    await Promise.race([
+      docker.getContainer(to).putArchive(rewritten, { path: "/home" }),
+      new Promise<never>((_, reject) => { rewritten.once("error", reject); }),
+    ]);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
  * IDs of every container this provider ever created (all sandboxes carry the
  * loxaic.sandbox label), **running or stopped**. Used by the boot-time orphan
  * sweep. Empty when the engine cannot answer — a sweep on a host-mode or

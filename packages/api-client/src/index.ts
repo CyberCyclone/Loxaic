@@ -2287,6 +2287,21 @@ export async function deleteSandboxImage(scope: ImageScope, id: string): Promise
   return imageFetch(`${imagesBase(scope)}/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+/**
+ * Moves an agent conversation to another image, or back to Loxaic's own
+ * (`null`), carrying its workspace's files across. Owner only, and refused
+ * (409) while anything runs on it. Resolves to the workspace as it now is.
+ */
+export async function changeConversationImage(
+  conversationId: string,
+  image: { id: string } | null,
+): Promise<{ workspace: import("@loxaic/types").Workspace | null }> {
+  return imageFetch(`/v1/conversations/${encodeURIComponent(conversationId)}/image`, {
+    method: "POST",
+    body: JSON.stringify({ image }),
+  });
+}
+
 // ── Local executors (the user's own machines, via the desktop app) ────
 /** One of the caller's machines with the desktop app open and signed in,
  * from `GET /v1/executors`. `roots` are the folders chosen on it. */

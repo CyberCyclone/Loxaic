@@ -22,6 +22,12 @@ Custom sandbox images (#253): registry logins (`logins.ts`), image rows and thei
 - Keep `check.ts`'s required list in step with what the tools run unconditionally (the exec wrapper, the file tools, checkpoints, instruction and skill reads); a missing tool breaks a run silently.
 - A failed pull leaves the last good `digest` and `check` usable; usability is "digest present and check passed", never the latest `status`.
 
+## Changing a conversation's image
+
+- `workspace.image` is the only part of a workspace that changes after creation, and only through `replaceConversationSandbox` under the conversation's claim (the route answers 409 while anything runs). Owner only.
+- Change nothing until the new container holds the copied home and has been checked: the workspace, both rows and the active entry change together after that, and a failure destroys only the new container.
+- Copy through the archive API (`copyHome`), re-owned and with setuid bits cleared (`archive-rewrite.ts`); never extract on the host, and race the upload against the stream's error, or a failed read hangs it.
+
 ## Tests
 
 - `registry.test.ts` runs against a real `registry:2` on a fixed loopback port (Docker Desktop's engine cannot reach an ephemeral published one). Keep it gated on a reachable Docker engine only, so it runs in CI.

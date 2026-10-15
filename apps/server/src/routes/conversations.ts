@@ -2,19 +2,22 @@ import type { FastifyInstance } from "fastify";
 import { eq, ne, and, isNull, desc, inArray, or, getTableColumns } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { conversationShares, conversations, usageRecords } from "@loxaic/db/schema";
-import { normalizeMcpOverrides, type ContextBreakdown } from "@loxaic/types";
+import { normalizeMcpOverrides, type ContextBreakdown, type Workspace, type WorkspaceImage } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
 import { deleteConversation } from "../conversations/delete.ts";
 import { isRewindScope, previewRewind, rewindConversation, RewindError } from "../conversations/rewind.ts";
-import { ConversationBusyError } from "../streams/registry.ts";
+import { claimConversation, ConversationBusyError, unregisterRun } from "../streams/registry.ts";
+import { announceConversationEvent } from "../streams/watchers.ts";
+import { replaceConversationSandbox } from "../agent/sandbox-manager.ts";
+import { randomUUID } from "node:crypto";
 import { NotFoundError } from "../streams/authz.ts";
 import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
 
 /** Rows per page of a thread's history — a floor, since a page grows back to
  * the start of the turn it cuts into. */
 const MESSAGE_PAGE_SIZE = 200;
-import { parseWorkspaceInput, WorkspaceError } from "../agent/workspace.ts";
+import { effectiveWorkspace, parseImageChoice, parseWorkspaceInput, WorkspaceError } from "../agent/workspace.ts";
 import { INSTRUCTIONS_SUMMARY_COLUMN, summarizeInstructions } from "../agent/instructions.ts";
 
 /**
@@ -23,6 +26,13 @@ import { INSTRUCTIONS_SUMMARY_COLUMN, summarizeInstructions } from "../agent/ins
  * over in a listing — so it leaves as a summary: which file, how big, and how
  * the model is shown it.
  */
+/** How long changing a conversation's image may take, copy included. Read at
+ * call time, so a test can shorten it. */
+function imageSwitchTimeoutMs(): number {
+  const raw = Number(process.env.IMAGE_SWITCH_TIMEOUT_MS);
+  return Number.isInteger(raw) && raw > 0 ? raw : 10 * 60 * 1000;
+}
+
 function publicConversation<T extends { instructions: unknown }>(row: T): Omit<T, "instructions"> & {
   instructions: ReturnType<typeof summarizeInstructions>;
 } {
@@ -228,6 +238,90 @@ export function conversationRoutes(app: FastifyInstance) {
       return { error: "Not found" };
     }
     return publicConversation(row);
+  });
+
+  /**
+   * Moves an agent conversation to another image (#253), or back to Loxaic's
+   * own (`image: null`). Owner only, like every sandbox route, and never while
+   * anything runs: the conversation is claimed for the whole switch, so a
+   * send arriving meanwhile is refused rather than run in a half-moved
+   * workspace. The history needs nothing; the sandbox's home directory is
+   * copied into a container from the new image (replaceConversationSandbox).
+   */
+  app.post<{ Params: { id: string } }>("/v1/conversations/:id/image", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const conversationId = request.params.id;
+    if (!(await hasRole(userId, conversationId, "owner"))) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    const row = await db.query.conversations.findFirst({
+      where: eq(conversations.id, conversationId),
+      columns: { kind: true, workspace: true },
+    });
+    if (row?.kind !== "agent") {
+      reply.code(400);
+      return { error: "Only agent conversations run in an image." };
+    }
+    const workspace = effectiveWorkspace(row.workspace);
+    if (workspace.kind === "local") {
+      reply.code(400);
+      return { error: "A folder on your own machine runs in Loxaic's own image; choosing another is not supported yet." };
+    }
+    const body: unknown = request.body ?? {};
+    const raw = (typeof body === "object" && body !== null ? body : {}) as { image?: unknown };
+    // Moving back to Loxaic's own image throws away whatever the custom one
+    // had outside the home directory, so it is asked for by name (null),
+    // never read into a body that left the key out.
+    if (!("image" in raw)) {
+      reply.code(400);
+      return { error: "Name the image to move to, or send image: null for Loxaic's own." };
+    }
+    let image: WorkspaceImage | undefined;
+    try {
+      image = raw.image === null
+        ? undefined
+        : await parseImageChoice(raw.image, userId, workspace.kind === "github");
+    } catch (err) {
+      if (err instanceof WorkspaceError) {
+        reply.code(400);
+        return { error: err.message };
+      }
+      throw err;
+    }
+    const { image: _previous, ...rest } = workspace;
+    const next: Workspace = image ? { ...rest, image } : rest;
+
+    // Held for the whole switch, like a rewind's: a stream id no stream has.
+    const claim = {
+      streamId: `image-${randomUUID()}`,
+      conversationId,
+      userId,
+      abort: new AbortController(),
+      approvals: new Map(),
+    };
+    try {
+      claimConversation(claim);
+    } catch (err) {
+      if (err instanceof ConversationBusyError) {
+        reply.code(409);
+        return { error: "Stop the run first: the image can't change while it is running.", code: err.code };
+      }
+      throw err;
+    }
+    const timer = setTimeout(() => { claim.abort.abort(); }, imageSwitchTimeoutMs());
+    try {
+      await replaceConversationSandbox(conversationId, next, claim.abort.signal);
+    } catch (err) {
+      reply.code(409);
+      return { error: `The image was not changed: ${err instanceof Error ? err.message : String(err)}` };
+    } finally {
+      clearTimeout(timer);
+      unregisterRun(claim.streamId);
+    }
+    const stored = next.kind === "scratch" && !next.image ? null : next;
+    announceConversationEvent({ type: "conversation.workspace", conversation_id: conversationId, workspace: stored });
+    return { workspace: stored };
   });
 
   /**

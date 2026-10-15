@@ -307,9 +307,11 @@ export function createDelivery(
     const unwatchEvents = watchConversationEvents(conversationId, (event) => {
       assertConversationAccess(userId, conversationId)
         .then(() => {
-          for (const streamId of event.removed_stream_ids) {
-            unsubscribeStream(streamId);
-            syncedFinished.delete(streamId);
+          if (event.type === "conversation.rewound") {
+            for (const streamId of event.removed_stream_ids) {
+              unsubscribeStream(streamId);
+              syncedFinished.delete(streamId);
+            }
           }
           send(event);
         })
