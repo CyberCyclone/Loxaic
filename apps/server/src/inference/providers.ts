@@ -2,7 +2,7 @@ import { db, eq } from "@loxaic/db";
 import { inferenceProviders } from "@loxaic/db/schema";
 import { DEFAULT_PROVIDER_ID, isProviderSlug, parseModelRef } from "@loxaic/types";
 import { decryptApiKey, encryptApiKey, ProviderKeyUnreadableError } from "./provider-secrets.ts";
-import { listServableModels } from "../llama/catalog.ts";
+import { listServableModels, rowMmproj } from "../llama/catalog.ts";
 import { checkRoom, NoRoomError } from "../llama/room.ts";
 import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
 import { getLlamaMode } from "../llama/settings.ts";
@@ -691,4 +691,42 @@ export function toApi(row: ProviderRow) {
 /** Test seam: the cache is process-global and vitest shares one process. */
 export function __resetProviderCacheForTest(): void {
   cache = null;
+}
+
+/**
+ * Whether the model a run is about to use can be shown an image (#281).
+ *
+ * Decisive only where the server actually knows: the built-in llama.cpp backend
+ * sees images when the model was loaded with an `--mmproj` projector, which is a
+ * fact on the model's row. A configured provider speaks an OpenAI- or
+ * Anthropic-compatible API whose mainstream models accept image parts and there
+ * is no capability field on a provider row, so those answer true and a backend
+ * that disagrees says so in its own error — `visionErrorMessage` already
+ * translates that into the sentence telling the person to switch models.
+ * Guessing false for everything unknown would hide screenshots from the models
+ * most likely to read them.
+ *
+ * The answer is used to write `images_sent_to_model` on a tool result **once**,
+ * at the moment the result is stored; nothing re-derives it later, which is what
+ * keeps a model switch from rewriting an older part of the prompt (the prefix
+ * rule in streams/AGENTS.md).
+ */
+export async function modelSupportsImages(ref: string): Promise<boolean> {
+  if (MOCK_MODE()) return true;
+  const { providerSlug, upstreamModel } = parseModelRef(ref);
+  if (providerSlug !== null) return true;
+  try {
+    const servable = await listServableModels();
+    // "default" names the first servable model, which may or may not be a
+    // vision one: answer for what would actually be loaded.
+    const row = upstreamModel === "default" ? servable.at(0) : servable.find((m) => m.id === upstreamModel);
+    if (!row) return false;
+    const settings = row.loadSettings as { vision?: boolean } | null;
+    if (settings && typeof settings === "object" && settings.vision === false) return false;
+    return rowMmproj(row) !== null;
+  } catch {
+    // An unreadable catalog must not spend image tokens on a model that may not
+    // read them, and must not fail the turn. Text-only is the safe answer.
+    return false;
+  }
 }
