@@ -17,8 +17,10 @@
  *   our code (see `network.ts`);
  * - **a tmpfs profile**, so cookies, cache, history, service workers and
  *   localStorage die with the container and cannot be written to disk at all;
- * - **no bind mounts and no published port**, so there is nothing on the host
- *   to leak and nothing outside the network to connect to.
+ * - **no bind mounts**, so there is nothing on the host for a page exploit to
+ *   reach; and
+ * - CDP published on **127.0.0.1 only**, which is the one port and the reason
+ *   it is shaped that way — see `createBrowserContainer`.
  */
 import Docker from "dockerode";
 import { createHash, randomUUID } from "node:crypto";
@@ -142,9 +144,17 @@ export interface BrowserContainerSpec {
 
 export interface BrowserContainer {
   id: string;
-  /** The container's address on `network`, which is how the server and (on the
-   * agent surface) the workspace sandbox reach CDP. */
+  /** The container's address on its session network — how the *workspace
+   * sandbox* reaches CDP on the agent surface. */
   ip: string;
+  /** CDP on the host's loopback (`127.0.0.1:<mapped>`), which is how the server
+   * connects. Loopback rather than the container address because on Docker
+   * Desktop (macOS, Windows) the engine runs in a VM and container addresses are
+   * not reachable from the host at all; the published port is the one path that
+   * works on every engine. It is bound to 127.0.0.1 so nothing that is not this
+   * machine can reach it, and a container cannot either: a port published on the
+   * host's loopback is not routable from a bridge network. */
+  hostCdpPort: number;
 }
 
 /**
@@ -152,10 +162,11 @@ export interface BrowserContainer {
  *
  * The flags below are the sandbox ones (`Init`, `CapDrop: ALL`,
  * `no-new-privileges`, non-root from the image) plus the browser-specific ones,
- * and the absence of two things is load-bearing: **no `Binds`** (nothing on the
- * host is visible to a process rendering hostile pages) and **no `PortBindings`**
- * (CDP is the whole control surface of a browser, and publishing it would put it
- * on the host's network for anything there to find).
+ * and two things about them are load-bearing: **no `Binds`** (nothing on the
+ * host is visible to a process rendering hostile pages), and the **`127.0.0.1`
+ * in `PortBindings`** — the one published port is CDP, bound so that only this
+ * machine can reach it, and never `0.0.0.0`, which would put the full control
+ * surface of a logged-in browser on the network.
  */
 export async function createBrowserContainer(docker: Docker, spec: BrowserContainerSpec): Promise<BrowserContainer> {
   const container = await docker.createContainer({
@@ -181,6 +192,10 @@ export async function createBrowserContainer(docker: Docker, spec: BrowserContai
         "/home/loxaic/profile": "rw,size=512m,mode=1777",
         "/tmp": "rw,size=256m,mode=1777",
       },
+      // See BrowserContainer.hostCdpPort: loopback-only, ephemeral host port.
+      PortBindings: {
+        [`${CDP_PORT}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: "" }],
+      },
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges"],
     },
@@ -191,10 +206,22 @@ export async function createBrowserContainer(docker: Docker, spec: BrowserContai
     },
   });
   await container.start();
-  const inspected = (await container.inspect()) as { NetworkSettings?: { Networks?: Record<string, { IPAddress?: string }> } };
+  const inspected = (await container.inspect()) as {
+    NetworkSettings?: {
+      Networks?: Record<string, { IPAddress?: string }>;
+      Ports?: Record<string, { HostIp?: string; HostPort?: string }[] | null>;
+    };
+  };
   const ip = inspected.NetworkSettings?.Networks?.[spec.network]?.IPAddress;
   if (!ip) throw new Error("browser container started without an address on its session network");
-  return { id: container.id, ip };
+  const binding = inspected.NetworkSettings?.Ports?.[`${CDP_PORT}/tcp`]?.[0];
+  if (!binding?.HostPort) throw new Error("browser container started without a loopback CDP port");
+  // Refuse to connect through a binding that is not loopback: a daemon that
+  // ignored HostIp would mean any host on the network could drive this browser.
+  if (binding.HostIp !== "127.0.0.1" && binding.HostIp !== "::1") {
+    throw new Error(`browser CDP is published on ${binding.HostIp || "all interfaces"} instead of loopback`);
+  }
+  return { id: container.id, ip, hostCdpPort: Number(binding.HostPort) };
 }
 
 function uuid4(): string {
