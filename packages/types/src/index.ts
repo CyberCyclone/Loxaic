@@ -1,4 +1,4 @@
-import type { CompactionStats, ContextBreakdown, ToolPermission } from "./stream-protocol";
+import type { AttachmentRef, CompactionStats, ContextBreakdown, ToolPermission } from "./stream-protocol";
 import type { ModelThinking } from "./thinking";
 
 export type Result<T, E = Error> =
@@ -192,7 +192,36 @@ export type ContentBlock =
    * the client tints on a positive `false` for exactly that reason. Without it
    * a failed call was indistinguishable from a successful one the moment the
    * live stream ended and history was rebuilt from REST. */
-  | { kind: "tool_result"; call_id: string; output: string; ok?: boolean; diff?: FileDiff[]; permission?: ToolPermission }
+  /** Tool-produced images shown with the result — today a `browse` screenshot
+   * (#281). The refs are ordinary attachment refs with ordinary attachment rows,
+   * stored by files/generated.ts and served by the same `/v1/files/:ref` route;
+   * they ride here rather than on their own block kind so the reaper's SQL and
+   * the serve route's access check (both in `files/AGENTS.md`'s warning) have
+   * exactly one more place to look, and both were taught about this in the same
+   * commit as the field. Absent on every result that produced no image. */
+  | {
+      kind: "tool_result";
+      call_id: string;
+      output: string;
+      ok?: boolean;
+      diff?: FileDiff[];
+      permission?: ToolPermission;
+      images?: AttachmentRef[];
+      /** Whether these images were put in front of the model, decided **when the
+       * result was written** and never re-derived.
+       *
+       * A screenshot is only worth sending to a backend that can see images, and
+       * the run's model changes between turns: re-deciding on replay would mean
+       * an older part of the prompt's bytes change when someone picks a
+       * different model, which breaks the backend's prefix cache exactly like a
+       * trim does. So the turn that took the screenshot says whether it went in,
+       * and every later request replays that answer.
+       *
+       * Absent means no: it is written only when true, so a row from a server
+       * that predates browsing, and a screenshot a non-vision model never
+       * received, replay the same way — as text only. */
+      images_sent_to_model?: boolean;
+    }
   | { kind: "attachment"; ref: string; mime: string; name?: string }
   /** Rides alongside a summary message's text block so a cold REST load can
    * render the compaction card with its stats — the stream isn't the only
