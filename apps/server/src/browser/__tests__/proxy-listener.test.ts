@@ -53,7 +53,9 @@ async function startListener(policy: SessionEgressPolicy): Promise<number> {
   return (listener.address() as AddressInfo).port;
 }
 
-/** One proxied plain-HTTP request, returning the status code it came back with. */
+/** One proxied plain-HTTP request, returning the status code it came back with.
+ * Rejects if the connection is torn down without a response — which is what a
+ * fail-closed refusal does, so "closed with nothing" has to be observable. */
 function proxiedGet(host: string, port: number, url: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const socket = net.connect({ host, port });
@@ -65,6 +67,9 @@ function proxiedGet(host: string, port: number, url: string): Promise<number> {
       resolve(Number(/^HTTP\/1\.\d (\d{3})/.exec(head)?.[1] ?? 0));
     });
     socket.on("error", reject);
+    socket.once("close", () => {
+      if (head === "") reject(new Error("closed without a response"));
+    });
     socket.write(`GET ${url} HTTP/1.1\r\nHost: irrelevant.invalid\r\nConnection: close\r\n\r\n`);
   });
 }
@@ -174,6 +179,25 @@ describe("BrowserProxy", () => {
 
     proxy.detach("127.0.0.1");
     expect(proxy.live()).toEqual([]);
+    await expect(proxiedGet("127.0.0.1", handle.port, "http://example.com/")).rejects.toThrow();
+  });
+
+  it("falls back to a shared listener and refuses a source in no session's subnet", async () => {
+    // 192.0.2.0/24 is TEST-NET-1: never a local address, so binding it fails
+    // with EADDRNOTAVAIL and the proxy takes its fallback path on every host —
+    // which is the shape a Docker Desktop deployment gets, where the gateway
+    // lives in the VM and cannot be bound either.
+    const proxy = new BrowserProxy();
+    cleanups.push(async () => {
+      proxy.detachAll();
+    });
+    const handle = await proxy.attach("192.0.2.1", "172.30.0.0/24", { loopbackTarget: "127.0.0.1" });
+    expect(handle.mode).toBe("shared");
+
+    // This connection's source is loopback, which is inside no session's subnet.
+    // Fallback mode's isolation rests on this refusal, so it must be tested and
+    // must fail closed: a listener that served it would hand this session's
+    // allowances to a stranger.
     await expect(proxiedGet("127.0.0.1", handle.port, "http://example.com/")).rejects.toThrow();
   });
 
