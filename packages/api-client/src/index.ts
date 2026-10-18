@@ -1066,8 +1066,10 @@ export interface BrowserSettings {
     install:
       | { state: "missing" }
       | { state: "installing"; percent: number | null }
-      | { state: "installed"; source: "managed" | "configured"; executable: string }
+      | { state: "installed"; source: "managed" | "configured" | "system"; executable: string; name?: string }
       | { state: "failed"; error: string };
+    /** The browser the last launch used; absent from older servers. */
+    using?: { source: "managed" | "configured" | "system"; executable: string; name?: string } | null;
     running: number;
     lastLaunchError: string | null;
   };

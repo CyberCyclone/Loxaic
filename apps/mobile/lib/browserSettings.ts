@@ -18,10 +18,16 @@ export function describeBrowserStatus(settings: BrowserSettings): string {
     case 'failed':
       return `The Chromium download failed: ${install.error}`;
     case 'installed': {
-      if (settings.status.lastLaunchError) return `Chromium is installed but could not start: ${settings.status.lastLaunchError}`;
-      const source = install.source === 'configured' ? 'the browser set by BROWSER_EXECUTABLE' : 'Chromium';
+      if (settings.status.lastLaunchError) return `The browser could not start: ${settings.status.lastLaunchError}`;
+      // What the last launch actually used, which on Ubuntu 23.10+ may be a
+      // system browser rather than the downloaded one (#281).
+      const using = settings.status.using ?? install;
+      const what =
+        using.source === 'configured' ? 'the browser set by BROWSER_EXECUTABLE'
+        : using.source === 'system' ? `${using.name ?? 'the browser'} installed on this system`
+        : 'Chromium';
       const running = settings.status.running;
-      return `Using ${source}.${running > 0 ? ` ${String(running)} open now.` : ''}`;
+      return `Using ${what}.${running > 0 ? ` ${String(running)} open now.` : ''}`;
     }
   }
 }

@@ -10,7 +10,13 @@ It is **off by default**.
 2. Press **Install Chromium**. It downloads Playwright's `chromium-headless-shell` build (about 100 MB) into `BROWSER_DIR`. The desktop app keeps it in its data directory; a server run from a checkout uses `apps/server/browsers`.
 3. Switch **Web browsing** on.
 
-No Docker is needed. Chromium runs on the server's own machine.
+No Docker is needed, and nothing on the system needs changing. Chromium runs on the server's own machine, always with its own sandbox on.
+
+### Which browser runs
+
+1. **Loxaic's own Chromium**, the version Loxaic is tested against. Its sandbox works on macOS, Windows and most Linux distributions.
+2. **On Ubuntu 23.10 and later**, Ubuntu blocks the sandbox for downloaded browsers: it restricts unprivileged user namespaces, a hardening against kernel exploits, and exempts only browsers installed by the system. If Loxaic's own Chromium cannot start its sandbox there, Loxaic uses one of those instead, with the sandbox on: Google Chrome, Chromium, Microsoft Edge or Brave, at their package paths (`/opt/google/chrome/chrome`, `/usr/lib/chromium/chromium` and so on), and only if root owns the file and its folder.
+3. **If neither works, browsing stays off.** The admin screen says so and names what to install. Loxaic never runs Chromium without its sandbox to get around this, and never asks for that hardening to be relaxed.
 
 ## What it can and cannot reach
 
@@ -44,30 +50,6 @@ Other variables:
 
 The admin screen shows why the last launch failed.
 
-### "Chromium's sandbox needs unprivileged user namespaces" (Ubuntu 23.10 and later)
-
-Ubuntu restricts unprivileged user namespaces with AppArmor (`kernel.apparmor_restrict_unprivileged_userns = 1`), and Chromium's sandbox needs them. Ubuntu ships profiles that allow it for Google Chrome and the Chromium snap, but not for the build Loxaic installs. Give that build its own profile, in the same form as Ubuntu's `/etc/apparmor.d/chrome`, then reload it (needs root):
-
-```bash
-sudo tee /etc/apparmor.d/loxaic-chromium >/dev/null <<'PROFILE'
-abi <abi/4.0>,
-include <tunables/global>
-
-# Loxaic's managed Chromium (web_fetch's browser fallback). Unconfined like
-# Ubuntu's own chrome profile; it exists to allow user namespaces.
-profile loxaic-chromium /home/*/{.config/Loxaic*,**/apps/server}/browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell flags=(unconfined) {
-  userns,
-  include if exists <local/loxaic-chromium>
-}
-PROFILE
-sudo apparmor_parser -r /etc/apparmor.d/loxaic-chromium
-```
-
-The path covers the desktop app (`~/.config/Loxaic…/browsers`) and a server run from a checkout (`apps/server/browsers`). With a different `BROWSER_DIR` or `BROWSER_EXECUTABLE`, put that binary's path in the profile instead. Nothing needs restarting: the next fetch launches with the sandbox.
-
-Do not turn the restriction off system-wide, and do not use `BROWSER_NO_SANDBOX` on a host: without its sandbox, a page that exploits Chromium runs as the server's user.
-
-### Other failures
-
+- **"This system does not let a downloaded browser use Chromium's sandbox"** (Ubuntu 23.10 and later): install Google Chrome (the `.deb` from google.com/chrome), Microsoft Edge or Brave the usual way. Loxaic finds it on the next fetch. No setting changes and no restart. Ubuntu's own `chromium` package is a snap and is not used.
 - **Inside a container**, the sandbox's kernel features are usually missing. There, and only there, set `BROWSER_NO_SANDBOX=1`: the container is the boundary.
 - **Missing shared libraries on Linux**: install Chromium's dependencies, e.g. `sudo npx playwright-core install-deps chromium-headless-shell`.

@@ -47,6 +47,11 @@ describe('the web browsing admin section (#281)', () => {
     expect(describeBrowserStatus(running)).toBe('Using Chromium. 2 open now.');
     const broken = base({ state: 'installed', source: 'managed', executable: '/x' });
     broken.status.lastLaunchError = 'No usable sandbox!';
-    expect(describeBrowserStatus(broken)).toBe('Chromium is installed but could not start: No usable sandbox!');
+    expect(describeBrowserStatus(broken)).toBe('The browser could not start: No usable sandbox!');
+    // On Ubuntu 23.10+ the launch may use a browser the system exempts.
+    const viaSystem = base({ state: 'installed', source: 'managed', executable: '/x' });
+    viaSystem.status.using = { source: 'system', executable: '/opt/google/chrome/chrome', name: 'Google Chrome' };
+    expect(describeBrowserStatus(viaSystem)).toBe('Using Google Chrome installed on this system.');
+    expect(describeBrowserStatus(base({ state: 'installed', source: 'system', executable: '/usr/lib/chromium/chromium', name: 'Chromium' }))).toBe('Using Chromium installed on this system.');
   });
 });

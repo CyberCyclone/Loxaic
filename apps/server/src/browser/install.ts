@@ -8,7 +8,7 @@
  * Docker either way: most installs have none.
  */
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -30,7 +30,7 @@ export function configuredExecutable(): string | null {
 export type InstallState =
   | { state: "missing" }
   | { state: "installing"; percent: number | null }
-  | { state: "installed"; source: "managed" | "configured"; executable: string }
+  | { state: "installed"; source: "managed" | "configured" | "system"; executable: string; name?: string }
   | { state: "failed"; error: string };
 
 const PLATFORM_DIR: Partial<Record<string, string>> = {
@@ -58,6 +58,61 @@ export function managedExecutable(dir = browserDir()): string | null {
   return null;
 }
 
+/**
+ * Browsers a Linux system already lets run Chromium's sandbox (#281).
+ *
+ * Ubuntu 23.10+ restricts unprivileged user namespaces, which the sandbox
+ * needs, and exempts named browsers by path in its own AppArmor profiles
+ * (/etc/apparmor.d/chrome, chromium, msedge, brave). A browser installed at
+ * one of those paths therefore runs fully sandboxed with nothing on the system
+ * changed, where Loxaic's own download cannot. Elsewhere the managed build's
+ * sandbox works and this list is never needed, so it is Linux only.
+ */
+export interface SystemBrowser {
+  name: string;
+  executable: string;
+}
+
+export const LINUX_SYSTEM_BROWSERS: readonly SystemBrowser[] = [
+  { name: "Google Chrome", executable: "/opt/google/chrome/chrome" },
+  // Distribution Chromium (Debian and its kin). Ubuntu's own `chromium` is a
+  // snap, which lives elsewhere and is not used.
+  { name: "Chromium", executable: "/usr/lib/chromium/chromium" },
+  { name: "Chromium", executable: "/usr/lib/chromium-browser/chromium-browser" },
+  { name: "Microsoft Edge", executable: "/opt/microsoft/msedge/msedge" },
+  { name: "Brave", executable: "/opt/brave.com/brave/brave" },
+];
+
+/**
+ * Root's, and writable by nobody else, along with the folder it sits in. The
+ * exemption is by path, so a binary someone else could replace would hand
+ * them the very thing the system restricted.
+ */
+export function rootOwned(file: string): boolean {
+  try {
+    for (const p of [file, path.dirname(file)]) {
+      const st = statSync(p);
+      if (st.uid !== 0 || (st.mode & 0o022) !== 0) return false;
+    }
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+let systemCandidates: () => readonly SystemBrowser[] = () => (process.platform === "linux" ? LINUX_SYSTEM_BROWSERS : []);
+let trusted: (file: string) => boolean = rootOwned;
+
+/** The installed system browsers Loxaic may fall back to, in preference order. */
+export function systemBrowsers(): SystemBrowser[] {
+  return systemCandidates().filter((b) => trusted(b.executable));
+}
+
+export function __setSystemBrowsersForTest(candidates: readonly SystemBrowser[], isTrusted: (file: string) => boolean = () => true): void {
+  systemCandidates = () => candidates;
+  trusted = isTrusted;
+}
+
 let installing: { promise: Promise<void>; percent: number | null } | null = null;
 let lastError: string | null = null;
 
@@ -67,6 +122,8 @@ export function installState(): InstallState {
   if (installing) return { state: "installing", percent: installing.percent };
   const managed = managedExecutable();
   if (managed) return { state: "installed", source: "managed", executable: managed };
+  const system = systemBrowsers().at(0);
+  if (system) return { state: "installed", source: "system", executable: system.executable, name: system.name };
   if (lastError) return { state: "failed", error: lastError };
   return { state: "missing" };
 }
@@ -130,4 +187,6 @@ export function installBrowser(): Promise<void> {
 export function __resetInstallStateForTest(): void {
   installing = null;
   lastError = null;
+  systemCandidates = () => (process.platform === "linux" ? LINUX_SYSTEM_BROWSERS : []);
+  trusted = rootOwned;
 }

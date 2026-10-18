@@ -14,7 +14,8 @@ web_fetch's browser fallback (#281): one Chromium process per conversation (`man
 - Answer every request through `installInterception` and `guardedFetch` (agent/address-guard.ts); never `route.continue()`, which hands the request to Chromium's own network.
 - Follow redirects in `intercept.ts`, checking every hop: Chromium follows a fulfilled 3xx itself, outside interception. Drop `cookie` and `authorization` on a hop to another host.
 - Close every WebSocket; block service workers and downloads in the context.
-- Keep Chromium's sandbox on. `BROWSER_NO_SANDBOX=1` is the only way off, env only, for a server already in a container.
+- Keep Chromium's sandbox on. `BROWSER_NO_SANDBOX=1` is the only way off, env only, for a server already in a container; never fall back to it.
+- Fall back from the managed build only on a sandbox failure, and only to `systemBrowsers()`: root-owned paths the OS already exempts. Never ask an admin to relax a system hardening (AppArmor, sysctl) to make browsing work.
 
 ## Reading pages
 

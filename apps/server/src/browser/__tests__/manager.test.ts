@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   launchFailureReason,
+  browserStatus,
+  SANDBOX_BLOCKED_REASON,
   __activeBrowserCount,
   __resetBrowsersForTest,
   __setChromiumLoaderForTest,
@@ -13,6 +15,10 @@ import {
   withConversationBrowser,
 } from "../manager.ts";
 import { closeSinkhole } from "../sinkhole.ts";
+import { __resetInstallStateForTest, __setSystemBrowsersForTest, rootOwned } from "../install.ts";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { BrowserContextLike, BrowserLike, ChromiumLike, LaunchOptions } from "../types.ts";
 
 /** One conversation's browser per process (#281), with a fake Chromium. */
@@ -25,11 +31,17 @@ interface FakeBrowser extends BrowserLike {
 let launched: FakeBrowser[] = [];
 let launchGate: Promise<void> | null = null;
 let failLaunch: Error | null = null;
+/** A failure per executable, for the fallback between browsers. */
+let failFor = new Map<string, Error>();
+/** Every launch, in order: which browser, and whether sandboxed. */
+let launches: { executable: string; sandbox: boolean }[] = [];
 
 const fakeChromium: ChromiumLike = {
   async launch(options) {
     if (launchGate) await launchGate;
-    if (failLaunch) throw failLaunch;
+    launches.push({ executable: options.executablePath, sandbox: options.chromiumSandbox });
+    const failure = failFor.get(options.executablePath) ?? failLaunch;
+    if (failure) throw failure;
     let onDisconnect: (() => void) | null = null;
     const context: BrowserContextLike = {
       newPage: () => Promise.reject(new Error("not used")),
@@ -68,6 +80,8 @@ beforeEach(() => {
   launched = [];
   launchGate = null;
   failLaunch = null;
+  failFor = new Map();
+  launches = [];
   process.env.BROWSER_ENABLED = "true";
   process.env.BROWSER_MAX = "2";
   process.env.BROWSER_EXECUTABLE = "/fake/chrome";
@@ -78,6 +92,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await __resetBrowsersForTest();
+  __resetInstallStateForTest();
   await closeSinkhole();
   for (const k of ["BROWSER_ENABLED", "BROWSER_MAX", "BROWSER_EXECUTABLE", "BROWSER_IDLE_MS"]) Reflect.deleteProperty(process.env, k);
 });
@@ -217,10 +232,10 @@ describe("launchFailureReason", () => {
     "  - [pid=168121][err] [1018/205220.402037:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:130] No usable sandbox! If you are running on Ubuntu 23.10+ ...",
   ].join("\n");
 
-  it("names the AppArmor user-namespace restriction, not Playwright's generic first line", () => {
+  it("names the sandbox restriction and what to install, not Playwright's generic first line", () => {
     const reason = launchFailureReason(new Error(ubuntu));
-    expect(reason).toContain("unprivileged user namespaces");
-    expect(reason).toContain("docs/BROWSING.md");
+    expect(reason).toBe(SANDBOX_BLOCKED_REASON);
+    expect(reason).toContain("Install Google Chrome, Microsoft Edge or Brave");
     expect(reason).not.toContain("Target page, context or browser has been closed");
   });
 
@@ -231,5 +246,91 @@ describe("launchFailureReason", () => {
 
   it("falls back to the first line, without Playwright's prefix", () => {
     expect(launchFailureReason(new Error("browserType.launch: Executable doesn't exist at /x\nmore"))).toBe("Executable doesn't exist at /x");
+  });
+});
+
+describe("which browser launches (#281)", () => {
+  const SANDBOX = new Error("browserType.launch: Target page, context or browser has been closed\n[err] FATAL:zygote_host_impl_linux.cc:130] No usable sandbox!");
+  const system = { name: "Google Chrome", executable: "/opt/google/chrome/chrome" };
+  let dir: string;
+  let managed: string;
+
+  beforeEach(() => {
+    delete process.env.BROWSER_EXECUTABLE;
+    // A managed install as install.ts looks for one, for this platform.
+    dir = mkdtempSync(path.join(tmpdir(), "loxaic-browsers-"));
+    const platformDir: Record<string, string> = {
+      "darwin-arm64": "chrome-headless-shell-mac-arm64",
+      "darwin-x64": "chrome-headless-shell-mac-x64",
+      "linux-x64": "chrome-headless-shell-linux64",
+      "linux-arm64": "chrome-headless-shell-linux-arm64",
+      "win32-x64": "chrome-headless-shell-win64",
+    };
+    const build = path.join(dir, "chromium_headless_shell-1", platformDir[`${process.platform}-${process.arch}`]);
+    mkdirSync(build, { recursive: true });
+    managed = path.join(build, process.platform === "win32" ? "chrome-headless-shell.exe" : "chrome-headless-shell");
+    writeFileSync(managed, "");
+    writeFileSync(path.join(dir, "chromium_headless_shell-1", "INSTALLATION_COMPLETE"), "");
+    process.env.BROWSER_DIR = dir;
+  });
+
+  afterEach(() => {
+    delete process.env.BROWSER_DIR;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("uses Loxaic's own Chromium when its sandbox starts", async () => {
+    __setSystemBrowsersForTest([system]);
+    await use("a");
+    expect(launches).toEqual([{ executable: managed, sandbox: true }]);
+    expect(browserStatus().using?.source).toBe("managed");
+  });
+
+  it("falls back to a browser the system exempts when only the sandbox stopped Loxaic's own, sandboxed", async () => {
+    __setSystemBrowsersForTest([system]);
+    failFor.set(managed, SANDBOX);
+    await use("a");
+    expect(launches).toEqual([{ executable: managed, sandbox: true }, { executable: system.executable, sandbox: true }]);
+    expect(browserStatus()).toMatchObject({ using: { source: "system", name: "Google Chrome" }, lastLaunchError: null });
+    // And starts with it next time instead of failing on the managed one again.
+    await use("b");
+    expect(launches.at(-1)?.executable).toBe(system.executable);
+    expect(launches).toHaveLength(3);
+  });
+
+  it("never launches without the sandbox: with no exempted browser it says what to install", async () => {
+    __setSystemBrowsersForTest([]);
+    failFor.set(managed, SANDBOX);
+    await expect(use("a")).rejects.toThrow(SANDBOX_BLOCKED_REASON);
+    expect(launches.every((l) => l.sandbox)).toBe(true);
+    expect(browserStatus().lastLaunchError).toBe(SANDBOX_BLOCKED_REASON);
+  });
+
+  it("does not hide any other failure behind a second browser", async () => {
+    __setSystemBrowsersForTest([system]);
+    failFor.set(managed, new Error("browserType.launch: Executable is not executable"));
+    await expect(use("a")).rejects.toThrow("Executable is not executable");
+    expect(launches).toHaveLength(1);
+  });
+
+  it("uses an exempted system browser when nothing was downloaded", async () => {
+    rmSync(dir, { recursive: true, force: true });
+    __setSystemBrowsersForTest([system]);
+    await use("a");
+    expect(launches).toEqual([{ executable: system.executable, sandbox: true }]);
+  });
+
+  it("uses only the browser the deployment named", async () => {
+    process.env.BROWSER_EXECUTABLE = "/named/chrome";
+    __setSystemBrowsersForTest([system]);
+    failFor.set("/named/chrome", SANDBOX);
+    await expect(use("a")).rejects.toThrow(SANDBOX_BLOCKED_REASON);
+    expect(launches).toEqual([{ executable: "/named/chrome", sandbox: true }]);
+  });
+
+  it("only trusts a system browser root owns and nobody else can write", () => {
+    expect(rootOwned("/bin/sh")).toBe(true);
+    expect(rootOwned(managed)).toBe(false);
+    expect(rootOwned("/nonexistent/chrome")).toBe(false);
   });
 });

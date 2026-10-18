@@ -16,7 +16,7 @@
  */
 import { getBrowserSettings } from "../settings.ts";
 import { installInterception } from "./intercept.ts";
-import { browserExecutable, installState, type InstallState } from "./install.ts";
+import { configuredExecutable, installState, managedExecutable, systemBrowsers, type InstallState } from "./install.ts";
 import { sinkholePort } from "./sinkhole.ts";
 import type { BrowserContextLike, BrowserLike, ChromiumLike } from "./types.ts";
 
@@ -41,6 +41,45 @@ const launching = new Map<string, Promise<Entry>>();
  * one starts leaves nothing running. */
 let generation = 0;
 let lastLaunchError: string | null = null;
+
+/** A browser a launch can use, and where it came from. */
+export interface LaunchChoice {
+  executable: string;
+  source: "configured" | "managed" | "system";
+  name?: string;
+}
+
+/** The choice that last launched, tried first next time, so a host where only
+ * the system browser can sandbox does not re-try the managed one every time. */
+let lastGood: LaunchChoice | null = null;
+
+/**
+ * What to try, in order. A browser the deployment named is used alone. Else
+ * Loxaic's own build, which is the tested version, then any browser the system
+ * already lets sandbox (install.ts's systemBrowsers). Never a launch without
+ * Chromium's sandbox: that is only BROWSER_NO_SANDBOX, for a container.
+ */
+export function launchChoices(): LaunchChoice[] {
+  const configured = configuredExecutable();
+  if (configured) return [{ executable: configured, source: "configured" }];
+  const choices: LaunchChoice[] = [];
+  const managed = managedExecutable();
+  if (managed) choices.push({ executable: managed, source: "managed" });
+  for (const b of systemBrowsers()) choices.push({ executable: b.executable, source: "system", name: b.name });
+  const previous = lastGood;
+  const first = previous ? choices.findIndex((c) => c.executable === previous.executable) : -1;
+  if (first > 0) choices.unshift(...choices.splice(first, 1));
+  return choices;
+}
+
+function isSandboxFailure(err: unknown): boolean {
+  return /No usable sandbox|sandboxing failed/i.test(err instanceof Error ? err.message : String(err));
+}
+
+/** What an admin reads when no browser this host has can run sandboxed. */
+export const SANDBOX_BLOCKED_REASON =
+  "This system does not let a downloaded browser use Chromium's sandbox (Ubuntu 23.10 and later restrict it). " +
+  "Install Google Chrome, Microsoft Edge or Brave from its .deb and browsing will use it, sandboxed. No setting needs changing.";
 const waiters = new Set<() => void>();
 let sweeper: NodeJS.Timeout | null = null;
 
@@ -79,15 +118,12 @@ export function chromiumArgs(sinkhole: number): string[] {
  * Why a launch failed, in words an admin can act on. Playwright's first line
  * is a generic "Target page, context or browser has been closed"; the cause is
  * in Chromium's own log further down the message. The one that matters most
- * is the sandbox: Ubuntu 23.10+ restricts unprivileged user namespaces with
- * AppArmor, and Chromium's sandbox needs them (docs/BROWSING.md).
+ * is the sandbox: Ubuntu 23.10+ restricts unprivileged user namespaces, which
+ * Chromium's sandbox needs, except for browsers it exempts by path.
  */
 export function launchFailureReason(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  if (/No usable sandbox|sandboxing failed/i.test(message)) {
-    return "Chromium's sandbox needs unprivileged user namespaces, which this host restricts (Ubuntu 23.10+ AppArmor). " +
-      "Allow them for the browser with an AppArmor profile; docs/BROWSING.md has it.";
-  }
+  if (isSandboxFailure(err)) return SANDBOX_BLOCKED_REASON;
   const fatal = /FATAL:[^\]]*\]\s*([^\n]+)/.exec(message);
   if (fatal) return fatal[1].slice(0, 300);
   return (message.split("\n").find((l) => l.trim().length > 0) ?? "unknown error").replace(/^browserType\.launch:\s*/, "");
@@ -106,28 +142,40 @@ export function desktopUserAgent(version: string, platform: NodeJS.Platform = pr
 }
 
 async function launchEntry(conversationId: string, gen: number): Promise<Entry> {
-  const executable = browserExecutable();
-  if (!executable) {
+  const choices = launchChoices();
+  if (choices.length === 0) {
     throw new BrowserUnavailableError("No browser is installed on this server. An admin can install one under Settings → Web browsing.");
   }
   const port = await sinkholePort();
   const chromium = await loadChromium();
-  let browser: BrowserLike;
-  try {
-    browser = await chromium.launch({
-      executablePath: executable,
-      headless: true,
-      // Chromium's own sandbox stays on. BROWSER_NO_SANDBOX is for a server that
-      // already runs in a container, where the namespaces it needs are absent
-      // and the container is the boundary; it has no switch in the UI.
-      chromiumSandbox: process.env.BROWSER_NO_SANDBOX !== "1",
-      args: chromiumArgs(port),
-      timeout: LAUNCH_TIMEOUT_MS,
-    });
-  } catch (err) {
-    lastLaunchError = launchFailureReason(err);
-    throw new BrowserUnavailableError(`Chromium could not start: ${lastLaunchError}`);
+  let browser: BrowserLike | null = null;
+  for (const choice of choices) {
+    try {
+      browser = await chromium.launch({
+        executablePath: choice.executable,
+        headless: true,
+        // Chromium's own sandbox stays on. BROWSER_NO_SANDBOX is for a server
+        // that already runs in a container, where the namespaces it needs are
+        // absent and the container is the boundary; it has no switch in the UI.
+        chromiumSandbox: process.env.BROWSER_NO_SANDBOX !== "1",
+        args: chromiumArgs(port),
+        timeout: LAUNCH_TIMEOUT_MS,
+      });
+      lastGood = choice;
+      break;
+    } catch (err) {
+      // Only the sandbox is worth another browser: a system browser this host
+      // exempts may manage where Loxaic's own build cannot. Anything else is
+      // reported as it is rather than hidden behind a second attempt.
+      if (isSandboxFailure(err)) {
+        lastLaunchError = SANDBOX_BLOCKED_REASON;
+        continue;
+      }
+      lastLaunchError = launchFailureReason(err);
+      throw new BrowserUnavailableError(`Chromium could not start: ${lastLaunchError}`);
+    }
   }
+  if (!browser) throw new BrowserUnavailableError(`Chromium could not start: ${SANDBOX_BLOCKED_REASON}`);
   lastLaunchError = null;
   try {
     const context = await browser.newContext({
@@ -295,6 +343,8 @@ export async function sweepIdle(now = Date.now()): Promise<number> {
 
 export interface BrowserStatus {
   install: InstallState;
+  /** The browser the last launch used, once one has. */
+  using: LaunchChoice | null;
   running: number;
   /** Why the last launch failed, e.g. Chromium's sandbox needing user
    * namespaces this host does not allow. Cleared by the next good launch. */
@@ -302,7 +352,7 @@ export interface BrowserStatus {
 }
 
 export function browserStatus(): BrowserStatus {
-  return { install: installState(), running: active.size, lastLaunchError };
+  return { install: installState(), using: lastGood, running: active.size, lastLaunchError };
 }
 
 export function __setChromiumLoaderForTest(loader: () => Promise<ChromiumLike>): void {
@@ -317,6 +367,7 @@ export async function __resetBrowsersForTest(): Promise<void> {
   await closeAllBrowsers();
   launching.clear();
   lastLaunchError = null;
+  lastGood = null;
   if (sweeper) clearInterval(sweeper);
   sweeper = null;
 }
