@@ -26,6 +26,9 @@ describe("isBlockedAddress", () => {
     "::ffff:a9fe:a9fe", // 169.254.169.254, the cloud metadata service
     "::ffff:10.0.0.1",
     "::ffff:0:0", // 0.0.0.0
+    "::ffff:0:7f00:1", // IPv4-translated 127.0.0.1 (RFC 2765)
+    "::ffff:0:a9fe:a9fe",
+    "::ffff:0:808:808", // translated forms are refused outright, public or not
     "::7f00:1", // IPv4-compatible 127.0.0.1
     "::127.0.0.1",
     "64:ff9b::7f00:1", // NAT64 to 127.0.0.1
@@ -35,6 +38,9 @@ describe("isBlockedAddress", () => {
     "2002:c0a8:101::1", // 6to4 around 192.168.1.1
     "2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo
     "2001:db8::1",
+    "3fff::1", // documentation (RFC 9637)
+    "2001:2::1", // benchmarking
+    "5f00::1", // SRv6
     "100::1",
     "fc00::1",
     "fd12:3456::1",
@@ -78,13 +84,21 @@ describe("web_fetch refuses loopback in every IPv6 spelling", () => {
     server = createServer((_req, res) => {
       res.end("the server's own loopback answered");
     });
-    await new Promise<void>((resolve) => server.listen(0, "::", resolve));
+    // Rejects rather than hangs on a host with IPv6 switched off
+    // (EAFNOSUPPORT), so the failure names the cause.
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "::", resolve);
+    });
     port = (server.address() as AddressInfo).port;
   });
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => { resolve(); }));
   });
 
+  // The URL parser folds both [0:0:0:0:0:0:0:1] and [::1] to "::1", which the
+  // old string check already refused: those two are kept as coverage, not as
+  // proof of this fix. The ::ffff spellings are the regression cases.
   it.each(["[::ffff:127.0.0.1]", "[::ffff:7f00:1]", "[0:0:0:0:0:0:0:1]", "[::1]"])("%s", async (host) => {
     const result = await executeTool(null, "web_fetch", { url: `http://${host}:${String(port)}/` });
     expect(result.ok).toBe(false);
