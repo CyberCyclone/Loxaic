@@ -1,4 +1,5 @@
 import { promises as dns } from "node:dns";
+import { isIP } from "node:net";
 import posix from "node:path/posix";
 import type { SandboxHandle } from "../sandbox/provider.ts";
 import type { FileDiff, Todo, ToolName } from "@loxaic/agent";
@@ -372,14 +373,68 @@ export function isBlockedAddress(ip: string, family: number): boolean {
     if (a >= 224) return true;                            // multicast + reserved
     return false;
   }
-  const v6 = ip.toLowerCase();
-  if (v6 === "::1" || v6 === "::") return true;
-  // IPv4-mapped (::ffff:10.0.0.1) has to be unwrapped and re-checked.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
-  if (mapped) return isBlockedAddress(mapped[1], 4);
-  if (/^f[cd]/.test(v6)) return true;   // fc00::/7 unique local
-  if (/^fe[89ab]/.test(v6)) return true; // fe80::/10 link local
+  const bytes = ipv6Bytes(ip);
+  // Unparseable is refused, like a malformed IPv4 above: the guard's answer for
+  // an address it cannot read must never be "public".
+  if (!bytes) return true;
+  const word = (i: number): number => (bytes[i * 2] << 8) | bytes[i * 2 + 1];
+  const embeddedV4 = (at: number): string => bytes.slice(at, at + 4).join(".");
+  const zeroPrefix = (n: number): boolean => bytes.slice(0, n).every((b) => b === 0);
+  // Every way an IPv4 address can ride inside an IPv6 one is unwrapped and the
+  // IPv4 checked: mapped (::ffff:a.b.c.d), compatible (::a.b.c.d, which also
+  // covers :: and ::1), NAT64 (64:ff9b::a.b.c.d) and 6to4 (2002:aabb:ccdd::).
+  // Matching spellings was the old bug: getaddrinfo and the URL parser both
+  // hand back `::ffff:7f00:1` for 127.0.0.1, which no pattern on the dotted
+  // form ever saw.
+  if (zeroPrefix(10) && word(5) === 0xffff) return isBlockedAddress(embeddedV4(12), 4);
+  if (zeroPrefix(12)) return isBlockedAddress(embeddedV4(12), 4);
+  if (word(0) === 0x64 && word(1) === 0xff9b) {
+    // 64:ff9b:1::/48 is local-use NAT64: whatever it translates to is a choice
+    // of this network, so none of it is public.
+    if (word(2) !== 0) return true;
+    return isBlockedAddress(embeddedV4(12), 4);
+  }
+  if (word(0) === 0x2002) return isBlockedAddress(embeddedV4(2), 4);
+  if (word(0) === 0x2001 && word(1) === 0) return true;          // Teredo: obfuscated IPv4 inside
+  if (word(0) === 0x2001 && word(1) === 0xdb8) return true;      // documentation
+  if (word(0) === 0x100 && word(1) === 0 && word(2) === 0 && word(3) === 0) return true; // discard-only 100::/64
+  if ((bytes[0] & 0xfe) === 0xfc) return true;                   // fc00::/7 unique local
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return true; // fe80::/10 link local
+  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0xc0) return true; // fec0::/10 site local (deprecated, still routed by some)
+  if (bytes[0] === 0xff) return true;                            // multicast
   return false;
+}
+
+/**
+ * An IPv6 address as its 16 bytes, or null if it is not one. Accepts every
+ * spelling: `::` compression, a trailing dotted IPv4, leading zeros, upper
+ * case, brackets, and a zone id (`fe80::1%eth0`), which says which interface
+ * and nothing about where the address points.
+ */
+function ipv6Bytes(raw: string): number[] | null {
+  let ip = raw.trim();
+  if (ip.startsWith("[") && ip.endsWith("]")) ip = ip.slice(1, -1);
+  const zone = ip.indexOf("%");
+  if (zone !== -1) ip = ip.slice(0, zone);
+  if (!isIP(ip)) return null;
+  let tail: number[] = [];
+  const dotted = /:(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
+  if (dotted) {
+    tail = dotted[1].split(".").map(Number);
+    ip = `${ip.slice(0, dotted.index)}:0:0`;
+  }
+  const halves = ip.split("::");
+  if (halves.length > 2) return null;
+  const parse = (part: string): number[] => (part === "" ? [] : part.split(":").map((h) => Number.parseInt(h, 16)));
+  const head = parse(halves[0]);
+  const rest = halves.length === 2 ? parse(halves[1]) : [];
+  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
+  if (fill < 0) return null;
+  const words = [...head, ...Array<number>(fill).fill(0), ...rest];
+  if (words.length !== 8 || words.some((w) => !Number.isInteger(w) || w < 0 || w > 0xffff)) return null;
+  const bytes = words.flatMap((w) => [w >> 8, w & 0xff]);
+  if (tail.length === 4) bytes.splice(12, 4, ...tail);
+  return bytes;
 }
 
 export async function assertPublicUrl(url: URL): Promise<void> {
