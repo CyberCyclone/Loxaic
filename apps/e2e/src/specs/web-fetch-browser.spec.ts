@@ -13,7 +13,7 @@
  */
 import { adminCreds, apiToken, provisionAdmin, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { platform, scrollTo, tap, waitForFreshText, waitForVisible, waitForAbsent } from '../helpers/selectors.ts';
+import { platform, scrollTo, tap, waitForFreshText, waitForGone, waitForVisible } from '../helpers/selectors.ts';
 import {
   goToSurface,
   listConversations,
@@ -145,10 +145,12 @@ describe('web_fetch falls back to a browser', () => {
     await scrollTo(thumb);
     await shot('web-fetch-screenshot-thumb');
     await tap(thumb);
-    await waitForVisible('viewer.close');
+    // As attachments.spec does: the image is what every platform exposes
+    // once the viewer is up.
+    await waitForVisible('viewer.image');
     await shot('web-fetch-screenshot-viewer');
     await tap('viewer.close');
-    await waitForAbsent('viewer.close');
+    await waitForGone('viewer.image');
     if (platform() === 'web' || platform() === 'electron') {
       await browser.refresh();
       await waitForVisible(thumb, 30_000);
@@ -183,6 +185,9 @@ describe('web_fetch falls back to a browser', () => {
       expect(result.ok).toBe(false);
       expect(result.output).toContain('HTTP 403');
       expect(result.output).not.toContain('Rendered in a browser');
+      // Scrolled to first: on iOS the keyboard left up by the send covers the
+      // newest card, and XCUITest reports what it covers as not displayed.
+      await scrollTo(`chat.toolCall.failed.${result.call_id}`);
       await waitForVisible(`chat.toolCall.failed.${result.call_id}`);
     } finally {
       await adminBrowser('PATCH', '/v1/admin/settings/browser', { enabled: true });
