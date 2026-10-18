@@ -235,7 +235,7 @@ describe("launchFailureReason", () => {
   it("names the sandbox restriction and what to install, not Playwright's generic first line", () => {
     const reason = launchFailureReason(new Error(ubuntu));
     expect(reason).toBe(SANDBOX_BLOCKED_REASON);
-    expect(reason).toContain("Install Google Chrome, Microsoft Edge or Brave");
+    expect(reason).toContain("Install Chromium (sudo apt install chromium-browser) or Google Chrome");
     expect(reason).not.toContain("Target page, context or browser has been closed");
   });
 

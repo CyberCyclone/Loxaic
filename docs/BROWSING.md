@@ -15,7 +15,7 @@ No Docker is needed, and nothing on the system needs changing. Chromium runs on 
 ### Which browser runs
 
 1. **Loxaic's own Chromium**, the version Loxaic is tested against. Its sandbox works on macOS, Windows and most Linux distributions.
-2. **On Ubuntu 23.10 and later**, Ubuntu blocks the sandbox for downloaded browsers: it restricts unprivileged user namespaces, a hardening against kernel exploits, and exempts only browsers installed by the system. If Loxaic's own Chromium cannot start its sandbox there, Loxaic uses one of those instead, with the sandbox on: Google Chrome, Chromium, Microsoft Edge or Brave, at their package paths (`/opt/google/chrome/chrome`, `/usr/lib/chromium/chromium` and so on), and only if root owns the file and its folder.
+2. **On Ubuntu 23.10 and later**, Ubuntu blocks the sandbox for downloaded browsers: it restricts unprivileged user namespaces, a hardening against kernel exploits, and exempts only browsers installed by the system. If Loxaic's own Chromium cannot start its sandbox there, Loxaic uses one of those instead, with the sandbox on: Ubuntu's Chromium snap (`/snap/bin/chromium`), Google Chrome, a distribution Chromium, Microsoft Edge or Brave, at their package paths, and only if root owns the file and its folder.
 3. **If neither works, browsing stays off.** The admin screen says so and names what to install. Loxaic never runs Chromium without its sandbox to get around this, and never asks for that hardening to be relaxed.
 
 ## What it can and cannot reach
@@ -50,6 +50,6 @@ Other variables:
 
 The admin screen shows why the last launch failed.
 
-- **"This system does not let a downloaded browser use Chromium's sandbox"** (Ubuntu 23.10 and later): install Google Chrome (the `.deb` from google.com/chrome), Microsoft Edge or Brave the usual way. Loxaic finds it on the next fetch. No setting changes and no restart. Ubuntu's own `chromium` package is a snap and is not used.
+- **"This system does not let a downloaded browser use Chromium's sandbox"** (Ubuntu 23.10 and later): install Chromium (`sudo apt install chromium-browser`, which installs the snap) or Google Chrome the usual way. Loxaic finds it on the next fetch. No setting changes and no restart.
 - **Inside a container**, the sandbox's kernel features are usually missing. There, and only there, set `BROWSER_NO_SANDBOX=1`: the container is the boundary.
 - **Missing shared libraries on Linux**: install Chromium's dependencies, e.g. `sudo npx playwright-core install-deps chromium-headless-shell`.

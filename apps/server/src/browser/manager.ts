@@ -79,7 +79,7 @@ function isSandboxFailure(err: unknown): boolean {
 /** What an admin reads when no browser this host has can run sandboxed. */
 export const SANDBOX_BLOCKED_REASON =
   "This system does not let a downloaded browser use Chromium's sandbox (Ubuntu 23.10 and later restrict it). " +
-  "Install Google Chrome, Microsoft Edge or Brave from its .deb and browsing will use it, sandboxed. No setting needs changing.";
+  "Install Chromium (sudo apt install chromium-browser) or Google Chrome and browsing will use it, sandboxed. No setting needs changing.";
 const waiters = new Set<() => void>();
 let sweeper: NodeJS.Timeout | null = null;
 

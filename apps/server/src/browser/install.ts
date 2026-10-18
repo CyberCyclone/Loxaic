@@ -63,9 +63,10 @@ export function managedExecutable(dir = browserDir()): string | null {
  *
  * Ubuntu 23.10+ restricts unprivileged user namespaces, which the sandbox
  * needs, and exempts named browsers by path in its own AppArmor profiles
- * (/etc/apparmor.d/chrome, chromium, msedge, brave). A browser installed at
- * one of those paths therefore runs fully sandboxed with nothing on the system
- * changed, where Loxaic's own download cannot. Elsewhere the managed build's
+ * (/etc/apparmor.d/chrome, chromium, msedge, brave), and snapd does the same
+ * for the Chromium snap. A browser installed at one of those paths therefore
+ * runs fully sandboxed with nothing on the system changed, where Loxaic's own
+ * download cannot. Elsewhere the managed build's
  * sandbox works and this list is never needed, so it is Linux only.
  */
 export interface SystemBrowser {
@@ -75,10 +76,14 @@ export interface SystemBrowser {
 
 export const LINUX_SYSTEM_BROWSERS: readonly SystemBrowser[] = [
   { name: "Google Chrome", executable: "/opt/google/chrome/chrome" },
-  // Distribution Chromium (Debian and its kin). Ubuntu's own `chromium` is a
-  // snap, which lives elsewhere and is not used.
+  // Distribution Chromium (Debian and its kin).
   { name: "Chromium", executable: "/usr/lib/chromium/chromium" },
   { name: "Chromium", executable: "/usr/lib/chromium-browser/chromium-browser" },
+  // Ubuntu's `chromium` / `chromium-browser` package installs this snap.
+  // Launched through snap's own launcher it runs confined, and snapd grants
+  // it the namespaces its sandbox needs: chrome://sandbox reports "adequately
+  // sandboxed" on Ubuntu 26.04 with the restriction on.
+  { name: "Chromium (snap)", executable: "/snap/bin/chromium" },
   { name: "Microsoft Edge", executable: "/opt/microsoft/msedge/msedge" },
   { name: "Brave", executable: "/opt/brave.com/brave/brave" },
 ];
