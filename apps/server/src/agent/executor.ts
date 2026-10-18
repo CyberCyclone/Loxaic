@@ -366,8 +366,6 @@ function runTodoWrite(args: Record<string, unknown>): ToolResult {
 
 // ── web_fetch (runs on the server: sandboxes may have no network) ──
 
-import { BlockedTargetError, guardedFetch, type GuardedResponse } from "./address-guard.ts";
-import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import type { RenderResult } from "../browser/render.ts";
 export { assertPublicUrl, isBlockedAddress } from "./address-guard.ts";
 
