@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  launchFailureReason,
   __activeBrowserCount,
   __resetBrowsersForTest,
   __setChromiumLoaderForTest,
@@ -191,8 +192,8 @@ describe("the per-conversation browser", () => {
     await expect(use("a")).rejects.toThrow(/No browser is installed/);
     delete process.env.BROWSER_DIR;
     process.env.BROWSER_EXECUTABLE = "/fake/chrome";
-    failLaunch = new Error("No usable sandbox!\nmore detail");
-    await expect(use("a")).rejects.toThrow("Chromium could not start: No usable sandbox!");
+    failLaunch = new Error("browserType.launch: Executable is not executable\nmore detail");
+    await expect(use("a")).rejects.toThrow("Chromium could not start: Executable is not executable");
   });
 });
 
@@ -203,5 +204,32 @@ describe("desktopUserAgent", () => {
     );
     expect(desktopUserAgent("156.0.8078.4", "darwin")).toContain("Macintosh");
     expect(desktopUserAgent("156.0.8078.4", "win32")).toContain("Windows NT 10.0");
+  });
+});
+
+describe("launchFailureReason", () => {
+  // Playwright's message as Ubuntu 26.04 produced it on a real host, cut down.
+  const ubuntu = [
+    "browserType.launch: Target page, context or browser has been closed",
+    "Browser logs:",
+    "Chromium sandboxing failed!",
+    "Call log:",
+    "  - [pid=168121][err] [1018/205220.402037:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:130] No usable sandbox! If you are running on Ubuntu 23.10+ ...",
+  ].join("\n");
+
+  it("names the AppArmor user-namespace restriction, not Playwright's generic first line", () => {
+    const reason = launchFailureReason(new Error(ubuntu));
+    expect(reason).toContain("unprivileged user namespaces");
+    expect(reason).toContain("docs/BROWSING.md");
+    expect(reason).not.toContain("Target page, context or browser has been closed");
+  });
+
+  it("surfaces Chromium's own fatal line for anything else", () => {
+    const err = new Error("browserType.launch: Target page, context or browser has been closed\nCall log:\n  - [pid=1][err] [1:FATAL:gpu_init.cc:9] Missing libgbm.so.1");
+    expect(launchFailureReason(err)).toBe("Missing libgbm.so.1");
+  });
+
+  it("falls back to the first line, without Playwright's prefix", () => {
+    expect(launchFailureReason(new Error("browserType.launch: Executable doesn't exist at /x\nmore"))).toBe("Executable doesn't exist at /x");
   });
 });

@@ -42,7 +42,32 @@ Other variables:
 
 ## When it will not start
 
-The admin screen shows the last launch error.
+The admin screen shows why the last launch failed.
 
-- **Linux "No usable sandbox"**: Chromium's sandbox needs unprivileged user namespaces. On Ubuntu 23.10 and later, AppArmor restricts them. Either allow them for the Chromium binary with an AppArmor profile, or, inside a container, set `BROWSER_NO_SANDBOX=1`.
-- **Missing shared libraries on Linux**: install Chromium's dependencies, e.g. `npx playwright-core install-deps chromium-headless-shell` as root.
+### "Chromium's sandbox needs unprivileged user namespaces" (Ubuntu 23.10 and later)
+
+Ubuntu restricts unprivileged user namespaces with AppArmor (`kernel.apparmor_restrict_unprivileged_userns = 1`), and Chromium's sandbox needs them. Ubuntu ships profiles that allow it for Google Chrome and the Chromium snap, but not for the build Loxaic installs. Give that build its own profile, in the same form as Ubuntu's `/etc/apparmor.d/chrome`, then reload it (needs root):
+
+```bash
+sudo tee /etc/apparmor.d/loxaic-chromium >/dev/null <<'PROFILE'
+abi <abi/4.0>,
+include <tunables/global>
+
+# Loxaic's managed Chromium (web_fetch's browser fallback). Unconfined like
+# Ubuntu's own chrome profile; it exists to allow user namespaces.
+profile loxaic-chromium /home/*/{.config/Loxaic*,**/apps/server}/browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell flags=(unconfined) {
+  userns,
+  include if exists <local/loxaic-chromium>
+}
+PROFILE
+sudo apparmor_parser -r /etc/apparmor.d/loxaic-chromium
+```
+
+The path covers the desktop app (`~/.config/Loxaic…/browsers`) and a server run from a checkout (`apps/server/browsers`). With a different `BROWSER_DIR` or `BROWSER_EXECUTABLE`, put that binary's path in the profile instead. Nothing needs restarting: the next fetch launches with the sandbox.
+
+Do not turn the restriction off system-wide, and do not use `BROWSER_NO_SANDBOX` on a host: without its sandbox, a page that exploits Chromium runs as the server's user.
+
+### Other failures
+
+- **Inside a container**, the sandbox's kernel features are usually missing. There, and only there, set `BROWSER_NO_SANDBOX=1`: the container is the boundary.
+- **Missing shared libraries on Linux**: install Chromium's dependencies, e.g. `sudo npx playwright-core install-deps chromium-headless-shell`.

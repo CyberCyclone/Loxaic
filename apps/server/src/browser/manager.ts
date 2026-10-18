@@ -75,6 +75,24 @@ export function chromiumArgs(sinkhole: number): string[] {
   ];
 }
 
+/**
+ * Why a launch failed, in words an admin can act on. Playwright's first line
+ * is a generic "Target page, context or browser has been closed"; the cause is
+ * in Chromium's own log further down the message. The one that matters most
+ * is the sandbox: Ubuntu 23.10+ restricts unprivileged user namespaces with
+ * AppArmor, and Chromium's sandbox needs them (docs/BROWSING.md).
+ */
+export function launchFailureReason(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/No usable sandbox|sandboxing failed/i.test(message)) {
+    return "Chromium's sandbox needs unprivileged user namespaces, which this host restricts (Ubuntu 23.10+ AppArmor). " +
+      "Allow them for the browser with an AppArmor profile; docs/BROWSING.md has it.";
+  }
+  const fatal = /FATAL:[^\]]*\]\s*([^\n]+)/.exec(message);
+  if (fatal) return fatal[1].slice(0, 300);
+  return (message.split("\n").find((l) => l.trim().length > 0) ?? "unknown error").replace(/^browserType\.launch:\s*/, "");
+}
+
 /** A desktop Chrome user agent for the installed version. The headless build
  * announces itself as "HeadlessChrome", which is exactly what the bot walls
  * this fallback exists to get past refuse. */
@@ -107,9 +125,8 @@ async function launchEntry(conversationId: string, gen: number): Promise<Entry> 
       timeout: LAUNCH_TIMEOUT_MS,
     });
   } catch (err) {
-    const first = ((err as Error).message || String(err)).split("\n").find((l) => l.trim().length > 0) ?? "unknown error";
-    lastLaunchError = first;
-    throw new BrowserUnavailableError(`Chromium could not start: ${first}`);
+    lastLaunchError = launchFailureReason(err);
+    throw new BrowserUnavailableError(`Chromium could not start: ${lastLaunchError}`);
   }
   lastLaunchError = null;
   try {
