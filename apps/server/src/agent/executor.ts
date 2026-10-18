@@ -1,9 +1,10 @@
-import { promises as dns } from "node:dns";
 import posix from "node:path/posix";
 import type { SandboxHandle } from "../sandbox/provider.ts";
 import type { FileDiff, Todo, ToolName } from "@loxaic/agent";
 import { QUESTION_LIMITS } from "@loxaic/agent";
 import { parseTodoList } from "@loxaic/types";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { BlockedTargetError, guardedFetch, type GuardedResponse } from "./address-guard.ts";
 
 /** Tools that need a live sandbox; the rest run in-process on the server. */
 const SANDBOX_TOOLS: ToolName[] = ["fs_read", "fs_write", "fs_edit", "bash", "grep", "glob"];
@@ -352,53 +353,7 @@ function runTodoWrite(args: Record<string, unknown>): ToolResult {
 
 // ── web_fetch (runs on the server: sandboxes may have no network) ──
 
-/**
- * True for addresses that must never be reachable from a model-chosen URL:
- * loopback, link-local, and the RFC1918 / carrier-grade / benchmarking
- * ranges that make up a typical private network.
- */
-export function isBlockedAddress(ip: string, family: number): boolean {
-  if (family === 4) {
-    const p = ip.split(".").map(Number);
-    if (p.length !== 4 || p.some((n) => Number.isNaN(n))) return true;
-    const [a, b] = p;
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true;              // link-local
-    if (a === 172 && b >= 16 && b <= 31) return true;     // RFC1918
-    if (a === 192 && b === 168) return true;              // RFC1918
-    if (a === 192 && b === 0) return true;                // IETF protocol assignments
-    if (a === 100 && b >= 64 && b <= 127) return true;    // CGNAT
-    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
-    if (a >= 224) return true;                            // multicast + reserved
-    return false;
-  }
-  const v6 = ip.toLowerCase();
-  if (v6 === "::1" || v6 === "::") return true;
-  // IPv4-mapped (::ffff:10.0.0.1) has to be unwrapped and re-checked.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
-  if (mapped) return isBlockedAddress(mapped[1], 4);
-  if (/^f[cd]/.test(v6)) return true;   // fc00::/7 unique local
-  if (/^fe[89ab]/.test(v6)) return true; // fe80::/10 link local
-  return false;
-}
-
-export async function assertPublicUrl(url: URL): Promise<void> {
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(`only http and https URLs are allowed (got ${url.protocol})`);
-  }
-  const host = url.hostname.replace(/^\[|\]$/g, "");
-  // Every A/AAAA record must be public — one private answer is enough to
-  // reach an internal service, so a mixed result is rejected outright.
-  const records = await dns.lookup(host, { all: true }).catch(() => {
-    throw new Error(`could not resolve host: ${host}`);
-  });
-  if (records.length === 0) throw new Error(`could not resolve host: ${host}`);
-  for (const r of records) {
-    if (isBlockedAddress(r.address, r.family)) {
-      throw new Error(`refusing to fetch a private or loopback address (${host} → ${r.address})`);
-    }
-  }
-}
+export { assertPublicUrl, isBlockedAddress } from "./address-guard.ts";
 
 const BLOCK_TAGS = ["script", "style"] as const;
 
@@ -589,18 +544,20 @@ async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, WEB_FETCH_TIMEOUT_MS);
   try {
-    let response: Response | null = null;
+    let response: GuardedResponse | null = null;
     // Redirects are followed by hand so every hop gets the SSRF check —
     // `redirect: "follow"` would let a public URL bounce to 169.254.169.254.
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      await assertPublicUrl(url);
-      const res = await fetch(url, {
-        redirect: "manual",
+      // The address is checked as the connection is made (guardedFetch), so the
+      // address checked is the address dialled: a name that answers public for
+      // a check and private for the connection has nothing to exploit.
+      const res = await guardedFetch(url, {
         signal: controller.signal,
         headers: { "User-Agent": "Loxaic-Agent/1.0", Accept: "text/*, application/json;q=0.9, */*;q=0.5" },
       });
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {
+        await res.body?.cancel().catch(() => undefined);
         url = new URL(location, url);
         continue;
       }
@@ -616,6 +573,7 @@ async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
       output: extractFetchText(bodyText, response.headers.get("content-type") ?? "", rawTruncated),
     };
   } catch (err) {
+    if (err instanceof BlockedTargetError) return { ok: false, output: `Fetch failed: ${err.message}` };
     const message = (err as Error).name === "AbortError"
       ? `Request timed out after ${String(WEB_FETCH_TIMEOUT_MS)}ms`
       : (err as Error).message;
@@ -635,9 +593,9 @@ async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
  * doesn't corrupt that character, the way slicing a Buffer at a fixed byte
  * offset does.
  */
-async function readBoundedText(response: Response): Promise<{ text: string; truncated: boolean }> {
+async function readBoundedText(response: GuardedResponse): Promise<{ text: string; truncated: boolean }> {
   if (!response.body) return { text: "", truncated: false };
-  const reader = response.body.getReader();
+  const reader = (response.body as WebReadableStream<Uint8Array>).getReader();
   const decoder = new TextDecoder("utf-8");
   let text = "";
   let read = 0;
