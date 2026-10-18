@@ -1055,6 +1055,43 @@ export async function updateSandboxSettings(patch: SandboxSettingsPatch): Promis
   });
 }
 
+/** Admin: web_fetch's browser fallback (#281). */
+export interface BrowserSettings {
+  enabled: boolean;
+  idleMs: number;
+  maxBrowsers: number;
+  actionTimeoutMs: number;
+  envOverrides: { enabled: boolean; idleMs: boolean; maxBrowsers: boolean; actionTimeoutMs: boolean };
+  status: {
+    install:
+      | { state: "missing" }
+      | { state: "installing"; percent: number | null }
+      | { state: "installed"; source: "managed" | "configured"; executable: string }
+      | { state: "failed"; error: string };
+    running: number;
+    lastLaunchError: string | null;
+  };
+}
+
+export type BrowserSettingsPatch = Partial<Pick<BrowserSettings, "enabled" | "idleMs" | "maxBrowsers" | "actionTimeoutMs">>;
+
+export async function getBrowserSettings(): Promise<BrowserSettings> {
+  return adminFetch("/v1/admin/settings/browser");
+}
+
+export async function updateBrowserSettings(patch: BrowserSettingsPatch): Promise<BrowserSettings> {
+  return adminFetch("/v1/admin/settings/browser", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Starts the managed Chromium download; poll `getBrowserSettings` for progress. */
+export async function installBrowser(): Promise<BrowserSettings> {
+  return adminFetch("/v1/admin/browser/install", { method: "POST" });
+}
+
 export type { ModelInfo, ModelPref, ProjectInstructionsSummary } from "@loxaic/types";
 
 export async function getModels(): Promise<import("@loxaic/types").ModelInfo[]> {

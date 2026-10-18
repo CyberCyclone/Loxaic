@@ -186,6 +186,47 @@ describe("DELETE /v1/conversations/:id — retention off", () => {
     expect(shares).toHaveLength(0);
   });
 
+  it("closes the conversation's browser (#281), and nobody else's", async () => {
+    const manager = await import("../../browser/manager.ts");
+    const closed: string[] = [];
+    manager.__setChromiumLoaderForTest(() => Promise.resolve({
+      launch: () => {
+        let onDisconnect: (() => void) | undefined;
+        const id = String(closed.length + Math.random());
+        return Promise.resolve({
+          newContext: () => Promise.resolve({
+            newPage: () => Promise.reject(new Error("unused")),
+            route: () => Promise.resolve(),
+            routeWebSocket: () => Promise.resolve(),
+            close: () => Promise.resolve(),
+          }),
+          version: () => "156.0.0.0",
+          close: () => { closed.push(id); onDisconnect?.(); return Promise.resolve(); },
+          on: (_e: "disconnected", l: () => void) => { onDisconnect = l; },
+        });
+      },
+    }));
+    process.env.BROWSER_ENABLED = "true";
+    process.env.BROWSER_EXECUTABLE = "/fake/chrome";
+    try {
+      const convId = await makeConversation();
+      const other = await makeConversation();
+      await manager.withConversationBrowser(convId, () => Promise.resolve());
+      await manager.withConversationBrowser(other, () => Promise.resolve());
+      expect(manager.__activeBrowserCount()).toBe(2);
+
+      as(owner);
+      await app.inject({ method: "DELETE", url: `/v1/conversations/${convId}` });
+      await settle();
+      expect(closed).toHaveLength(1);
+      expect(manager.__activeBrowserCount()).toBe(1);
+    } finally {
+      await manager.__resetBrowsersForTest();
+      delete process.env.BROWSER_ENABLED;
+      delete process.env.BROWSER_EXECUTABLE;
+    }
+  });
+
   it("keeps the usage rows but detaches them from the conversation", async () => {
     const convId = await makeConversation();
     const msgId = await addMessage(convId);

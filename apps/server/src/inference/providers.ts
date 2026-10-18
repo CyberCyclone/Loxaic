@@ -696,25 +696,21 @@ export function __resetProviderCacheForTest(): void {
 /**
  * Whether the model a run is about to use can be shown an image (#281).
  *
- * Decisive only where the server actually knows: the built-in llama.cpp backend
- * sees images when the model was loaded with an `--mmproj` projector, which is a
- * fact on the model's row. A configured provider speaks an OpenAI- or
- * Anthropic-compatible API whose mainstream models accept image parts and there
- * is no capability field on a provider row, so those answer true and a backend
- * that disagrees says so in its own error — `visionErrorMessage` already
- * translates that into the sentence telling the person to switch models.
- * Guessing false for everything unknown would hide screenshots from the models
- * most likely to read them.
+ * Yes only where the server knows: a built-in llama.cpp model loaded with an
+ * `--mmproj` projector and not with vision switched off. A configured provider
+ * row records nothing about its models' inputs, so a provider model answers no:
+ * a screenshot sent to a text-only model would fail every later turn of the
+ * conversation, because the answer is stored with the result and replayed.
+ * The person still sees the screenshot on the tool card either way.
  *
- * The answer is used to write `images_sent_to_model` on a tool result **once**,
- * at the moment the result is stored; nothing re-derives it later, which is what
- * keeps a model switch from rewriting an older part of the prompt (the prefix
- * rule in streams/AGENTS.md).
+ * The answer is written into `images_sent_to_model` once, when the result is
+ * stored; nothing re-derives it, so a model switch never rewrites an older part
+ * of the prompt (the prefix rule in streams/AGENTS.md).
  */
 export async function modelSupportsImages(ref: string): Promise<boolean> {
   if (MOCK_MODE()) return true;
   const { providerSlug, upstreamModel } = parseModelRef(ref);
-  if (providerSlug !== null) return true;
+  if (providerSlug !== null) return false;
   try {
     const servable = await listServableModels();
     // "default" names the first servable model, which may or may not be a

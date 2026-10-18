@@ -136,8 +136,10 @@ cpSync(path.join(repoRoot, "infra/docker"), path.join(outDir, "sandbox"), {
 // frontmatter, the built-ins included: without it no skill loads at all.
 // tar-stream writes a custom image's home into its container before start
 // (sandbox/container-engine.ts, which the executor bundles too): without it
-// neither process loads.
-for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "node_modules/node-forge", "node_modules/yaml", "node_modules/tar-stream", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
+// neither process loads. playwright-core drives web_fetch's browser fallback
+// and carries the installer that downloads its Chromium (browser/install.ts):
+// without it the admin's Install button has nothing to run.
+for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "node_modules/playwright-core", "node_modules/node-forge", "node_modules/yaml", "node_modules/tar-stream", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
   if (!existsSync(path.join(outDir, required))) {
     throw new Error(`[build-server] missing ${required} in ${outDir}`);
   }

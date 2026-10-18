@@ -57,16 +57,18 @@ async function mayReadAttachment(userId: string, ref: string, ownerId: string): 
         -- A plain attachment block on a user row…
         (block->>'kind' = 'attachment' AND block->>'ref' = ${ref})
         -- …or an image a tool produced, nested in that tool's result block
-        -- (a browse screenshot, #281). The person may not have written this row,
+        -- (a web_fetch screenshot, #281). The person may not have written this row,
         -- but it is in their conversation and they are entitled to see what the
         -- model was shown. Matches the reaper's predicate; both change together.
-        OR (
-          block->>'kind' = 'tool_result'
-          AND jsonb_typeof(block->'images') = 'array'
-          AND EXISTS (
-            SELECT 1 FROM jsonb_array_elements(block->'images') AS image
-            WHERE image->>'ref' = ${ref}
-          )
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+            -- CASE, not AND: Postgres does not promise to evaluate the type
+            -- check first, and jsonb_array_elements raises on a non-array.
+            CASE WHEN block->>'kind' = 'tool_result' AND jsonb_typeof(block->'images') = 'array'
+                 THEN block->'images' ELSE '[]'::jsonb END
+          ) AS image
+          WHERE image->>'ref' = ${ref}
         )
       )
       AND m.deleted_at IS NULL

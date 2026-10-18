@@ -46,7 +46,7 @@ import {
   selectAffordableAttachments,
 } from "../../files/storage.ts";
 import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
-import { resolveModelRef } from "../../inference/providers.ts";
+import { modelSupportsImages, resolveModelRef } from "../../inference/providers.ts";
 import {
   addChars,
   apportion,
@@ -96,7 +96,9 @@ import {
   type CheckOutcome,
 } from "../../permissions/check.ts";
 import { addCommandRules, loadCommandRules } from "../../permissions/store.ts";
-import { getInferenceSettings } from "../../settings.ts";
+import { getBrowserSettings, getInferenceSettings } from "../../settings.ts";
+import { renderPage } from "../../browser/render.ts";
+import { replayedScreenshotRefs, screenshotMessage, screenshotTurnsOf, storeScreenshot, type ScreenshotTurn } from "./screenshots.ts";
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -1421,6 +1423,9 @@ export async function runToolLoop(ctx: {
 
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
+      // Screenshots the model is shown, sent after every result of this
+      // iteration (screenshots.ts says why after, not between).
+      const screenshotTurns: ScreenshotTurn[] = [];
       // Set once a plan or questions have been handed over in this message —
       // see the end of the turn below.
       let handedOver = false;
@@ -1611,13 +1616,20 @@ export async function runToolLoop(ctx: {
           ok: outcome.ok,
           ...(outcome.diff ? { diff: outcome.diff } : {}),
           ...(outcome.permission ? { permission: outcome.permission } : {}),
+          ...(outcome.images ? { images: outcome.images } : {}),
+          ...(outcome.images && outcome.imagesSentToModel ? { images_sent_to_model: true } : {}),
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
+        if (outcome.images && outcome.imagesSentToModel) screenshotTurns.push({ callId: call.id, images: outcome.images });
         if (HANDOVER_TOOL_NAMES.has(call.function.name) && outcome.ok) handedOver = true;
         if (call.function.name === "todo_write" && outcome.ok) {
           const written = parseTodoList(safeParseArgs(call.function.arguments));
           if (written) todoStaleness.wrote(written);
         }
+      }
+      if (screenshotTurns.length > 0) {
+        chatMessages.push(await screenshotMessage(screenshotTurns));
+        hadImages = true;
       }
       todoStaleness.endIteration();
       producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
@@ -2032,6 +2044,10 @@ async function runOneToolCall(
   diff?: { path: string; oldContent: string | null; newContent: string | null }[];
   /** Why it ran without a person approving, or was refused. */
   permission?: ToolPermission;
+  /** A web_fetch screenshot, stored (#281). */
+  images?: AttachmentRef[];
+  /** Whether the model is shown `images`, decided once when stored. */
+  imagesSentToModel?: boolean;
 }> {
   const { userId, mode, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
@@ -2213,7 +2229,15 @@ async function runOneToolCall(
     // A read-only command that nobody was asked about still runs inside a
     // repository the model can write to: git's fsmonitor and pager are the
     // repo-config hooks a `git status` or `git log` would otherwise run.
-    permission?.by === "readonly" ? { bashEnv: READ_ONLY_BASH_ENV } : undefined,
+    {
+      ...(permission?.by === "readonly" ? { bashEnv: READ_ONLY_BASH_ENV } : {}),
+      // web_fetch's browser fallback, bound to this conversation and this
+      // run's Stop. Keyed by the conversation running the call — a
+      // sub-agent's own, never its parent's — so no two chats share one.
+      ...(builtinName === "web_fetch" && getBrowserSettings().enabled
+        ? { renderer: (url: URL, o: { screenshot: boolean; maxTextChars: number }) => renderPage(ctx.convId, url, { ...o, signal: ctx.signal }) }
+        : {}),
+    },
   );
   // A read inside a subdirectory with its own AGENTS.md brings that file
   // along, once — appended here so the live event and the persisted row carry
@@ -2238,6 +2262,21 @@ async function runOneToolCall(
   // which show the live list from it and from the snapshot's `todos`. One
   // small record per todo_write. Remove it once those builds are gone.
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
+  // A screenshot becomes an attachment before anything is emitted, so the live
+  // event, the stored row and the replay all name the same ref. Whether the
+  // model is shown it is decided here, once, and stored: re-asking on replay
+  // would change an older part of the prompt whenever the model changes.
+  let images: AttachmentRef[] | undefined;
+  let imagesSentToModel = false;
+  if (result.image) {
+    const stored = await storeScreenshot(ctx.convId, call.id, result.image);
+    if ("images" in stored) {
+      images = stored.images;
+      imagesSentToModel = await modelSupportsImages(ctx.check.model);
+    } else {
+      result.output += `\n${stored.note}`;
+    }
+  }
   producer.emit({
     kind: "tool.result",
     message_id: assistantMsgId,
@@ -2247,8 +2286,15 @@ async function runOneToolCall(
     ok: result.ok,
     ...(result.diff ? { diff: result.diff } : {}),
     ...(permission ? { permission } : {}),
+    ...(images ? { images } : {}),
   });
-  return { output: result.output, ok: result.ok, diff: result.diff, ...(permission ? { permission } : {}) };
+  return {
+    output: result.output,
+    ok: result.ok,
+    diff: result.diff,
+    ...(permission ? { permission } : {}),
+    ...(images ? { images, imagesSentToModel } : {}),
+  };
 }
 
 /** What the permission check needs from the run (permissions/check.ts). */
@@ -2752,6 +2798,14 @@ export async function loadHistory(conversationId: string): Promise<{
       ).values()]
     : [];
 
+  // Which screenshots go as images: the newest few, decided over the whole
+  // replay so every turn makes the same choice for the same history.
+  const replayedScreenshots = replayedScreenshotRefs(
+    complete
+      .filter((row) => row.authorType === "tool")
+      .flatMap((row) => screenshotTurnsOf((row.content ?? []) as ContentBlock[], presentCallIds)),
+  );
+
   const out: ChatMessage[] = [];
   for (const row of complete) {
     const blocks = (row.content ?? []) as ContentBlock[];
@@ -2796,6 +2850,8 @@ export async function loadHistory(conversationId: string): Promise<{
         if (!presentCallIds.has(block.call_id)) continue;
         out.push(toolResultMessageForPrompt(block.call_id, callNames.get(block.call_id), block.output));
       }
+      const shots = screenshotTurnsOf(blocks, presentCallIds);
+      if (shots.length > 0) out.push(await screenshotMessage(shots, (ref) => replayedScreenshots.has(ref)));
     }
   }
   return { messages: out, summaryText, omittedAttachments };

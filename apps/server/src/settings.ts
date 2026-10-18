@@ -153,198 +153,121 @@ export interface ConversationSettingsView extends ConversationSettings {
 }
 
 /**
- * The browsing session each conversation can get (#281).
+ * web_fetch's browser fallback (#281).
  *
- * **Off by default**, and that default is a security choice rather than
- * caution about a heavy feature: browsing lets model-directed page content make
- * outbound requests and render arbitrary sites. A deployment turns it on
- * deliberately, having read `docs/BROWSING.md`, exactly as an admin turns on
- * `allowNetwork` for sandboxes.
- *
- * The container is a separate image on a separate internal network with a tmpfs
- * profile; none of that is configurable here, because each of those choices is
- * part of the isolation argument and an option would be a way to turn it off.
+ * **Off by default.** Turning it on lets model-chosen pages run script on this
+ * host, inside Chromium's own sandbox with every request fetched and checked
+ * by the server (browser/intercept.ts). It also needs a browser build, which an
+ * admin installs from the same screen. A deployment opts in deliberately.
  */
 export interface BrowserSettings {
   enabled: boolean;
-  /** How long a session may sit unused before it is **destroyed** — not paused.
-   * A browser has nothing to resume, so unlike `idleStopMs` this is the end of
-   * the session and its logins. */
+  /** How long a conversation's browser may sit unused before it is closed,
+   * and its cookies and storage with it. Nothing is kept to resume. */
   idleMs: number;
-  /** Sessions per user, across all their conversations. One by default: the
-   * isolation the issue asks for is *between chats*, and a user with ten open
-   * sessions is ten sets of cookies on one machine. */
-  maxSessionsPerUser: number;
-  /** How long to wait for Chromium to come up before the tool call fails.
-   * Generous because the first call on a fresh deployment builds the image,
-   * which is minutes of download on a cold machine. */
-  launchTimeoutMs: number;
-  /** A single action's timeout (a navigation, a click). */
+  /** Browsers running at once, across every conversation on this server. Each
+   * is its own Chromium process, so this is the memory dial. */
+  maxBrowsers: number;
+  /** How long one page may take to load and be read before the fetch gives up
+   * and the conversation's browser is closed. */
   actionTimeoutMs: number;
 }
 
 export interface BrowserSettingsView extends BrowserSettings {
-  envOverrides: {
-    enabled: boolean;
-    idleMs: boolean;
-    maxSessionsPerUser: boolean;
-    launchTimeoutMs: boolean;
-    actionTimeoutMs: boolean;
-  };
+  envOverrides: { enabled: boolean; idleMs: boolean; maxBrowsers: boolean; actionTimeoutMs: boolean };
 }
 
-const BROWSER_DEFAULTS: BrowserSettings = {
+export const BROWSER_DEFAULTS: BrowserSettings = {
   enabled: false,
-  idleMs: 15 * 60_000,
-  maxSessionsPerUser: 1,
-  launchTimeoutMs: 10 * 60_000,
+  idleMs: 5 * 60_000,
+  maxBrowsers: 3,
   actionTimeoutMs: 30_000,
 };
 
 const BROWSER_IDLE_RANGE = { min: 60_000, max: 24 * 60 * 60_000 };
-const BROWSER_SESSIONS_RANGE = { min: 1, max: 8 };
-const BROWSER_LAUNCH_RANGE = { min: 10_000, max: 30 * 60_000 };
-const BROWSER_ACTION_RANGE = { min: 1_000, max: 5 * 60_000 };
+const BROWSER_COUNT_RANGE = { min: 1, max: 16 };
+const BROWSER_ACTION_RANGE = { min: 5_000, max: 2 * 60_000 };
 
 /**
- * Resolved browsing settings: env pin > persisted > default (off).
- *
- * Fail-closed on an unreadable row, like the sandbox mode: browsing is the
- * feature whose container renders hostile pages, so "could not read the setting
- * that turns it off" must not turn it on.
+ * Resolved browser settings: env > persisted > default (off). An unreadable
+ * row reads as off: "could not read the switch" must not turn on a feature that
+ * runs strangers' pages here.
  */
 export function getBrowserSettings(): BrowserSettingsView {
   const enabled = envBool("BROWSER_ENABLED");
   const idleMs = envPositiveInt("BROWSER_IDLE_MS");
-  const maxSessionsPerUser = envPositiveInt("BROWSER_MAX_SESSIONS_PER_USER");
-  const launchTimeoutMs = envPositiveInt("BROWSER_LAUNCH_TIMEOUT_MS");
+  const maxBrowsers = envPositiveInt("BROWSER_MAX");
   const actionTimeoutMs = envPositiveInt("BROWSER_ACTION_TIMEOUT_MS");
-  const storedEnabled = browserLoadFailed ? false : (persistedBrowser.enabled ?? BROWSER_DEFAULTS.enabled);
+  const stored = browserLoadFailed ? {} : persistedBrowser;
   return {
-    enabled: enabled ?? storedEnabled,
-    idleMs: idleMs ?? persistedBrowser.idleMs ?? BROWSER_DEFAULTS.idleMs,
-    maxSessionsPerUser: maxSessionsPerUser ?? persistedBrowser.maxSessionsPerUser ?? BROWSER_DEFAULTS.maxSessionsPerUser,
-    launchTimeoutMs: launchTimeoutMs ?? persistedBrowser.launchTimeoutMs ?? BROWSER_DEFAULTS.launchTimeoutMs,
-    actionTimeoutMs: actionTimeoutMs ?? persistedBrowser.actionTimeoutMs ?? BROWSER_DEFAULTS.actionTimeoutMs,
+    enabled: enabled ?? (browserLoadFailed ? false : (stored.enabled ?? BROWSER_DEFAULTS.enabled)),
+    idleMs: idleMs ?? stored.idleMs ?? BROWSER_DEFAULTS.idleMs,
+    maxBrowsers: maxBrowsers ?? stored.maxBrowsers ?? BROWSER_DEFAULTS.maxBrowsers,
+    actionTimeoutMs: actionTimeoutMs ?? stored.actionTimeoutMs ?? BROWSER_DEFAULTS.actionTimeoutMs,
     envOverrides: {
       enabled: enabled !== null,
       idleMs: idleMs !== null,
-      maxSessionsPerUser: maxSessionsPerUser !== null,
-      launchTimeoutMs: launchTimeoutMs !== null,
+      maxBrowsers: maxBrowsers !== null,
       actionTimeoutMs: actionTimeoutMs !== null,
     },
   };
-}
-
-/** Same shape of refusal as `duration`, for a count rather than a span. */
-function boundedInt(
-  raw: unknown,
-  field: string,
-  range: { min: number; max: number },
-  pinned: boolean,
-  envName: string,
-): number {
-  if (typeof raw !== "number" || !Number.isInteger(raw)) {
-    throw new SettingsError(`${field} must be an integer`, "invalid");
-  }
-  if (raw < range.min || raw > range.max) {
-    throw new SettingsError(
-      `${field} must be between ${String(range.min)} and ${String(range.max)}`,
-      "invalid",
-    );
-  }
-  if (pinned) throw new SettingsError(`${field} is pinned by the ${envName} environment variable`, "envOverride");
-  return raw;
 }
 
 function coerceBrowser(raw: unknown): Partial<BrowserSettings> {
   if (typeof raw !== "object" || raw === null) return {};
   const value = raw as Record<string, unknown>;
   const out: Partial<BrowserSettings> = {};
+  const inRange = (v: unknown, r: { min: number; max: number }): v is number =>
+    typeof v === "number" && Number.isInteger(v) && v >= r.min && v <= r.max;
   if (typeof value.enabled === "boolean") out.enabled = value.enabled;
-  if (typeof value.idleMs === "number" && Number.isFinite(value.idleMs) && value.idleMs > 0) out.idleMs = value.idleMs;
-  if (typeof value.maxSessionsPerUser === "number" && Number.isInteger(value.maxSessionsPerUser) && value.maxSessionsPerUser > 0) {
-    out.maxSessionsPerUser = value.maxSessionsPerUser;
-  }
-  if (typeof value.launchTimeoutMs === "number" && Number.isFinite(value.launchTimeoutMs) && value.launchTimeoutMs > 0) {
-    out.launchTimeoutMs = value.launchTimeoutMs;
-  }
-  if (typeof value.actionTimeoutMs === "number" && Number.isFinite(value.actionTimeoutMs) && value.actionTimeoutMs > 0) {
-    out.actionTimeoutMs = value.actionTimeoutMs;
-  }
+  if (inRange(value.idleMs, BROWSER_IDLE_RANGE)) out.idleMs = value.idleMs;
+  if (inRange(value.maxBrowsers, BROWSER_COUNT_RANGE)) out.maxBrowsers = value.maxBrowsers;
+  if (inRange(value.actionTimeoutMs, BROWSER_ACTION_RANGE)) out.actionTimeoutMs = value.actionTimeoutMs;
   return out;
 }
 
-/**
- * Validates and persists a browsing change. Partial, like the others.
- *
- * Turning browsing **off** destroys the live sessions: a switch an admin
- * expects to stop the browsing has to stop it, not stop new sessions from
- * starting while the existing ones keep browsing. Order is the same reason the
- * sandbox settings' are — do the teardown while the engine cache is still the
- * one those containers were created under.
- */
+/** Validates and persists a browser change. Partial, like the others; turning
+ * it off closes every browser, launches still in flight included. */
 export async function updateBrowserSettings(input: unknown): Promise<BrowserSettingsView> {
-  if (typeof input !== "object" || input === null) {
-    throw new SettingsError("body must be an object", "invalid");
-  }
+  if (typeof input !== "object" || input === null) throw new SettingsError("body must be an object", "invalid");
   const raw = input as Record<string, unknown>;
   const env = getBrowserSettings().envOverrides;
   const patch: Partial<BrowserSettings> = {};
-
   if (raw.enabled !== undefined) {
     if (typeof raw.enabled !== "boolean") throw new SettingsError("enabled must be a boolean", "invalid");
     if (env.enabled) throw new SettingsError("enabled is pinned by the BROWSER_ENABLED environment variable", "envOverride");
     patch.enabled = raw.enabled;
   }
-  if (raw.idleMs !== undefined) {
-    patch.idleMs = duration(raw.idleMs, "idleMs", BROWSER_IDLE_RANGE, env.idleMs, "BROWSER_IDLE_MS");
-  }
-  if (raw.maxSessionsPerUser !== undefined) {
-    patch.maxSessionsPerUser = boundedInt(
-      raw.maxSessionsPerUser,
-      "maxSessionsPerUser",
-      BROWSER_SESSIONS_RANGE,
-      env.maxSessionsPerUser,
-      "BROWSER_MAX_SESSIONS_PER_USER",
-    );
-  }
-  if (raw.launchTimeoutMs !== undefined) {
-    patch.launchTimeoutMs = duration(
-      raw.launchTimeoutMs,
-      "launchTimeoutMs",
-      BROWSER_LAUNCH_RANGE,
-      env.launchTimeoutMs,
-      "BROWSER_LAUNCH_TIMEOUT_MS",
-    );
+  if (raw.idleMs !== undefined) patch.idleMs = duration(raw.idleMs, "idleMs", BROWSER_IDLE_RANGE, env.idleMs, "BROWSER_IDLE_MS");
+  if (raw.maxBrowsers !== undefined) {
+    const n = raw.maxBrowsers;
+    if (typeof n !== "number" || !Number.isInteger(n)) throw new SettingsError("maxBrowsers must be an integer", "invalid");
+    if (n < BROWSER_COUNT_RANGE.min || n > BROWSER_COUNT_RANGE.max) {
+      throw new SettingsError(`maxBrowsers must be between ${String(BROWSER_COUNT_RANGE.min)} and ${String(BROWSER_COUNT_RANGE.max)}`, "invalid");
+    }
+    if (env.maxBrowsers) throw new SettingsError("maxBrowsers is pinned by the BROWSER_MAX environment variable", "envOverride");
+    patch.maxBrowsers = n;
   }
   if (raw.actionTimeoutMs !== undefined) {
-    patch.actionTimeoutMs = duration(
-      raw.actionTimeoutMs,
-      "actionTimeoutMs",
-      BROWSER_ACTION_RANGE,
-      env.actionTimeoutMs,
-      "BROWSER_ACTION_TIMEOUT_MS",
-    );
+    patch.actionTimeoutMs = duration(raw.actionTimeoutMs, "actionTimeoutMs", BROWSER_ACTION_RANGE, env.actionTimeoutMs, "BROWSER_ACTION_TIMEOUT_MS");
   }
-
   if (Object.keys(patch).length === 0) throw new SettingsError("nothing to update", "invalid");
-
-  const next: BrowserSettings = { ...BROWSER_DEFAULTS, ...persistedBrowser, ...patch };
-  await db
+  const [row] = await db
     .insert(serverSettings)
-    .values({ key: BROWSER_KEY, value: next, updatedAt: new Date() })
-    .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
-  persistedBrowser = next;
+    .values({ key: BROWSER_KEY, value: patch, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: serverSettings.key,
+      set: { value: sql`${serverSettings.value} || excluded.value`, updatedAt: new Date() },
+    })
+    .returning({ value: serverSettings.value });
+  persistedBrowser = coerceBrowser(row.value);
   browserLoadFailed = false;
-
-  if (!next.enabled) {
-    const { stopAllBrowserSessions } = await import("./browser/manager.ts");
-    await stopAllBrowserSessions().catch(() => 0);
+  if (!getBrowserSettings().enabled) {
+    const { closeAllBrowsers } = await import("./browser/manager.ts");
+    await closeAllBrowsers();
   }
   return getBrowserSettings();
 }
-
 
 /** Row keys for the settings groups. */
 const SANDBOX_KEY = "sandbox";

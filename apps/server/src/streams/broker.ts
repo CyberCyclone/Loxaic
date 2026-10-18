@@ -292,6 +292,7 @@ export class StreamBroker {
             call.ok = event.ok;
             call.diff = event.diff;
             if (event.permission) call.permission = event.permission;
+            if (event.images) call.images = event.images;
           }
           if (pendingApproval?.call_id === event.call_id) pendingApproval = undefined;
           break;

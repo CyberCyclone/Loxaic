@@ -1,14 +1,17 @@
 import "./force-prompt-prefix.ts";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
-import { conversations, messages, sandboxes, usageRecords, user, userPrefs } from "@loxaic/db/schema";
+import { attachments, conversations, messages, sandboxes, usageRecords, user, userPrefs } from "@loxaic/db/schema";
 import { CHECKIN_ANSWER_NUDGE, PLAN_ACCEPTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX, type ThinkingLevel } from "@loxaic/types";
 import type { ChatMessage } from "../../../inference/provider.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
+import { managedExecutable } from "../../../browser/install.ts";
 import { __resetExecutorsForTest, handleExecutorResult, registerExecutor } from "../../../executor/registry.ts";
 import { createExecutorService } from "../../../executor/service.ts";
 import type { ServerToExecutor } from "../../../executor/protocol.ts";
@@ -106,6 +109,8 @@ afterAll(async () => {
   }
   // A rewind detaches usage from its conversation rather than deleting it.
   await db.delete(usageRecords).where(eq(usageRecords.userId, userId));
+  // The screenshot case stores an attachment for this user.
+  await db.delete(attachments).where(eq(attachments.ownerId, userId));
   await db.delete(user).where(eq(user.id, userId));
   delete process.env.AUTO_COMPACT_THRESHOLD;
 });
@@ -412,6 +417,74 @@ describe("every prompt extends the previous one", () => {
     expect(todos.length).toBeGreaterThan(0);
     expect(Object.keys(todos[0])).not.toEqual(["status", "id", "text"]);
   });
+});
+
+/**
+ * A web_fetch screenshot (#281) reaches the model as a user message after the
+ * iteration's tool results, and the next turn's replay rebuilds that message
+ * byte for byte from the stored attachment. Needs a real Chromium, so it runs
+ * where the browser tests do (src/browser/__tests__/chromium.test.ts).
+ */
+const browserBuild = managedExecutable(process.env.BROWSER_DIR ?? path.join(homedir(), ".cache", "loxaic-e2e", "browsers"));
+describe.skipIf(!browserBuild)("a web_fetch screenshot replays identically", () => {
+  let dir: string;
+  let site: Server;
+  const saved: Record<string, string | undefined> = {};
+  const env = (key: string, value: string) => {
+    if (!(key in saved)) saved[key] = process.env[key];
+    process.env[key] = value;
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(path.join(tmpdir(), "prefix-screenshot-"));
+    site = createServer((_req, res) => {
+      res.setHeader("content-type", "text/html");
+      res.end("<p>a page worth looking at</p>");
+    });
+    await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
+    const { port } = site.address() as AddressInfo;
+    const file = path.join(dir, "scenarios.json");
+    writeFileSync(file, JSON.stringify([{
+      match: "screenshot the fixture",
+      steps: [{ tool: "web_fetch", args: { url: `http://127.0.0.1:${String(port)}/`, screenshot: true } }],
+      finalText: "[Mock] Took it.\n",
+    }]));
+    env("MOCK_SCENARIOS_FILE", file);
+    env("LOXAIC_E2E_FETCH_ALLOW", `127.0.0.1:${String(port)}`);
+    env("BROWSER_ENABLED", "true");
+    env("BROWSER_EXECUTABLE", browserBuild ?? "");
+    env("UPLOADS_DIR", path.join(dir, "uploads"));
+    mkdirSync(path.join(dir, "uploads"), { recursive: true });
+    __resetMockScenariosForTest();
+  });
+
+  afterAll(async () => {
+    const { __resetBrowsersForTest } = await import("../../../browser/manager.ts");
+    await __resetBrowsersForTest();
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) Reflect.deleteProperty(process.env, key);
+      else process.env[key] = value;
+    }
+    __resetMockScenariosForTest();
+    site.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("sends the screenshot after the tool results, then the same bytes on the next turn", async () => {
+    const convId = await turn("screenshot the fixture");
+    await turn("what did it show?", convId);
+    expectEachRequestExtendsTheLast();
+    const last = requests.at(-1) ?? [];
+    const tool = last.findIndex((m) => (JSON.parse(m) as { role: string }).role === "tool");
+    expect(tool).toBeGreaterThan(-1);
+    const after = JSON.parse(last[tool + 1]) as { role: string; content: { type: string }[] };
+    expect(after.role).toBe("user");
+    expect(after.content.map((p) => p.type)).toEqual(["text", "image_url"]);
+    const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+    const result = rows.flatMap((r) => r.content as { kind: string; images?: unknown[]; images_sent_to_model?: boolean }[]).find((b) => b.kind === "tool_result");
+    expect(result?.images).toHaveLength(1);
+    expect(result?.images_sent_to_model).toBe(true);
+  }, 60_000);
 });
 
 describe("a mock scenario's steps replay identically too", () => {

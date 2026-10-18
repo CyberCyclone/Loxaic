@@ -6,7 +6,6 @@ export type ToolName =
   | "grep"
   | "glob"
   | "web_fetch"
-  | "browse"
   | "todo_write"
   | "propose_plan"
   | "ask_questions"
@@ -24,48 +23,6 @@ export const WRITE_TOOLS: ToolName[] = ["fs_write", "fs_edit"];
 export const PLANNING_BASH_DESCRIPTION =
   "Run a read-only shell command in the workspace: listing, reading and searching files, and git and gh reads " +
   "(git log, git diff, gh pr view, gh issue view). Anything that changes something is refused in planning mode.";
-
-/** Every `browse` action, as the tool's schema and the server's switch agree.
- * Here rather than in the server because the schema the model sees and the set
- * planning mode narrows to must be one list — a drift between them would offer
- * an action the refusal logic does not know. */
-export const BROWSE_ACTIONS = [
-  "goto",
-  "back",
-  "forward",
-  "reload",
-  "text",
-  "links",
-  "screenshot",
-  "click",
-  "type",
-  "press",
-  "select",
-  "hover",
-  "scroll",
-  "wait",
-] as const;
-
-export type BrowseAction = (typeof BROWSE_ACTIONS)[number];
-
-/** The actions that change what the page does or holds. `scroll` and `wait`
- * move the view, not the page; `goto` is how a model leaves a page, which
- * planning mode needs in order to read anything. */
-export const MUTATING_BROWSE_ACTIONS: readonly BrowseAction[] = ["click", "type", "press", "select", "hover"];
-
-/** What planning mode offers: read the page, do not change it. Enforced in
- * apps/server/src/browser/actions.ts as well as by the schema and description
- * below — a description is presentation. */
-export const READ_ONLY_BROWSE_ACTIONS: readonly BrowseAction[] = BROWSE_ACTIONS.filter(
-  (a) => !MUTATING_BROWSE_ACTIONS.includes(a),
-);
-
-/** The `browse` description planning mode offers instead of the usual one. The
- * mutating actions are refused server-side too (apps/server/src/browser/actions.ts);
- * this is what stops the model trying them. */
-export const PLANNING_BROWSE_DESCRIPTION =
-  "Open and read a page in the conversation's own browser: navigate, read the rendered text, list its links, " +
-  "take a screenshot. Clicking, typing and pressing keys are refused in planning mode.";
 
 export interface ToolDef {
   name: ToolName;
@@ -166,60 +123,11 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "web_fetch",
-    description:
-      "Fetch a public http(s) URL and return its text content. Fast, and it sees only what the server returns: " +
-      "a page that renders with JavaScript will come back mostly empty. Pass render: true to load it in the " +
-      "conversation's browser instead — slower, and it sees the page as a person would.",
+    description: "Fetch a public http(s) URL and return its text content.",
     parameters: {
       type: "object",
-      properties: {
-        url: { type: "string", description: "Absolute http or https URL" },
-        render: {
-          type: "boolean",
-          description: "Load the page in the browser and return the rendered text. Use when the plain fetch comes back empty or clearly unfinished.",
-        },
-      },
+      properties: { url: { type: "string", description: "Absolute http or https URL" } },
       required: ["url"],
-    },
-    requiresApproval: false,
-  },
-  {
-    name: "browse",
-    // The actions and the caps are named because a model that does not know a
-    // screenshot comes back as an image it can see will keep asking for one in
-    // text, and a model that does not know `wait` exists will read a page half
-    // rendered and report what was there.
-    description:
-      "Drive the conversation's own headless browser: goto, back, forward, reload, text, links, screenshot, " +
-      "click, type, press, select, hover, scroll, wait. One session per conversation, reused across calls, so you " +
-      "can navigate and then act on what loaded; it has no history of any other conversation and nothing you do " +
-      "here persists once the conversation ends or the session goes idle. `screenshot` returns an image you can " +
-      "see and the person can view. Prefer `text` for reading and `screenshot` for layout; `wait` with a selector " +
-      "before acting on content a page fetches after load.",
-    parameters: {
-      type: "object",
-      properties: {
-        action: {
-          type: "string",
-          enum: [...BROWSE_ACTIONS],
-        },
-        url: { type: "string", description: "goto: the absolute http(s) URL to open" },
-        selector: {
-          type: "string",
-          description: "CSS selector, for click / type / press / select / hover / wait. One matching element.",
-        },
-        text: { type: "string", description: "type: the text to enter. select: the option value." },
-        key: { type: "string", description: "press: the key name, e.g. Enter, Escape, Tab, Control+a" },
-        fullPage: { type: "boolean", description: "screenshot: capture the whole scrollable page, not just the viewport" },
-        format: { type: "string", enum: ["png", "jpeg"], description: "screenshot: png (default) or jpeg (smaller, lossy)" },
-        pixels: { type: "number", description: "scroll: how far, positive down (default 720)" },
-        loadState: {
-          type: "string",
-          enum: ["load", "domcontentloaded", "networkidle"],
-          description: "wait without a selector: which load state to wait for. networkidle is what a JavaScript-heavy page needs.",
-        },
-      },
-      required: ["action"],
     },
     requiresApproval: false,
   },
@@ -529,6 +437,34 @@ export interface ResolvedTool {
 /** Every builtin a run in `mode` may be offered — `PLAN_TOOL` and
  * `QUESTIONS_TOOL` in planning mode only. Write tools are still included here; hiding them from a planning run
  * is the toolset's job, since it has MCP tools to judge the same way. */
+/**
+ * `web_fetch` as offered when the server's browser fallback is on (#281): the
+ * same tool, with a `screenshot` argument and a sentence saying a blocked or
+ * script-built page is loaded in a browser. Swapped in by the admin setting
+ * alone, never by whether a browser is healthy right now: the tool list is
+ * part of every request's prompt prefix, so it changes only when an admin
+ * flips the switch.
+ */
+export const WEB_FETCH_BROWSING_TOOL: ToolDef = {
+  name: "web_fetch",
+  description:
+    "Fetch a public http(s) URL and return its text content. If the site refuses a plain fetch or builds the " +
+    "page with JavaScript, it is loaded in this conversation's own browser instead and the rendered text " +
+    "comes back. Pass screenshot: true to see the page as an image as well.",
+  parameters: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "Absolute http or https URL" },
+      screenshot: {
+        type: "boolean",
+        description: "Also return a screenshot of the page as it renders in a browser. Slower; use when layout or images matter.",
+      },
+    },
+    required: ["url"],
+  },
+  requiresApproval: false,
+};
+
 export function resolveBuiltinTools(
   mode?: PermissionMode,
   opts?: {
@@ -541,38 +477,21 @@ export function resolveBuiltinTools(
     /** Present to offer the `skill` tool, listing these skills (see
      * `skillTool`). Absent when the conversation has none. */
     skills?: readonly SkillListing[];
-    /** Offer `browse`. Gated on the admin **setting**, not on whether an engine
-     * answers right now: the tool list is part of every request's prompt prefix,
-     * so a tool that appeared and disappeared with the engine's health would
-     * break the cache on every blip. A conversation whose browsing is enabled
-     * but whose engine is down gets a clear tool failure instead, and the
-     * availability answer belongs to `/v1/config` and the admin view. */
+    /** The server's browser fallback is on: offer `WEB_FETCH_BROWSING_TOOL`
+     * in place of the plain `web_fetch`. */
     browsing?: boolean;
-    /** Addresses this deployment has no browser for, used to decide nothing
-     * about offering — kept out on purpose. See `browsing`. */
   },
 ): ResolvedTool[] {
   const defs = [
-    ...TOOLS.filter((t) => t.name !== "browse" || opts?.browsing === true),
+    ...TOOLS.map((t) => (t.name === "web_fetch" && opts?.browsing === true ? WEB_FETCH_BROWSING_TOOL : t)),
     ...(mode === "planning" && opts?.handover !== false ? [PLAN_TOOL, QUESTIONS_TOOL] : []),
     ...(opts?.subagents ? [subagentTool(opts.subagents.models ?? undefined)] : []),
     ...(opts?.skills ? [skillTool(opts.skills)] : []),
   ];
   return defs.map((t) => ({
     name: t.name,
-    description:
-      mode === "planning" && t.name === "bash"
-        ? PLANNING_BASH_DESCRIPTION
-        : mode === "planning" && t.name === "browse"
-          ? PLANNING_BROWSE_DESCRIPTION
-          : t.description,
-    parameters:
-      // Planning mode's `action` list is the read-only half, so the model is not
-      // offered a choice it will only be refused. The refusal is enforced in
-      // browser/actions.ts regardless; this is presentation.
-      t.name === "browse" && mode === "planning"
-        ? { ...t.parameters, properties: { ...t.parameters.properties, action: { type: "string", enum: [...READ_ONLY_BROWSE_ACTIONS] } } }
-        : t.parameters,
+    description: mode === "planning" && t.name === "bash" ? PLANNING_BASH_DESCRIPTION : t.description,
+    parameters: t.parameters,
     requiresApproval: t.requiresApproval,
     isWrite: WRITE_TOOLS.includes(t.name),
     source: { kind: "builtin" },

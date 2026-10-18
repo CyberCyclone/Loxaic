@@ -36,15 +36,10 @@ export function isBlockedAddress(ip: string, family: number): boolean {
   // Every way an IPv4 address can ride inside an IPv6 one is unwrapped and the
   // IPv4 checked: mapped (::ffff:a.b.c.d), compatible (::a.b.c.d, which also
   // covers :: and ::1), NAT64 (64:ff9b::a.b.c.d) and 6to4 (2002:aabb:ccdd::).
-  // The IPv4-translated form (::ffff:0:a.b.c.d, RFC 2765) has no real use, so
-  // all of it is refused rather than unwrapped.
   // Matching spellings was the old bug: getaddrinfo and the URL parser both
   // hand back `::ffff:7f00:1` for 127.0.0.1, which no pattern on the dotted
   // form ever saw.
-  const mapped = zeroPrefix(10) && word(5) === 0xffff;                     // ::ffff:0:0/96
-  const translated = zeroPrefix(8) && word(4) === 0xffff && word(5) === 0; // ::ffff:0:0:0/96
-  if (translated) return true;
-  if (mapped) return isBlockedAddress(embeddedV4(12), 4);
+  if (zeroPrefix(10) && word(5) === 0xffff) return isBlockedAddress(embeddedV4(12), 4);
   if (zeroPrefix(12)) return isBlockedAddress(embeddedV4(12), 4);
   if (word(0) === 0x64 && word(1) === 0xff9b) {
     // 64:ff9b:1::/48 is local-use NAT64: whatever it translates to is a choice
@@ -55,9 +50,6 @@ export function isBlockedAddress(ip: string, family: number): boolean {
   if (word(0) === 0x2002) return isBlockedAddress(embeddedV4(2), 4);
   if (word(0) === 0x2001 && word(1) === 0) return true;          // Teredo: obfuscated IPv4 inside
   if (word(0) === 0x2001 && word(1) === 0xdb8) return true;      // documentation
-  if ((word(0) & 0xfff0) === 0x3ff0) return true;                // documentation, 3fff::/20 (RFC 9637)
-  if (word(0) === 0x2001 && word(1) === 2 && word(2) === 0) return true; // benchmarking 2001:2::/48
-  if (word(0) === 0x5f00) return true;                           // SRv6 SIDs, 5f00::/16
   if (word(0) === 0x100 && word(1) === 0 && word(2) === 0 && word(3) === 0) return true; // discard-only 100::/64
   if ((bytes[0] & 0xfe) === 0xfc) return true;                   // fc00::/7 unique local
   if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return true; // fe80::/10 link local
@@ -126,6 +118,17 @@ export type GuardedResponse = Response;
 const DNS_TIMEOUT_MS = 5_000;
 
 /**
+ * e2e only: `host:port` pairs (IP literals) the guard lets through, so a spec
+ * can fetch its own fixture site on loopback. Honoured only with the mock
+ * backend, which no real deployment runs.
+ */
+function testAllowed(host: string, port: string): boolean {
+  if (process.env.MOCK_INFERENCE !== "true") return false;
+  const list = (process.env.LOXAIC_E2E_FETCH_ALLOW ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return list.includes(`${host}:${port}`);
+}
+
+/**
  * The resolver every guarded connection uses. Resolving here, inside the
  * connect, is the point: the address checked is the address dialled, so a name
  * that answers public for a check and private for the connection (DNS
@@ -179,7 +182,8 @@ export async function guardedFetch(url: URL, init: Omit<RequestInit, "dispatcher
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const family = isIP(host);
   if (family !== 0) {
-    if (isBlockedAddress(host, family)) {
+    const port = url.port || (url.protocol === "https:" ? "443" : "80");
+    if (isBlockedAddress(host, family) && !testAllowed(host, port)) {
       throw new BlockedTargetError(`refusing to fetch a private or loopback address (${host})`);
     }
   }

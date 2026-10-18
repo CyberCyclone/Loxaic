@@ -192,13 +192,6 @@ export type ContentBlock =
    * the client tints on a positive `false` for exactly that reason. Without it
    * a failed call was indistinguishable from a successful one the moment the
    * live stream ended and history was rebuilt from REST. */
-  /** Tool-produced images shown with the result — today a `browse` screenshot
-   * (#281). The refs are ordinary attachment refs with ordinary attachment rows,
-   * stored by files/generated.ts and served by the same `/v1/files/:ref` route;
-   * they ride here rather than on their own block kind so the reaper's SQL and
-   * the serve route's access check (both in `files/AGENTS.md`'s warning) have
-   * exactly one more place to look, and both were taught about this in the same
-   * commit as the field. Absent on every result that produced no image. */
   | {
       kind: "tool_result";
       call_id: string;
@@ -206,6 +199,10 @@ export type ContentBlock =
       ok?: boolean;
       diff?: FileDiff[];
       permission?: ToolPermission;
+      /** A screenshot web_fetch took (#281): ordinary attachment refs with
+       * ordinary rows (files/generated.ts), served by `/v1/files/:ref`. The
+       * reaper's referenced-ref SQL and `mayReadAttachment` both look here
+       * (files/AGENTS.md). Absent on every result without an image. */
       images?: AttachmentRef[];
       /** Whether these images were put in front of the model, decided **when the
        * result was written** and never re-derived.

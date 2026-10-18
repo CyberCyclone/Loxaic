@@ -1,5 +1,5 @@
 /**
- * Images Loxaic itself produced — today, a `browse` screenshot (#281).
+ * Images Loxaic itself produced — today, a web_fetch screenshot (#281).
  *
  * Deliberately routed through the **same** attachment pipeline as an upload
  * rather than a parallel store: an attachment row owned by the conversation's
@@ -17,17 +17,15 @@
  * follows for sandboxes.
  */
 import { randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
-import { db } from "@loxaic/db";
+import { unlink, writeFile } from "node:fs/promises";
+import { db, eq } from "@loxaic/db";
 import { attachments } from "@loxaic/db/schema";
-import { attachmentClass, IMAGE_MIMES } from "@loxaic/types";
+import { attachmentClass, IMAGE_MIMES, sanitizeFilename } from "@loxaic/types";
 import { attachmentPath, sniffMime, verifyStoredBytes } from "./storage.ts";
 import { usedAttachmentBytes, userQuotaBytes } from "./reaper.ts";
 
-/** One screenshot's ceiling. A full-page PNG of a long page is routinely
- * several MB; the browser's own cap (`BROWSE_SCREENSHOT_MAX_BYTES`) refuses
- * bigger ones before they get here, so this is the store's own line rather than
- * the model's. */
+/** One generated image's ceiling: the store's own line, the same as the
+ * browser's screenshot cap (browser/render.ts) so neither can drift past it. */
 export const GENERATED_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
 
 export class GeneratedImageError extends Error {}
@@ -53,7 +51,7 @@ export async function storeGeneratedImage(input: {
   bytes: Buffer;
   mime: string;
   ownerId: string;
-  /** Shown on the chip and in Content-Disposition; sanitized at insert. */
+  /** Shown on the chip and in Content-Disposition; sanitized here. */
   name: string;
 }): Promise<GeneratedImage> {
   if (input.bytes.length === 0) throw new GeneratedImageError("The image was empty.");
@@ -65,20 +63,20 @@ export async function storeGeneratedImage(input: {
   if (!(IMAGE_MIMES as readonly string[]).includes(input.mime) || attachmentClass(input.mime) !== "image") {
     throw new GeneratedImageError(`Only images can be stored this way (got ${input.mime}).`);
   }
-  // The sniff is the check, not a hint: a caller that passes "image/png" over
-  // JPEG bytes gets the mime the bytes actually are, or a refusal when the
-  // bytes are neither.
+  // The sniff is the check, not a hint: bytes that are not the mime the caller
+  // named are refused, never relabelled.
   const sniffed = sniffMime(input.bytes);
   if (sniffed !== input.mime) {
     throw new GeneratedImageError(`The image bytes are ${sniffed ?? "not a recognized image"}, not ${input.mime}.`);
   }
 
-  // Quota first, then the write: a deployment at its limit should fail before
-  // it has bytes on disk with no row, which only an hourly sweep could find.
-  const used = await usedAttachmentBytes(input.ownerId);
-  if (used + input.bytes.length > userQuotaBytes()) {
+  // A cheap check before writing, so an owner already at the limit costs no
+  // disk; the authoritative one is after the row exists (below).
+  const quota = userQuotaBytes();
+  if ((await usedAttachmentBytes(input.ownerId)) + input.bytes.length > quota) {
     throw new GeneratedImageError("The attachment storage quota is full, so the screenshot could not be kept.");
   }
+  const filename = sanitizeFilename(input.name);
 
   const ref = randomUUID();
   const path = attachmentPath(ref);
@@ -95,20 +93,25 @@ export async function storeGeneratedImage(input: {
       ownerId: input.ownerId,
       mime: input.mime,
       sizeBytes: input.bytes.length,
-      filename: input.name,
+      filename,
       extractStatus: "none",
       extractBytes: 0,
     });
+    // Re-counted with this row in it: two screenshots stored at once both pass
+    // the check above, and only a count that includes them can see the excess.
+    if ((await usedAttachmentBytes(input.ownerId)) > quota) {
+      await db.delete(attachments).where(eq(attachments.id, ref));
+      throw new GeneratedImageError("The attachment storage quota is full, so the screenshot could not be kept.");
+    }
   } catch (err) {
     // Nothing could ever reach the file: no row means the reaper has nothing to
     // match it against, and `uploadsDir()` is not swept by path.
     await unlinkQuietly(path);
     throw err;
   }
-  return { ref, mime: input.mime, sizeBytes: input.bytes.length, filename: input.name };
+  return { ref, mime: input.mime, sizeBytes: input.bytes.length, filename };
 }
 
 async function unlinkQuietly(path: string): Promise<void> {
-  const { unlink } = await import("node:fs/promises");
   await unlink(path).catch(() => undefined);
 }

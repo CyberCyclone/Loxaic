@@ -1,7 +1,5 @@
 import posix from "node:path/posix";
 import type { SandboxHandle } from "../sandbox/provider.ts";
-import type { PageDriver } from "../browser/driver.ts";
-import { runBrowseAction, type BrowseArgs } from "../browser/actions.ts";
 import type { FileDiff, Todo, ToolName } from "@loxaic/agent";
 import { QUESTION_LIMITS } from "@loxaic/agent";
 import { parseTodoList } from "@loxaic/types";
@@ -20,13 +18,18 @@ export interface ToolResult {
   ok: boolean;
   diff?: FileDiff[];
   todos?: Todo[];
-  /** An image this call produced, as stored bytes. Only `browse`'s screenshot
-   * sets it. The engine stores these as an attachment owned by the conversation
-   * and shows the result's `ref` to the person and to the model; the executor
-   * never touches storage or the database, which is why this is bytes in a
-   * return value rather than a ref out of one. */
-  image?: { bytes: Buffer; mime: string };
+  /** A screenshot web_fetch took (#281), as bytes. The engine stores it as an
+   * attachment and puts the ref on the result; the executor never touches
+   * storage or the database. */
+  image?: { bytes: Buffer; mime: "image/png" };
 }
+
+/**
+ * Loads a page in the conversation's own browser (browser/render.ts), bound by
+ * the engine to the run's conversation and abort signal. Absent when browsing
+ * is off, which makes web_fetch exactly the plain fetch it always was.
+ */
+export type PageRenderer = (url: URL, opts: { screenshot: boolean; maxTextChars: number }) => Promise<RenderResult>;
 
 const WEB_FETCH_TIMEOUT_MS = 15_000;
 /** Ceiling on the *extracted text* a fetch contributes to the prompt. */
@@ -91,14 +94,8 @@ export async function executeTool(
     /** Extra environment for `bash` — what hardens a read-only command that
      * ran without anyone being asked (engine.ts's READ_ONLY_BASH_ENV). */
     bashEnv?: Record<string, string>;
-    /** The conversation's browser session, for `browse` and for `web_fetch`
-     * with `render: true`. Provided by the engine, which is where the
-     * conversation id, the surface and the failure message live; the executor
-     * must not resolve a session itself, because it does not know whose
-     * conversation this is. */
-    browser?: BrowserPageProvider | null;
-    /** Planning mode: `browse` refuses the actions that change a page. */
-    planning?: boolean;
+    /** web_fetch's browser fallback; see `PageRenderer`. */
+    renderer?: PageRenderer | null;
   },
 ): Promise<ToolResult> {
   try {
@@ -116,8 +113,7 @@ export async function executeTool(
       }
     }
     switch (tool) {
-      case "web_fetch": return await runWebFetch(args, options?.browser ?? null);
-      case "browse":    return await runBrowse(args, options?.browser ?? null, options?.planning === true, signal);
+      case "web_fetch": return await runWebFetch(args, options?.renderer ?? null);
       case "todo_write": return runTodoWrite(args);
       case "propose_plan": return runProposePlan(args);
       case "ask_questions": return runAskQuestions(args);
@@ -370,151 +366,10 @@ function runTodoWrite(args: Record<string, unknown>): ToolResult {
 
 // ── web_fetch (runs on the server: sandboxes may have no network) ──
 
-/**
- * The browser capability, as the executor sees it.
- *
- * A function rather than a session object, and it may throw: resolving a
- * session means creating a container on first use, which can fail for reasons
- * only the caller can phrase well (browsing off, no engine, the per-user cap).
- * The engine passes a closure that knows the conversation and the surface; the
- * executor only ever needs a page, and only asks when a call actually wants one.
- */
-export type BrowserPageProvider = () => Promise<PageDriver>;
-
-/** The refusal a model reads when browsing was asked for and could not be had.
- * Distinct from a page's own failure, because the remedy is different: "the
- * selector timed out" is fixable by the model, "there is no browser" is not,
- * and a model that cannot tell them apart retries a session that will never
- * exist. */
-const NO_BROWSER =
-  "No browser session is available for this conversation. Use web_fetch without render, or ask for browsing to be enabled.";
-
-async function pageFor(browser: BrowserPageProvider | null): Promise<PageDriver | ToolResult> {
-  if (!browser) return { ok: false, output: NO_BROWSER };
-  try {
-    return await browser();
-  } catch (err) {
-    return { ok: false, output: `Could not start a browser session: ${(err as Error).message}` };
-  }
-}
-
-/** `browse`: one action against the conversation's own browser session. */
-async function runBrowse(
-  args: Record<string, unknown>,
-  browser: BrowserPageProvider | null,
-  planning: boolean,
-  signal?: AbortSignal,
-): Promise<ToolResult> {
-  if (typeof args.action !== "string") return { ok: false, output: 'browse needs an "action".' };
-  const page = await pageFor(browser);
-  if ("output" in page) return page;
-  const result = await runBrowseAction(page, args as unknown as BrowseArgs, { planning, signal });
-  return result.image
-    ? { ok: result.ok, output: result.output, image: { bytes: result.image.bytes, mime: result.image.mime } }
-    : { ok: result.ok, output: result.output };
-}
-
-/**
- * True for addresses that must never be reachable from a model-chosen URL:
- * loopback, link-local, and the RFC1918 / carrier-grade / benchmarking
- * ranges that make up a typical private network.
- */
-export function isBlockedAddress(ip: string, family: number): boolean {
-  if (family === 4) {
-    const p = ip.split(".").map(Number);
-    if (p.length !== 4 || p.some((n) => Number.isNaN(n))) return true;
-    const [a, b] = p;
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true;              // link-local
-    if (a === 172 && b >= 16 && b <= 31) return true;     // RFC1918
-    if (a === 192 && b === 168) return true;              // RFC1918
-    if (a === 192 && b === 0) return true;                // IETF protocol assignments
-    if (a === 100 && b >= 64 && b <= 127) return true;    // CGNAT
-    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
-    if (a >= 224) return true;                            // multicast + reserved
-    return false;
-  }
-  const bytes = ipv6Bytes(ip);
-  // Unparseable is refused, like a malformed IPv4 above: the guard's answer for
-  // an address it cannot read must never be "public".
-  if (!bytes) return true;
-  const word = (i: number): number => (bytes[i * 2] << 8) | bytes[i * 2 + 1];
-  const embeddedV4 = (at: number): string => bytes.slice(at, at + 4).join(".");
-  const zeroPrefix = (n: number): boolean => bytes.slice(0, n).every((b) => b === 0);
-  // Every way an IPv4 address can ride inside an IPv6 one is unwrapped and the
-  // IPv4 checked: mapped (::ffff:a.b.c.d), compatible (::a.b.c.d, which also
-  // covers :: and ::1), NAT64 (64:ff9b::a.b.c.d) and 6to4 (2002:aabb:ccdd::).
-  // Matching spellings was the old bug: getaddrinfo and the URL parser both
-  // hand back `::ffff:7f00:1` for 127.0.0.1, which no pattern on the dotted
-  // form ever saw.
-  if (zeroPrefix(10) && word(5) === 0xffff) return isBlockedAddress(embeddedV4(12), 4);
-  if (zeroPrefix(12)) return isBlockedAddress(embeddedV4(12), 4);
-  if (word(0) === 0x64 && word(1) === 0xff9b) {
-    // 64:ff9b:1::/48 is local-use NAT64: whatever it translates to is a choice
-    // of this network, so none of it is public.
-    if (word(2) !== 0) return true;
-    return isBlockedAddress(embeddedV4(12), 4);
-  }
-  if (word(0) === 0x2002) return isBlockedAddress(embeddedV4(2), 4);
-  if (word(0) === 0x2001 && word(1) === 0) return true;          // Teredo: obfuscated IPv4 inside
-  if (word(0) === 0x2001 && word(1) === 0xdb8) return true;      // documentation
-  if (word(0) === 0x100 && word(1) === 0 && word(2) === 0 && word(3) === 0) return true; // discard-only 100::/64
-  if ((bytes[0] & 0xfe) === 0xfc) return true;                   // fc00::/7 unique local
-  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return true; // fe80::/10 link local
-  if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0xc0) return true; // fec0::/10 site local (deprecated, still routed by some)
-  if (bytes[0] === 0xff) return true;                            // multicast
-  return false;
-}
-
-/**
- * An IPv6 address as its 16 bytes, or null if it is not one. Accepts every
- * spelling: `::` compression, a trailing dotted IPv4, leading zeros, upper
- * case, brackets, and a zone id (`fe80::1%eth0`), which says which interface
- * and nothing about where the address points.
- */
-function ipv6Bytes(raw: string): number[] | null {
-  let ip = raw.trim();
-  if (ip.startsWith("[") && ip.endsWith("]")) ip = ip.slice(1, -1);
-  const zone = ip.indexOf("%");
-  if (zone !== -1) ip = ip.slice(0, zone);
-  if (!isIP(ip)) return null;
-  let tail: number[] = [];
-  const dotted = /:(\d+\.\d+\.\d+\.\d+)$/.exec(ip);
-  if (dotted) {
-    tail = dotted[1].split(".").map(Number);
-    ip = `${ip.slice(0, dotted.index)}:0:0`;
-  }
-  const halves = ip.split("::");
-  if (halves.length > 2) return null;
-  const parse = (part: string): number[] => (part === "" ? [] : part.split(":").map((h) => Number.parseInt(h, 16)));
-  const head = parse(halves[0]);
-  const rest = halves.length === 2 ? parse(halves[1]) : [];
-  const fill = halves.length === 2 ? 8 - head.length - rest.length : 0;
-  if (fill < 0) return null;
-  const words = [...head, ...Array<number>(fill).fill(0), ...rest];
-  if (words.length !== 8 || words.some((w) => !Number.isInteger(w) || w < 0 || w > 0xffff)) return null;
-  const bytes = words.flatMap((w) => [w >> 8, w & 0xff]);
-  if (tail.length === 4) bytes.splice(12, 4, ...tail);
-  return bytes;
-}
-
-export async function assertPublicUrl(url: URL): Promise<void> {
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(`only http and https URLs are allowed (got ${url.protocol})`);
-  }
-  const host = url.hostname.replace(/^\[|\]$/g, "");
-  // Every A/AAAA record must be public — one private answer is enough to
-  // reach an internal service, so a mixed result is rejected outright.
-  const records = await dns.lookup(host, { all: true }).catch(() => {
-    throw new Error(`could not resolve host: ${host}`);
-  });
-  if (records.length === 0) throw new Error(`could not resolve host: ${host}`);
-  for (const r of records) {
-    if (isBlockedAddress(r.address, r.family)) {
-      throw new Error(`refusing to fetch a private or loopback address (${host} → ${r.address})`);
-    }
-  }
-}
+import { BlockedTargetError, guardedFetch, type GuardedResponse } from "./address-guard.ts";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import type { RenderResult } from "../browser/render.ts";
+export { assertPublicUrl, isBlockedAddress } from "./address-guard.ts";
 
 const BLOCK_TAGS = ["script", "style"] as const;
 
@@ -693,27 +548,61 @@ export function extractFetchText(body: string, contentType: string, rawTruncated
   return text;
 }
 
-async function runWebFetch(args: Record<string, unknown>, browser: BrowserPageProvider | null = null): Promise<ToolResult> {
-  const raw = requireString(args, "url");
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return { ok: false, output: `Invalid URL: ${raw}` };
+/** What the plain fetch saw, for deciding whether the browser should try. */
+export interface PlainFetchSignal {
+  /** The guard refused the address. Never worth a browser: it would be refused
+   * the same way. */
+  blocked?: boolean;
+  status?: number;
+  networkError?: string;
+  contentType?: string;
+  html?: string;
+  extractedText?: string;
+}
+
+/** Statuses a site sends a script but not a browser: bot walls, rate limits,
+ * "enable JavaScript" interstitials. A 404 is not here; a browser gets the
+ * same 404. */
+const RENDER_STATUSES = new Set([401, 403, 406, 429, 451, 503]);
+/** Connection failures that come from refusing non-browser clients (a reset
+ * after the TLS hello), not from a host that is simply down. */
+const RENDER_NETWORK_ERRORS = /ECONNRESET|socket hang up|other side closed|UND_ERR_SOCKET|EPROTO|handshake/i;
+/** Below this much extracted text, an HTML page that ships script is taken to
+ * build itself in the browser. */
+const RENDER_MIN_TEXT = 200;
+
+/**
+ * Whether web_fetch should fall back to the browser, and the reason it gives.
+ * Pure: every trigger and non-trigger is pinned by a test.
+ */
+export function shouldRender(signal: PlainFetchSignal): { render: boolean; reason: string } {
+  if (signal.blocked) return { render: false, reason: "" };
+  if (signal.status !== undefined && RENDER_STATUSES.has(signal.status)) {
+    return { render: true, reason: `the plain fetch returned ${String(signal.status)}` };
   }
+  if (signal.networkError && RENDER_NETWORK_ERRORS.test(signal.networkError)) {
+    return { render: true, reason: "the site dropped the plain fetch's connection" };
+  }
+  if (
+    signal.status !== undefined && signal.status >= 200 && signal.status < 300 &&
+    /html/i.test(signal.contentType ?? "") &&
+    (signal.extractedText ?? "").trim().length < RENDER_MIN_TEXT &&
+    /<script\b/i.test(signal.html ?? "")
+  ) {
+    return { render: true, reason: "the page builds itself with JavaScript" };
+  }
+  return { render: false, reason: "" };
+}
 
-  if (args.render === true) return await runRenderedFetch(url, browser);
-
+async function plainFetch(start: URL): Promise<{ result: ToolResult; signal: PlainFetchSignal }> {
+  let url = start;
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, WEB_FETCH_TIMEOUT_MS);
   try {
     let response: GuardedResponse | null = null;
-    // Redirects are followed by hand so every hop gets the SSRF check —
-    // `redirect: "follow"` would let a public URL bounce to 169.254.169.254.
+    // Redirects are followed by hand so every hop gets the address check —
+    // following them inside fetch would let a public URL bounce to 169.254.169.254.
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      // The address is checked as the connection is made (guardedFetch), so the
-      // address checked is the address dialled: a name that answers public for
-      // a check and private for the connection has nothing to exploit.
       const res = await guardedFetch(url, {
         signal: controller.signal,
         headers: { "User-Agent": "Loxaic-Agent/1.0", Accept: "text/*, application/json;q=0.9, */*;q=0.5" },
@@ -727,58 +616,85 @@ async function runWebFetch(args: Record<string, unknown>, browser: BrowserPagePr
       response = res;
       break;
     }
-    if (!response) return { ok: false, output: `Too many redirects (>${String(MAX_REDIRECTS)})` };
-    if (!response.ok) return { ok: false, output: `HTTP ${String(response.status)} ${response.statusText} for ${url.href}` };
-
+    if (!response) return { result: { ok: false, output: `Too many redirects (>${String(MAX_REDIRECTS)})` }, signal: {} };
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return {
+        result: { ok: false, output: `HTTP ${String(response.status)} ${response.statusText} for ${url.href}` },
+        signal: { status: response.status, contentType },
+      };
+    }
     const { text: bodyText, truncated: rawTruncated } = await readBoundedText(response);
+    const extracted = extractFetchText(bodyText, contentType, rawTruncated);
     return {
-      ok: true,
-      output: extractFetchText(bodyText, response.headers.get("content-type") ?? "", rawTruncated),
+      result: { ok: true, output: extracted },
+      signal: { status: response.status, contentType, html: bodyText, extractedText: extracted },
     };
   } catch (err) {
-    if (err instanceof BlockedTargetError) return { ok: false, output: `Fetch failed: ${err.message}` };
+    if (err instanceof BlockedTargetError) {
+      return { result: { ok: false, output: `Fetch failed: ${err.message}` }, signal: { blocked: true } };
+    }
+    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+    const detail = [cause?.code, cause?.message].filter(Boolean).join(" ");
     const message = (err as Error).name === "AbortError"
       ? `Request timed out after ${String(WEB_FETCH_TIMEOUT_MS)}ms`
-      : (err as Error).message;
-    return { ok: false, output: `Fetch failed: ${message}` };
+      : detail || (err as Error).message;
+    return { result: { ok: false, output: `Fetch failed: ${message}` }, signal: { networkError: message } };
   } finally {
     clearTimeout(timer);
   }
 }
 
-/**
- * `web_fetch` with `render: true`: the same tool, answered by the browser.
- *
- * The rendered **text** rather than the rendered HTML, because that is the whole
- * point of the flag — a page that builds itself in script returns almost nothing
- * through the plain path, and `innerText` is what a person would read there. It
- * also means the result needs no markup stripping, so no second implementation
- * of the linear strip is reachable from here.
- *
- * Redirects are the browser's to follow, and that is not a gap in the SSRF
- * guard: the container has no DNS and every request, including every redirect
- * hop and every subresource, passes the browser proxy, which checks each one
- * (browser/proxy.ts).
- */
-async function runRenderedFetch(url: URL, browser: BrowserPageProvider | null): Promise<ToolResult> {
-  const page = await pageFor(browser);
-  if ("output" in page) return page;
+/** The browser's answer, in web_fetch's shape and under its text ceiling, so
+ * the fallback cannot quietly spend more of the window than the fast path. */
+async function renderedFetch(url: URL, renderer: PageRenderer, screenshot: boolean, why: string | null): Promise<ToolResult> {
   try {
-    const response = await page.goto(url.href);
-    const status = response.status;
-    if (status !== null && status >= 400) {
-      return { ok: false, output: `HTTP ${String(status)} for ${url.href}` };
+    const page = await renderer(url, { screenshot, maxTextChars: WEB_FETCH_MAX_BYTES });
+    if (page.status !== null && page.status >= 400) {
+      return { ok: false, output: `HTTP ${String(page.status)} for ${page.finalUrl} (in the browser too)` };
     }
-    const text = await page.renderedText();
-    if (text.length > WEB_FETCH_MAX_BYTES) {
-      // The same ceiling as the plain path, so switching to `render` cannot
-      // quietly spend more of the conversation's window than the fast one.
-      return { ok: true, output: `${text.slice(0, WEB_FETCH_MAX_BYTES)}\n… [truncated at ${String(WEB_FETCH_MAX_BYTES)} characters of rendered text]` };
-    }
-    return { ok: true, output: text.length > 0 ? text : "(the page rendered no readable text)" };
+    const truncated = page.text.length > WEB_FETCH_MAX_BYTES;
+    const body = truncated
+      ? `${page.text.slice(0, WEB_FETCH_MAX_BYTES)}\n… [truncated at ${String(WEB_FETCH_MAX_BYTES)} characters of rendered text]`
+      : page.text.trim().length > 0 ? page.text : "(the page rendered no readable text)";
+    const header = [
+      why ? `[Rendered in a browser: ${why}.]` : "[Rendered in a browser.]",
+      page.title ? `Title: ${page.title}` : null,
+      page.finalUrl !== url.href ? `URL: ${page.finalUrl}` : null,
+      page.image ? "A screenshot of the page is attached." : null,
+    ].filter((line): line is string => line !== null).join("\n");
+    return {
+      ok: true,
+      output: `${header}\n\n${body}`,
+      ...(page.image ? { image: page.image } : {}),
+    };
   } catch (err) {
-    return { ok: false, output: `Rendered fetch failed: ${(err as Error).message}` };
+    return { ok: false, output: (err as Error).message };
   }
+}
+
+async function runWebFetch(args: Record<string, unknown>, renderer: PageRenderer | null): Promise<ToolResult> {
+  const raw = requireString(args, "url");
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, output: `Invalid URL: ${raw}` };
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return { ok: false, output: `Fetch failed: only http and https URLs are allowed (got ${url.protocol})` };
+  }
+  if (args.screenshot === true) {
+    if (!renderer) return { ok: false, output: "Screenshots need web browsing, which is off on this server." };
+    return await renderedFetch(url, renderer, true, null);
+  }
+  const plain = await plainFetch(url);
+  const decision = shouldRender(plain.signal);
+  if (!decision.render || !renderer) return plain.result;
+  const rendered = await renderedFetch(url, renderer, false, decision.reason);
+  if (rendered.ok) return rendered;
+  return { ok: false, output: `${plain.result.output}\nThe browser fallback failed too: ${rendered.output}` };
 }
 
 /**

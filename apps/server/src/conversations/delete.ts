@@ -19,6 +19,7 @@
 import { db, and, eq, inArray } from "@loxaic/db";
 import { checkpointFiles, conversations, messages, routineRuns, sandboxes, usageRecords } from "@loxaic/db/schema";
 import { destroyConversationSandboxes } from "../agent/sandbox-manager.ts";
+import { closeConversationBrowser } from "../browser/manager.ts";
 import { getConversationSettings } from "../settings.ts";
 import { getRunByConversation, waitForRunEnd } from "../streams/registry.ts";
 import { getStreamBroker, hasStreamBroker } from "../streams/index.ts";
@@ -220,6 +221,11 @@ function detachedCleanup(
     await destroyConversationSandboxes(id).catch((err: unknown) => {
       log.warn({ err, conversationId: id }, "failed to destroy sandboxes for a deleted conversation");
     });
+    // Its browser (#281) and the logins in it go with it; a sub-agent's are
+    // its own conversations' and go with those.
+    for (const browserConvId of [id, ...(opts?.childIds ?? [])]) {
+      await closeConversationBrowser(browserConvId).catch(() => undefined);
+    }
 
     if (opts?.purge) {
       await deleteDestroyedSandboxRows(id).catch((err: unknown) => {

@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { ScrollView } from 'react-native';
+import { Image } from 'expo-image';
+import { attachmentUrl } from '@loxaic/api-client';
 import {
   ChevronRight,
   FileText,
@@ -21,6 +23,8 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import type { ToolCall } from '@/lib/types';
 import { permissionBadge } from '@/lib/permissionBar';
+import { useSession } from '@/lib/session';
+import { ImageViewer } from '@/components/viewer/ImageViewer';
 
 const TOOL_ICONS: Record<string, typeof FileText> = {
   fs_read: FileText,
@@ -55,6 +59,8 @@ export function splitMcpTool(name: string): { server: string; tool: string } | n
 
 export function ToolCallCard({ tool }: { tool: ToolCall }) {
   const [open, setOpen] = useState(false);
+  const { token } = useSession();
+  const [viewerUri, setViewerUri] = useState<string | null>(null);
   const mcp = splitMcpTool(tool.tool);
   const ToolIcon = mcp ? Plug : (TOOL_ICONS[tool.tool] ?? HelpCircle);
   // A failed call used to render identically to a successful one, so the only
@@ -88,6 +94,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
           element. The Pressable is already the focusable element that owns
           the row, so the failure folds into what it announces. */}
       <Pressable
+        testID={tool.callId ? `chat.toolCall.header.${tool.callId}` : undefined}
         onPress={() => { setOpen((o) => !o); }}
         accessibilityLabel={failed ? 'Tool call failed' : undefined}
       >
@@ -134,6 +141,27 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
           {permissionBadge(tool.permission)}
         </Text>
       ) : null}
+      {/* A web_fetch screenshot (#281) shows outside the collapsed body: it is
+          the result a person wants to see, not detail behind a tap. */}
+      {tool.images?.length && token ? (
+        <HStack space="sm" className="flex-wrap px-3 pb-2">
+          {tool.images.map((image) => {
+            const uri = attachmentUrl(image.ref, token);
+            return (
+              <Pressable
+                key={image.ref}
+                testID={tool.callId ? `chat.toolCall.screenshot.${tool.callId}` : undefined}
+                accessibilityLabel="Open the screenshot"
+                onPress={() => { setViewerUri(uri); }}
+                className="h-24 w-40 overflow-hidden rounded-md border border-border"
+              >
+                <Image source={{ uri }} style={{ width: '100%', height: '100%' }} contentFit="cover" contentPosition="top" />
+              </Pressable>
+            );
+          })}
+        </HStack>
+      ) : null}
+      {tool.images?.length ? <ImageViewer uri={viewerUri} onClose={() => { setViewerUri(null); }} /> : null}
       {open && (
         <Box className="border-t border-border">
           {tool.diff ? (
