@@ -12,15 +12,9 @@ import { EnginePicker } from '@/components/sandbox/EnginePicker';
 import { NetworkToggle } from '@/components/sandbox/NetworkToggle';
 import { RetentionSettings } from '@/components/sandbox/RetentionSettings';
 import { CustomImagesPicker } from '@/components/sandbox/CustomImagesPicker';
-import { RunQueueSettings } from '@/components/sandbox/RunQueueSettings';
-import { PermissionCheckSettings } from '@/components/sandbox/PermissionCheckSettings';
-import { ModelModal } from '@/components/settings/ModelModal';
-import { useModels } from '@/hooks/useModels';
-import { useRecentModels } from '@/hooks/useRecentModels';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSandboxSettings } from '@/hooks/useSandboxSettings';
-import { useInferenceSettings } from '@/hooks/useInferenceSettings';
 import { useSession } from '@/lib/session';
 import { describeRetention } from '@/lib/retention';
 import { useServerReachable } from '@/lib/connection';
@@ -35,13 +29,8 @@ export default function SandboxScreen() {
   const { token, isAdmin } = useSession();
   const { config, loading: configLoading, refresh: refreshConfig } = useServerConfig();
   const { settings, loading: settingsLoading, update } = useSandboxSettings(isAdmin ? token : null);
-  const { settings: inference, update: updateInference } = useInferenceSettings(isAdmin ? token : null);
   const [pendingWarning, setPendingWarning] = useState<PendingWarning>(null);
   const [customSocketDraft, setCustomSocketDraft] = useState<string | null>(null);
-  // The permission check's model, picked from the same list a chat uses.
-  const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, getName, isKnown } = useModels(isAdmin ? token : null);
-  const { recentModels, refreshRecentModels } = useRecentModels(isAdmin ? token : null);
-  const [pickingCheckModel, setPickingCheckModel] = useState(false);
 
   const applyAndRefresh = async (patch: Parameters<typeof update>[0]) => {
     await update(patch).catch(() => undefined);
@@ -203,26 +192,6 @@ export default function SandboxScreen() {
           onChange={handleRetentionChange}
           unavailable={!reachable}
         />
-
-        {inference && (
-          <RunQueueSettings
-            settings={inference}
-            onChange={(value) => { void updateInference({ maxConcurrentRuns: value }); }}
-            unavailable={!reachable}
-          />
-        )}
-
-        {/* Hidden against a server that predates the permission check. */}
-        {inference?.permissionCheckTimeoutMs !== undefined && (
-          <PermissionCheckSettings
-            settings={inference}
-            modelName={inference.permissionCheckModel && isKnown(inference.permissionCheckModel) ? getName(inference.permissionCheckModel) : null}
-            onUseRunModel={() => { void updateInference({ permissionCheckModel: null }); }}
-            onPickModel={() => { setPickingCheckModel(true); }}
-            onTimeout={(ms) => { void updateInference({ permissionCheckTimeoutMs: ms }); }}
-            unavailable={!reachable}
-          />
-        )}
       </VStack>
     );
   };
@@ -252,27 +221,6 @@ export default function SandboxScreen() {
         testIDPrefix="sandbox.networkWarning"
         onConfirm={confirmWarning}
         onCancel={() => { setPendingWarning(null); }}
-      />
-      <ModelModal
-        open={pickingCheckModel}
-        onClose={() => { setPickingCheckModel(false); }}
-        models={models}
-        loading={modelsLoading}
-        error={modelsError}
-        onRefresh={() => {
-          void refreshModels();
-          void refreshRecentModels();
-        }}
-        selectedModel={inference?.permissionCheckModel ?? ''}
-        recentModels={recentModels}
-        onSelect={(id) => {
-          void updateInference({ permissionCheckModel: id });
-          setPickingCheckModel(false);
-        }}
-        onOpenSettings={() => {
-          setPickingCheckModel(false);
-          shell.openSettings();
-        }}
       />
     </VStack>
   );

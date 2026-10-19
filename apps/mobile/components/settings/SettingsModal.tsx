@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { BookOpen, Boxes, ChevronRight, Container, GitBranch, HardDrive, Hourglass, Layers, Plug, Server, ShieldCheck, UserRound } from 'lucide-react-native';
+import { BookOpen, Boxes, ChevronRight, Container, GitBranch, HardDrive, Hourglass, Layers, Plug, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -516,6 +516,31 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       style={TRUNCATE_TEXT}
                     >
                       Download models from HuggingFace
+                    </Text>
+                  </VStack>
+                </HStack>
+                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
+              </Pressable>
+            )}
+
+            {/* Settings for every conversation, not one surface: an admin's. */}
+            {isAdmin && (
+              <Pressable
+                testID="settings.nav.server"
+                onPress={() => {
+                  onClose();
+                  router.push('/server');
+                }}
+                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+              >
+                <HStack space="sm" className="min-w-0 shrink items-center">
+                  <Icon as={SlidersHorizontal} size="sm" className="shrink-0 text-muted-foreground" />
+                  <VStack className="min-w-0 shrink">
+                    <Text size="sm" className="text-foreground">
+                      Server Settings
+                    </Text>
+                    <Text size="2xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+                      Apply to every conversation
                     </Text>
                   </VStack>
                 </HStack>

@@ -13,7 +13,7 @@ import { tap, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   SLOW_PROMPT,
   goToSurface,
-  openSandboxSettings,
+  openServerSettings,
   resetInferenceSettings,
   sendMessage,
   signIn,
@@ -63,7 +63,7 @@ describe('run queue', () => {
   });
 
   it('lets an admin see what the limit resolves to, and pin it', async () => {
-    await openSandboxSettings();
+    await openServerSettings();
 
     // "Automatic" on its own would leave an admin unable to tell whether their
     // `--parallel 4` was picked up, so the resolved number is on screen with
