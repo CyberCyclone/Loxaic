@@ -126,9 +126,10 @@ export type GuardedResponse = Response;
 const DNS_TIMEOUT_MS = 5_000;
 
 /**
- * e2e only: `host:port` pairs (IP literals) the guard lets through, so a spec
- * can fetch its own fixture site on loopback. Honoured only with the mock
- * backend, which no real deployment runs.
+ * e2e only: `host:port` pairs the guard lets through, so a spec can fetch its
+ * own fixture sites on loopback: an IP literal, or `localhost` for a second
+ * fixture that needs a different host (cookies are per host, not per port).
+ * Honoured only with the mock backend, which no real deployment runs.
  */
 function testAllowed(host: string, port: string): boolean {
   if (process.env.MOCK_INFERENCE !== "true") return false;
@@ -189,8 +190,11 @@ export async function guardedFetch(url: URL, init: Omit<RequestInit, "dispatcher
   }
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const family = isIP(host);
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  if (host === "localhost" && testAllowed(host, port)) {
+    return await fetch(url, { ...init, redirect: "manual" });
+  }
   if (family !== 0) {
-    const port = url.port || (url.protocol === "https:" ? "443" : "80");
     if (isBlockedAddress(host, family) && !testAllowed(host, port)) {
       throw new BlockedTargetError(`refusing to fetch a private or loopback address (${host})`);
     }

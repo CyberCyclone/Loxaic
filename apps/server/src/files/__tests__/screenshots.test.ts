@@ -11,10 +11,9 @@ import { GeneratedImageError, storeGeneratedImage } from "../generated.ts";
 import { attachmentPath } from "../storage.ts";
 import { sweepOrphanAttachments } from "../reaper.ts";
 import {
-  replayedScreenshotRefs,
+  countShownScreenshots,
   screenshotMessage,
   screenshotTurnsOf,
-  SCREENSHOT_REPLAY_LIMIT,
   storeScreenshot,
 } from "../../streams/runs/screenshots.ts";
 import { modelSupportsImages } from "../../inference/providers.ts";
@@ -121,6 +120,36 @@ describe("a screenshot named by a tool result", () => {
     expect(existsSync(attachmentPath(orphan))).toBe(false);
   });
 
+  it("is readable through the parent when a sub-agent took it, and by nobody else", async () => {
+    const child = uuid();
+    await db.insert(conversations).values({ id: child, ownerId: owner, title: "sub-agent", kind: "subagent", parentConversationId: convId });
+    const shot = (await storeGeneratedImage({ bytes: PNG, mime: "image/png", ownerId: owner, name: "child.png" })).ref;
+    await db.insert(messages).values({
+      id: uuid(), conversationId: child, authorType: "tool", lamport: 1, status: "complete",
+      content: [{ kind: "tool_result", call_id: "cc", output: "shot", ok: true, images: [{ ref: shot, mime: "image/png" }] }],
+    });
+    const { fileRoutes } = await import("../../routes/files.ts");
+    const app = Fastify();
+    fileRoutes(app);
+    await app.ready();
+    try {
+      const get = async (who: string) => {
+        currentUser.id = who;
+        return (await app.inject({ method: "GET", url: `/v1/files/${shot}` })).statusCode;
+      };
+      expect(await get(viewer)).toBe(200);
+      expect(await get(stranger)).toBe(404);
+      // Gone with the parent, as resolveAccess has it.
+      await db.update(conversations).set({ deletedAt: new Date() }).where(eq(conversations.id, convId));
+      expect(await get(viewer)).toBe(404);
+    } finally {
+      await db.update(conversations).set({ deletedAt: null }).where(eq(conversations.id, convId));
+      await db.delete(messages).where(eq(messages.conversationId, child));
+      await db.delete(conversations).where(eq(conversations.id, child));
+      await app.close();
+    }
+  });
+
   it("is readable by the owner and a viewer the conversation is shared with, and nobody else", async () => {
     const { fileRoutes } = await import("../../routes/files.ts");
     const app = Fastify();
@@ -152,17 +181,18 @@ describe("replaying screenshots to the model", () => {
     expect(screenshotTurnsOf(blocks, new Set(["shown", "not-shown"]))).toEqual([{ callId: "shown", images: [{ ref: ref(1), mime: "image/png" }] }]);
   });
 
-  it("resends only the newest few as images", () => {
-    const turns = Array.from({ length: SCREENSHOT_REPLAY_LIMIT + 2 }, (_, i) => ({ callId: `c${String(i)}`, images: [{ ref: ref(i), mime: "image/png" }] }));
-    const kept = replayedScreenshotRefs(turns);
-    expect([...kept]).toEqual(turns.slice(-SCREENSHOT_REPLAY_LIMIT).map((t) => t.images[0].ref));
+  it("counts the screenshots already in front of the model, and nothing else", async () => {
+    const stored = await storeGeneratedImage({ bytes: PNG, mime: "image/png", ownerId: owner, name: "count.png" });
+    const shot = await screenshotMessage([{ callId: "c1", images: [{ ref: stored.ref, mime: "image/png" }] }]);
+    const upload = { role: "user" as const, content: [{ type: "text" as const, text: "look" }, { type: "image_url" as const, image_url: { url: "data:x" } }] };
+    expect(countShownScreenshots([shot, shot, upload, { role: "user", content: "hi" }])).toBe(2);
   });
 
   it("builds the same message live and on replay, from the stored bytes", async () => {
     const stored = await storeGeneratedImage({ bytes: PNG, mime: "image/png", ownerId: owner, name: "replay.png" });
     const turns = [{ callId: "c9", images: [{ ref: stored.ref, mime: "image/png" }] }];
     const live = await screenshotMessage(turns);
-    const replay = await screenshotMessage(turns, (r) => r === stored.ref);
+    const replay = await screenshotMessage(turns);
     expect(JSON.stringify(replay)).toBe(JSON.stringify(live));
     expect(live).toEqual({
       role: "user",
@@ -171,11 +201,6 @@ describe("replaying screenshots to the model", () => {
         { type: "image_url", image_url: { url: `data:image/png;base64,${PNG.toString("base64")}` } },
       ],
     });
-    const older = await screenshotMessage(turns, () => false);
-    expect(older.content).toEqual([
-      { type: "text", text: "Screenshot from web_fetch (call c9):" },
-      { type: "text", text: "[earlier screenshot, not resent]" },
-    ]);
   });
 });
 

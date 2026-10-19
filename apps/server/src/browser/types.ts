@@ -45,10 +45,25 @@ export interface PageLike {
   url(): string;
   mainFrame(): FrameLike;
   close(options?: { runBeforeUnload?: boolean }): Promise<void>;
+  waitForURL(url: string, options: { waitUntil: "domcontentloaded"; timeout: number }): Promise<void>;
+  /** A window this page opened (window.open, target=_blank). */
+  on(event: "popup", listener: (popup: PageLike) => void): void;
+}
+
+/** A raw DevTools session, for what Playwright does not expose: reading a page
+ * from an isolated world its own scripts cannot reach (render.ts). */
+export interface CDPSessionLike {
+  send<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
+  detach(): Promise<void>;
 }
 
 export interface BrowserContextLike {
   newPage(): Promise<PageLike>;
+  newCDPSession(page: PageLike): Promise<CDPSessionLike>;
+  /** Source run in every frame before the page's own scripts. */
+  addInitScript(script: { content: string }): Promise<void>;
+  /** Every page opened in the context, popups included. */
+  on(event: "page", listener: (page: PageLike) => void): void;
   route(pattern: string, handler: (route: RouteLike) => Promise<void>): Promise<void>;
   routeWebSocket(pattern: string, handler: (ws: WebSocketRouteLike) => void): Promise<void>;
   close(): Promise<void>;

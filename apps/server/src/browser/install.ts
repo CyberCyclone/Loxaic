@@ -8,7 +8,7 @@
  * Docker either way: most installs have none.
  */
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -89,17 +89,30 @@ export const LINUX_SYSTEM_BROWSERS: readonly SystemBrowser[] = [
 ];
 
 /**
- * Root's, and writable by nobody else, along with the folder it sits in. The
- * exemption is by path, so a binary someone else could replace would hand
- * them the very thing the system restricted.
+ * Root's, and writable by nobody else, all the way up. The system's exemption
+ * is by path, so anything someone else could rename or replace on the way to
+ * the binary (the file, a folder above it, a symlink in the path, or what the
+ * symlink points at) would hand them the very thing the system restricted.
+ * Checks both the path as given and where it resolves, every folder up to `/`.
  */
 export function rootOwned(file: string): boolean {
   try {
-    for (const p of [file, path.dirname(file)]) {
-      const st = statSync(p);
-      if (st.uid !== 0 || (st.mode & 0o022) !== 0) return false;
+    const resolved = realpathSync(file);
+    if (!statSync(resolved).isFile()) return false;
+    const safe = (st: { uid: number; mode: number }): boolean => st.uid === 0 && (st.mode & 0o022) === 0;
+    for (const start of [file, resolved]) {
+      let current = start;
+      for (;;) {
+        // lstat: a symlink on the way is itself something that could be swapped.
+        const own = lstatSync(current);
+        if (!safe(own) && !own.isSymbolicLink()) return false;
+        if (own.isSymbolicLink() && own.uid !== 0) return false;
+        const parent = path.dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
     }
-    return statSync(file).isFile();
+    return safe(statSync(resolved));
   } catch {
     return false;
   }
@@ -111,6 +124,11 @@ let trusted: (file: string) => boolean = rootOwned;
 /** The installed system browsers Loxaic may fall back to, in preference order. */
 export function systemBrowsers(): SystemBrowser[] {
   return systemCandidates().filter((b) => trusted(b.executable));
+}
+
+/** The same check, for the moment just before a launch. */
+export function isTrustedSystemBrowser(executable: string): boolean {
+  return trusted(executable);
 }
 
 export function __setSystemBrowsersForTest(candidates: readonly SystemBrowser[], isTrusted: (file: string) => boolean = () => true): void {

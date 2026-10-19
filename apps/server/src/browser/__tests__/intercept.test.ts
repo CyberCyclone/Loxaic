@@ -1,16 +1,18 @@
 import { Headers } from "undici";
 import { describe, expect, it } from "vitest";
 import {
+  installInterception,
   admitRequest,
   forwardableRequestHeaders,
   fulfillHeaders,
   PAGE_MAX_BYTES,
   PAGE_MAX_REQUESTS,
+  navigationStub,
   redirectHop,
   withBaseHref,
 } from "../intercept.ts";
 
-const fresh = () => ({ requests: 0, bytes: 0, refusal: null, documentUrl: null });
+const fresh = () => ({ requests: 0, bytes: 0, refusal: null, documentUrl: null, documentStatus: null });
 
 describe("admitRequest", () => {
   it("admits http and https", () => {
@@ -91,6 +93,14 @@ describe("redirectHop", () => {
     const same = redirectHop(from, 307, "/again", request);
     expect(same?.headers.cookie).toBe("s=1");
   });
+
+  it("drops them on the same host over plain http, or on another port: those are other origins", () => {
+    const down = redirectHop(from, 307, "http://a.example/start", request);
+    expect(down?.headers.cookie).toBeUndefined();
+    expect(down?.headers.authorization).toBeUndefined();
+    const port = redirectHop(from, 307, "https://a.example:8443/start", request);
+    expect(port?.headers.cookie).toBeUndefined();
+  });
 });
 
 describe("withBaseHref", () => {
@@ -103,5 +113,37 @@ describe("withBaseHref", () => {
   it("escapes the URL and leaves a document that has its own <base> alone", () => {
     expect(withBaseHref("<p>x</p>", 'https://a.example/?q="x"&y')).toBe('<base href="https://a.example/?q=&quot;x&quot;&amp;y"><p>x</p>');
     expect(withBaseHref('<head><base href="/own/"></head>', "https://a.example/")).toBe('<head><base href="/own/"></head>');
+  });
+});
+
+describe("navigationStub", () => {
+  it("navigates to the target and cannot be broken out of", () => {
+    const html = navigationStub("https://b.example/x?q=</script><script>alert(1)</script>").toString("utf8");
+    expect(html).toContain("location.replace(");
+    expect(html).not.toContain("</script><script>alert(1)");
+    expect(html.match(/<\/script>/g)).toHaveLength(1);
+  });
+});
+
+describe("installInterception", () => {
+  it("never lets a handler error escape, even when Playwright's frame() throws", async () => {
+    let handler: ((route: never) => Promise<void>) | null = null;
+    const context = {
+      route: (_pattern: string, h: (route: never) => Promise<void>) => { handler = h; return Promise.resolve(); },
+      routeWebSocket: () => Promise.resolve(),
+    };
+    await installInterception(context as never);
+    let aborted = false;
+    const route = {
+      request: () => ({
+        url: () => "https://example.com/",
+        frame: () => { throw new Error("Frame for this navigation request is not available"); },
+        isNavigationRequest: () => true,
+      }),
+      abort: () => { aborted = true; return Promise.resolve(); },
+    };
+    expect(handler).not.toBeNull();
+    await expect((handler as unknown as (r: unknown) => Promise<void>)(route)).resolves.toBeUndefined();
+    expect(aborted).toBe(true);
   });
 });

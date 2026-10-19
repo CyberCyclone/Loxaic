@@ -51,6 +51,11 @@ async function mayReadAttachment(userId: string, ref: string, ownerId: string): 
     SELECT 1
     FROM messages m
     JOIN conversations c ON c.id = m.conversation_id
+    -- A sub-agent's conversation is its parent's for access, as in
+    -- streams/authz.ts's resolveAccess: never shared itself, seen by whoever
+    -- can see the parent. Its rows now hold refs (a web_fetch screenshot a
+    -- sub-agent took), so the rule has to hold here too.
+    LEFT JOIN conversations p ON c.kind = 'subagent' AND p.id = c.parent_conversation_id
     CROSS JOIN LATERAL jsonb_array_elements(m.content) AS block
     WHERE jsonb_typeof(m.content) = 'array'
       AND (
@@ -73,11 +78,12 @@ async function mayReadAttachment(userId: string, ref: string, ownerId: string): 
       )
       AND m.deleted_at IS NULL
       AND c.deleted_at IS NULL
+      AND (c.kind <> 'subagent' OR (p.id IS NOT NULL AND p.deleted_at IS NULL AND p.kind <> 'subagent'))
       AND (
-        c.owner_id = ${userId}
+        COALESCE(p.owner_id, c.owner_id) = ${userId}
         OR EXISTS (
           SELECT 1 FROM conversation_shares s
-          WHERE s.conversation_id = c.id AND s.user_id = ${userId}
+          WHERE s.conversation_id = COALESCE(p.id, c.id) AND s.user_id = ${userId}
         )
         OR EXISTS (
           SELECT 1 FROM "user" u WHERE u.id = ${userId} AND u.role = 'admin'

@@ -12,6 +12,7 @@ import { CHECKIN_ANSWER_NUDGE, PLAN_ACCEPTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX,
 import type { ChatMessage } from "../../../inference/provider.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 import { managedExecutable } from "../../../browser/install.ts";
+import { SCREENSHOTS_SHOWN_LIMIT } from "../screenshots.ts";
 import { __resetExecutorsForTest, handleExecutorResult, registerExecutor } from "../../../executor/registry.ts";
 import { createExecutorService } from "../../../executor/service.ts";
 import type { ServerToExecutor } from "../../../executor/protocol.ts";
@@ -444,15 +445,24 @@ describe.skipIf(!browserBuild)("a web_fetch screenshot replays identically", () 
     await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
     const { port } = site.address() as AddressInfo;
     const file = path.join(dir, "scenarios.json");
-    writeFileSync(file, JSON.stringify([{
-      match: "screenshot the fixture",
-      steps: [{ tool: "web_fetch", args: { url: `http://127.0.0.1:${String(port)}/`, screenshot: true } }],
-      finalText: "[Mock] Took it.\n",
-    }]));
+    const shot = { tool: "web_fetch", args: { url: `http://127.0.0.1:${String(port)}/`, screenshot: true } };
+    writeFileSync(file, JSON.stringify([
+      { match: "screenshot the fixture", steps: [shot], finalText: "[Mock] Took it.\n" },
+      // One more than the model is shown, one per iteration; distinct URLs, or
+      // the loop detector stops the repeat.
+      {
+        match: "screenshot it again and again",
+        steps: Array.from({ length: SCREENSHOTS_SHOWN_LIMIT + 1 }, (_, i) => ({
+          tool: "web_fetch",
+          args: { url: `http://127.0.0.1:${String(port)}/?n=${String(i)}`, screenshot: true },
+        })),
+        finalText: "[Mock] Took them.\n",
+      },
+    ]));
     env("MOCK_SCENARIOS_FILE", file);
     env("LOXAIC_E2E_FETCH_ALLOW", `127.0.0.1:${String(port)}`);
     env("BROWSER_ENABLED", "true");
-    env("BROWSER_EXECUTABLE", browserBuild ?? "");
+    env("BROWSER_DIR", process.env.BROWSER_DIR ?? path.join(homedir(), ".cache", "loxaic-e2e", "browsers"));
     env("UPLOADS_DIR", path.join(dir, "uploads"));
     mkdirSync(path.join(dir, "uploads"), { recursive: true });
     __resetMockScenariosForTest();
@@ -469,6 +479,23 @@ describe.skipIf(!browserBuild)("a web_fetch screenshot replays identically", () 
     site.close();
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("never resends an older screenshot differently: past the limit a new one is text to the model", async () => {
+    const convId = await turn("screenshot it again and again");
+    await turn("which one was best?", convId);
+    expectEachRequestExtendsTheLast();
+    const images = (requests.at(-1) ?? []).reduce((n, m) => n + (m.match(/"type":"image_url"/g) ?? []).length, 0);
+    expect(images).toBe(SCREENSHOTS_SHOWN_LIMIT);
+    const rows = await db.query.messages.findMany({
+      where: eq(messages.conversationId, convId),
+      orderBy: (msgs, { asc }) => [asc(msgs.lamport), asc(msgs.createdAt)],
+    });
+    const shown = rows
+      .flatMap((r) => r.content as { kind: string; images?: unknown[]; images_sent_to_model?: boolean }[])
+      .filter((b) => b.kind === "tool_result" && b.images)
+      .map((b) => b.images_sent_to_model === true);
+    expect(shown).toEqual([...Array<boolean>(SCREENSHOTS_SHOWN_LIMIT).fill(true), false]);
+  }, 90_000);
 
   it("sends the screenshot after the tool results, then the same bytes on the next turn", async () => {
     const convId = await turn("screenshot the fixture");

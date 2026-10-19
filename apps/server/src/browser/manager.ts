@@ -15,8 +15,8 @@
  * This file is the only importer of playwright-core (see types.ts).
  */
 import { getBrowserSettings } from "../settings.ts";
-import { installInterception } from "./intercept.ts";
-import { configuredExecutable, installState, managedExecutable, systemBrowsers, type InstallState } from "./install.ts";
+import { installInterception, isClaimed } from "./intercept.ts";
+import { configuredExecutable, installState, isTrustedSystemBrowser, managedExecutable, systemBrowsers, type InstallState } from "./install.ts";
 import { sinkholePort } from "./sinkhole.ts";
 import type { BrowserContextLike, BrowserLike, ChromiumLike } from "./types.ts";
 
@@ -129,6 +129,20 @@ export function launchFailureReason(err: unknown): string {
   return (message.split("\n").find((l) => l.trim().length > 0) ?? "unknown error").replace(/^browserType\.launch:\s*/, "");
 }
 
+/**
+ * Run in every frame before the page's own scripts: WebRTC is removed, and
+ * cannot be put back. Its UDP goes straight from the host, past both the
+ * interception and the sinkhole, and ICE gathering reveals the host's
+ * addresses. The launch flag that should stop it is honoured by the headless
+ * shell but not by every system Chromium (Ubuntu's snap ignores it), so this
+ * is what holds in every browser the launch order can pick.
+ */
+export const BLOCK_WEBRTC_SCRIPT = `(() => {
+  for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCIceTransport", "RTCRtpSender", "RTCRtpReceiver", "RTCSctpTransport", "RTCDtlsTransport"]) {
+    try { Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false }); } catch (e) {}
+  }
+})();`;
+
 /** A desktop Chrome user agent for the installed version. The headless build
  * announces itself as "HeadlessChrome", which is exactly what the bot walls
  * this fallback exists to get past refuse. */
@@ -150,6 +164,8 @@ async function launchEntry(conversationId: string, gen: number): Promise<Entry> 
   const chromium = await loadChromium();
   let browser: BrowserLike | null = null;
   for (const choice of choices) {
+    // Re-checked at the moment of use, not only when the list was built.
+    if (choice.source === "system" && !isTrustedSystemBrowser(choice.executable)) continue;
     try {
       browser = await chromium.launch({
         executablePath: choice.executable,
@@ -185,7 +201,16 @@ async function launchEntry(conversationId: string, gen: number): Promise<Entry> 
       userAgent: desktopUserAgent(browser.version()),
       javaScriptEnabled: true,
     });
+    await context.addInitScript({ content: BLOCK_WEBRTC_SCRIPT });
     await installInterception(context);
+    // Any page render.ts did not open (a popup, noopener ones included, which
+    // never reach a page's own "popup" event) is closed once it has had time
+    // to be claimed. Its requests are refused meanwhile (intercept.ts).
+    context.on("page", (opened) => {
+      setTimeout(() => {
+        if (!isClaimed(opened)) void opened.close({ runBeforeUnload: false }).catch(() => undefined);
+      }, 1_000).unref();
+    });
     if (gen !== generation || !getBrowserSettings().enabled) {
       throw new BrowserUnavailableError("Web browsing was turned off.");
     }

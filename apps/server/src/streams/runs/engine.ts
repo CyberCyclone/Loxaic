@@ -98,7 +98,7 @@ import {
 import { addCommandRules, loadCommandRules } from "../../permissions/store.ts";
 import { getBrowserSettings, getInferenceSettings } from "../../settings.ts";
 import { renderPage } from "../../browser/render.ts";
-import { replayedScreenshotRefs, screenshotMessage, screenshotTurnsOf, storeScreenshot, type ScreenshotTurn } from "./screenshots.ts";
+import { countShownScreenshots, screenshotMessage, screenshotTurnsOf, SCREENSHOTS_SHOWN_LIMIT, storeScreenshot, type ScreenshotTurn } from "./screenshots.ts";
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -696,6 +696,9 @@ export async function runToolLoop(ctx: {
     // assistant and tool messages — so this holds for every iteration, until a
     // compaction leaves only the summary.
     let hadImages = chatMessages.some((m) => m.role === "user" && countImageParts(m.content) > 0);
+    // Screenshots the model already sees in this history; each new one is
+    // shown only under SCREENSHOTS_SHOWN_LIMIT (screenshots.ts).
+    const screenshotsShown = { count: countShownScreenshots(chatMessages) };
 
     // Per-message hashes from the previous iteration; safe to reuse because
     // `chatMessages` is only ever appended to below (a compaction resets it).
@@ -994,6 +997,8 @@ export async function runToolLoop(ctx: {
             carriedHashes = undefined;
             lastPrompt = null;
             replayedMessages = 1;
+            // The next run replays from the summary, so the count does too.
+            screenshotsShown.count = countShownScreenshots(chatMessages);
             omittedAttachments = [];
             hadImages = false;
             compactedThisRun = true;
@@ -1569,6 +1574,7 @@ export async function runToolLoop(ctx: {
               checkpointTurn,
               skills,
               takeTodoReminder,
+              screenshotsShown,
               commandRules,
               isolation: runIsolation,
               check: {
@@ -2026,6 +2032,8 @@ async function runOneToolCall(
     /** The stale-todo reminder, when this iteration owes one and no tool has
      * carried it yet — see todo-staleness.ts. */
     takeTodoReminder?: () => string | null;
+    /** Screenshots shown to the model so far in this history (see screenshots.ts). */
+    screenshotsShown: { count: number };
     /** The sender's command rules, for this run; "Allow always" adds to it. */
     commandRules: CommandRule[];
     /** Whether the workspace contains its commands — asked once per run. */
@@ -2272,7 +2280,8 @@ async function runOneToolCall(
     const stored = await storeScreenshot(ctx.convId, call.id, result.image);
     if ("images" in stored) {
       images = stored.images;
-      imagesSentToModel = await modelSupportsImages(ctx.check.model);
+      imagesSentToModel = ctx.screenshotsShown.count < SCREENSHOTS_SHOWN_LIMIT && (await modelSupportsImages(ctx.check.model));
+      if (imagesSentToModel) ctx.screenshotsShown.count++;
     } else {
       result.output += `\n${stored.note}`;
     }
@@ -2798,14 +2807,6 @@ export async function loadHistory(conversationId: string): Promise<{
       ).values()]
     : [];
 
-  // Which screenshots go as images: the newest few, decided over the whole
-  // replay so every turn makes the same choice for the same history.
-  const replayedScreenshots = replayedScreenshotRefs(
-    complete
-      .filter((row) => row.authorType === "tool")
-      .flatMap((row) => screenshotTurnsOf((row.content ?? []) as ContentBlock[], presentCallIds)),
-  );
-
   const out: ChatMessage[] = [];
   for (const row of complete) {
     const blocks = (row.content ?? []) as ContentBlock[];
@@ -2851,7 +2852,7 @@ export async function loadHistory(conversationId: string): Promise<{
         out.push(toolResultMessageForPrompt(block.call_id, callNames.get(block.call_id), block.output));
       }
       const shots = screenshotTurnsOf(blocks, presentCallIds);
-      if (shots.length > 0) out.push(await screenshotMessage(shots, (ref) => replayedScreenshots.has(ref)));
+      if (shots.length > 0) out.push(await screenshotMessage(shots));
     }
   }
   return { messages: out, summaryText, omittedAttachments };

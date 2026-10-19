@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   launchFailureReason,
+  launchChoices,
   browserStatus,
   SANDBOX_BLOCKED_REASON,
   __activeBrowserCount,
@@ -16,7 +17,7 @@ import {
 } from "../manager.ts";
 import { closeSinkhole } from "../sinkhole.ts";
 import { __resetInstallStateForTest, __setSystemBrowsersForTest, rootOwned } from "../install.ts";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BrowserContextLike, BrowserLike, ChromiumLike, LaunchOptions } from "../types.ts";
@@ -32,7 +33,7 @@ let launched: FakeBrowser[] = [];
 let launchGate: Promise<void> | null = null;
 let failLaunch: Error | null = null;
 /** A failure per executable, for the fallback between browsers. */
-let failFor = new Map<string, Error>();
+let failFor = new Map<string, Error | (() => Error)>();
 /** Every launch, in order: which browser, and whether sandboxed. */
 let launches: { executable: string; sandbox: boolean }[] = [];
 
@@ -40,13 +41,17 @@ const fakeChromium: ChromiumLike = {
   async launch(options) {
     if (launchGate) await launchGate;
     launches.push({ executable: options.executablePath, sandbox: options.chromiumSandbox });
-    const failure = failFor.get(options.executablePath) ?? failLaunch;
+    const listed = failFor.get(options.executablePath);
+    const failure = (typeof listed === "function" ? listed() : listed) ?? failLaunch;
     if (failure) throw failure;
     let onDisconnect: (() => void) | null = null;
     const context: BrowserContextLike = {
       newPage: () => Promise.reject(new Error("not used")),
       route: () => Promise.resolve(),
       routeWebSocket: () => Promise.resolve(),
+      newCDPSession: () => Promise.reject(new Error("unused")),
+            addInitScript: () => Promise.resolve(),
+      on: () => undefined,
       close: () => Promise.resolve(),
     };
     const browser: FakeBrowser = {
@@ -328,9 +333,26 @@ describe("which browser launches (#281)", () => {
     expect(launches).toEqual([{ executable: "/named/chrome", sandbox: true }]);
   });
 
-  it("only trusts a system browser root owns and nobody else can write", () => {
+  it("only trusts a system browser root owns and nobody else can write, all the way up", () => {
     expect(rootOwned("/bin/sh")).toBe(true);
     expect(rootOwned(managed)).toBe(false);
     expect(rootOwned("/nonexistent/chrome")).toBe(false);
+    // A link the user could repoint, even at a root-owned binary.
+    const link = path.join(dir, "chrome-link");
+    symlinkSync("/bin/sh", link);
+    expect(rootOwned(link)).toBe(false);
+  });
+
+  it("checks a system browser again at the moment of launch", async () => {
+    let trustedNow = true;
+    __setSystemBrowsersForTest([system], () => trustedNow);
+    expect(launchChoices().map((c) => c.source)).toEqual(["managed", "system"]);
+    // Listed as trusted; swapped out while Loxaic's own build was trying.
+    failFor.set(managed, () => {
+      trustedNow = false;
+      return SANDBOX;
+    });
+    await expect(use("a")).rejects.toThrow(SANDBOX_BLOCKED_REASON);
+    expect(launches.map((l) => l.executable)).toEqual([managed]);
   });
 });

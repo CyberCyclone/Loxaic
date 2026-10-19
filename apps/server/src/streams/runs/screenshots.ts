@@ -18,10 +18,32 @@ import { storeGeneratedImage } from "../../files/generated.ts";
 import { readAsDataUri } from "../../files/storage.ts";
 import type { ChatMessage, ContentPart } from "../../inference/provider.ts";
 
-/** How many screenshots a replayed prompt carries as images; older ones are
- * named but not resent. A viewport PNG is a few hundred KB, and a long
- * research thread would otherwise resend every one of them on every turn. */
-export const SCREENSHOT_REPLAY_LIMIT = 4;
+/**
+ * How many screenshots a conversation shows the model as images, within the
+ * history it replays (since its last summary). Decided when each result is
+ * written and stored with it (`images_sent_to_model`), never re-decided on
+ * replay: a rule like "the newest four" would turn an older, already cached
+ * image into text the moment a fifth arrived, and change the prompt prefix
+ * under the backend. Past the limit a screenshot is still stored and shown
+ * to the person; the model gets the text. It also bounds what one prompt
+ * carries: four viewport PNGs, a few MB of base64 at most.
+ */
+export const SCREENSHOTS_SHOWN_LIMIT = 4;
+
+/** The screenshot messages' text, which is also how they are counted. */
+const SCREENSHOT_LABEL = "Screenshot from web_fetch";
+
+/** Screenshots already in front of the model in `messages`. */
+export function countShownScreenshots(messages: readonly ChatMessage[]): number {
+  let n = 0;
+  for (const m of messages) {
+    if (m.role !== "user" || typeof m.content === "string") continue;
+    const first = m.content.at(0);
+    if (first?.type !== "text" || !first.text.startsWith(SCREENSHOT_LABEL)) continue;
+    n += m.content.filter((part) => part.type === "image_url").length;
+  }
+  return n;
+}
 
 export interface ScreenshotTurn {
   callId: string;
@@ -50,17 +72,13 @@ export async function storeScreenshot(
   }
 }
 
-/** The user message that carries an iteration's screenshots to the model.
- * `include` says which refs go as images; the rest are named only. */
-export async function screenshotMessage(turns: ScreenshotTurn[], include: (ref: string) => boolean = () => true): Promise<ChatMessage> {
+/** The user message that carries an iteration's screenshots to the model,
+ * built the same way live and on replay. */
+export async function screenshotMessage(turns: ScreenshotTurn[]): Promise<ChatMessage> {
   const parts: ContentPart[] = [];
   for (const turn of turns) {
-    parts.push({ type: "text", text: `Screenshot from web_fetch (call ${turn.callId}):` });
+    parts.push({ type: "text", text: `${SCREENSHOT_LABEL} (call ${turn.callId}):` });
     for (const image of turn.images) {
-      if (!include(image.ref)) {
-        parts.push({ type: "text", text: "[earlier screenshot, not resent]" });
-        continue;
-      }
       try {
         parts.push({ type: "image_url", image_url: { url: await readAsDataUri(image.ref, image.mime) } });
       } catch {
@@ -80,10 +98,4 @@ export function screenshotTurnsOf(blocks: readonly ContentBlock[], presentCallId
     turns.push({ callId: block.call_id, images: block.images });
   }
   return turns;
-}
-
-/** The newest `SCREENSHOT_REPLAY_LIMIT` screenshot refs across a replay. */
-export function replayedScreenshotRefs(turns: readonly ScreenshotTurn[]): Set<string> {
-  const refs = turns.flatMap((t) => t.images.map((i) => i.ref));
-  return new Set(refs.slice(-SCREENSHOT_REPLAY_LIMIT));
 }
