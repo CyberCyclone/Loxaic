@@ -135,6 +135,11 @@ jobs:
       # (src/browser/__tests__/chromium.test.ts), which skips without one. The
       # headless shell build, into the same cache the e2e harness uses.
       - run: PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/loxaic-e2e/browsers" node apps/server/node_modules/playwright-core/cli.js install --with-deps chromium-headless-shell
+      # Ubuntu 24.04 keeps a downloaded Chromium's sandbox from starting, and
+      # this image's own Chrome is world-writable (/opt/google/chrome is 777),
+      # which Loxaic rightly refuses to borrow. On this throwaway VM, lift the
+      # restriction so the tests run Loxaic's own build with its sandbox on.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: pnpm --filter @loxaic/server test
       # No database needed; guards the native upload part (attachmentUpload.test.ts)
       # among others, which nothing else on CI exercises.
