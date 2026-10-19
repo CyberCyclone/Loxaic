@@ -10,13 +10,48 @@
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 
-/** Where the managed build lives. `<cwd>/browsers` when unset, the same
- * arrangement as `LLAMA_DIR` (llama/paths.ts): gitignored in a checkout, set
- * beside the rest of the data by the desktop supervisor. Read at call time. */
+/**
+ * Where the managed build lives when `BROWSER_DIR` is unset: the user's cache
+ * folder, never the server's working directory. On macOS a checkout often sits
+ * under ~/Documents, and Chromium's sandboxed helper processes cannot read
+ * from there (nor Desktop or Downloads): the GPU process fails to load its
+ * data and the browser quits a moment after starting. The desktop supervisor
+ * sets `BROWSER_DIR` beside its other data, which is fine. Pure, for tests.
+ */
+export function defaultBrowserDir(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): string {
+  if (platform === "darwin") return path.join(home, "Library", "Caches", "Loxaic", "browsers");
+  if (platform === "win32") return path.join(env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Loxaic", "browsers");
+  return path.join(env.XDG_CACHE_HOME ?? path.join(home, ".cache"), "loxaic", "browsers");
+}
+
+/** Where the managed build lives: `BROWSER_DIR`, else `defaultBrowserDir()`.
+ * Read at call time. */
 export function browserDir(): string {
-  return path.resolve(process.env.BROWSER_DIR ?? path.join(process.cwd(), "browsers"));
+  return path.resolve(process.env.BROWSER_DIR ?? defaultBrowserDir());
+}
+
+/**
+ * Why a folder cannot hold the managed build on this machine, or null. macOS
+ * keeps sandboxed processes out of Documents, Desktop and Downloads, so a
+ * browser installed there starts and then dies on its first page with nothing
+ * but "Target page, context or browser has been closed". Pure, for tests.
+ */
+export function unusableBrowserDir(dir: string, platform: NodeJS.Platform = process.platform, home: string = os.homedir()): string | null {
+  if (platform !== "darwin") return null;
+  for (const folder of ["Documents", "Desktop", "Downloads"]) {
+    const protectedRoot = path.join(home, folder);
+    if (dir === protectedRoot || dir.startsWith(protectedRoot + path.sep)) {
+      return `The browser folder (${dir}) is inside ~/${folder}, where macOS does not let Chromium's sandboxed processes read. Set BROWSER_DIR elsewhere, or unset it to use ${defaultBrowserDir(platform, process.env, home)}.`;
+    }
+  }
+  return null;
 }
 
 /** An executable the deployment supplied, which is used as is and never
@@ -143,10 +178,12 @@ export function installState(): InstallState {
   const configured = configuredExecutable();
   if (configured) return { state: "installed", source: "configured", executable: configured };
   if (installing) return { state: "installing", percent: installing.percent };
-  const managed = managedExecutable();
+  const unusable = unusableBrowserDir(browserDir());
+  const managed = unusable ? null : managedExecutable();
   if (managed) return { state: "installed", source: "managed", executable: managed };
   const system = systemBrowsers().at(0);
   if (system) return { state: "installed", source: "system", executable: system.executable, name: system.name };
+  if (unusable) return { state: "failed", error: unusable };
   if (lastError) return { state: "failed", error: lastError };
   return { state: "missing" };
 }
@@ -171,6 +208,11 @@ function playwrightCli(): string {
 export function installBrowser(): Promise<void> {
   if (configuredExecutable()) return Promise.resolve();
   if (installing) return installing.promise;
+  const unusable = unusableBrowserDir(browserDir());
+  if (unusable) {
+    lastError = unusable;
+    return Promise.reject(new Error(unusable));
+  }
   lastError = null;
   const entry: { promise: Promise<void>; percent: number | null } = { promise: Promise.resolve(), percent: null };
   entry.promise = new Promise<void>((resolve, reject) => {

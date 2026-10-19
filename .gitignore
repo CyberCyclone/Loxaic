@@ -35,8 +35,9 @@ egress-ca/
 # The managed llama.cpp runtime and downloaded models: LLAMA_DIR, which falls
 # back to <cwd>/llama the same way. Many gigabytes; never commit.
 apps/server/llama/
-# The managed Chromium for web_fetch's browser fallback: BROWSER_DIR, falling
-# back to <cwd>/browsers. A few hundred MB of browser build; never commit.
+# The managed Chromium for web_fetch's browser fallback, if BROWSER_DIR is
+# pointed into the checkout (its default is the user's cache folder). A few
+# hundred MB of browser build; never commit.
 apps/server/browsers/
 
 # `go build` with no -o drops a binary named after the module in the package

@@ -7,7 +7,7 @@ It is **off by default**.
 ## Turning it on
 
 1. Settings → **Server Settings** → **Web browsing** (admins only).
-2. Press **Install Chromium**. It downloads Playwright's `chromium-headless-shell` build (about 100 MB) into `BROWSER_DIR`. The desktop app keeps it in its data directory; a server run from a checkout uses `apps/server/browsers`.
+2. Press **Install Chromium**. It downloads Playwright's `chromium-headless-shell` build (about 100 MB) into `BROWSER_DIR`. The desktop app keeps it in its data directory. Otherwise it goes in your cache folder: `~/Library/Caches/Loxaic/browsers` on macOS, `~/.cache/loxaic/browsers` on Linux, `%LOCALAPPDATA%\Loxaic\browsers` on Windows.
 3. Switch **Web browsing** on.
 
 No Docker is needed, and nothing on the system needs changing. Chromium runs on the server's own machine, always with its own sandbox on.
@@ -42,7 +42,7 @@ It is sent to the model only when Loxaic knows the model can see images. Today t
 
 Other variables:
 
-- `BROWSER_DIR`: where the managed Chromium is installed.
+- `BROWSER_DIR`: where the managed Chromium is installed. On macOS it must not be inside Documents, Desktop or Downloads: Chromium's sandboxed processes cannot read from there, so the browser would start and then quit on its first page. Loxaic refuses such a folder and says so.
 - `BROWSER_EXECUTABLE`: use an existing Chrome or Chromium instead of the managed one. For example, Alpine's `chromium` package in the server container, where Playwright's build cannot run.
 - `BROWSER_NO_SANDBOX=1`: launch Chromium without its own sandbox. Only for a server that already runs inside a container, where the kernel features the sandbox needs are missing. There is no switch for this in the app.
 

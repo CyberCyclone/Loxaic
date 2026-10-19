@@ -16,7 +16,7 @@
  */
 import { getBrowserSettings } from "../settings.ts";
 import { installInterception, isClaimed } from "./intercept.ts";
-import { configuredExecutable, installState, isTrustedSystemBrowser, managedExecutable, systemBrowsers, type InstallState } from "./install.ts";
+import { browserDir, configuredExecutable, installState, isTrustedSystemBrowser, managedExecutable, systemBrowsers, unusableBrowserDir, type InstallState } from "./install.ts";
 import { sinkholePort } from "./sinkhole.ts";
 import type { BrowserContextLike, BrowserLike, ChromiumLike } from "./types.ts";
 
@@ -63,7 +63,7 @@ export function launchChoices(): LaunchChoice[] {
   const configured = configuredExecutable();
   if (configured) return [{ executable: configured, source: "configured" }];
   const choices: LaunchChoice[] = [];
-  const managed = managedExecutable();
+  const managed = unusableBrowserDir(browserDir()) ? null : managedExecutable();
   if (managed) choices.push({ executable: managed, source: "managed" });
   for (const b of systemBrowsers()) choices.push({ executable: b.executable, source: "system", name: b.name });
   const previous = lastGood;
