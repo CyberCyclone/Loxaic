@@ -159,6 +159,15 @@ describe.skipIf(!executable)("the browser fallback, in a real Chromium", () => {
     process.env.BROWSER_ENABLED = "true";
     process.env.BROWSER_ACTION_TIMEOUT_MS = "8000";
     ({ renderPage: render } = await import("../render.ts"));
+    // TEMPORARY CI diagnostic (#305): why the runner's Chrome is not used.
+    if (process.platform === "linux") {
+      const { execSync } = await import("node:child_process");
+      const sh = (c: string): string => { try { return execSync(c, { encoding: "utf8" }); } catch (e) { return String(e); } };
+      const install = await import("../install.ts");
+      console.info("[diag] choices", JSON.stringify((await import("../manager.ts")).launchChoices()));
+      for (const b of install.LINUX_SYSTEM_BROWSERS) console.info("[diag]", b.executable, install.rootOwned(b.executable));
+      console.info("[diag]", sh("ls -la /opt /opt/google /opt/google/chrome | head -40; ls -la /usr/bin/google-chrome* /etc/alternatives/google-chrome*; ls /etc/apparmor.d | head -80; sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone; cat /etc/os-release | head -3"));
+    }
     manager = await import("../manager.ts");
     sinkhole = await import("../sinkhole.ts");
   }, 60_000);

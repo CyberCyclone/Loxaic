@@ -308,7 +308,16 @@ describe("which browser launches (#281)", () => {
     failFor.set(managed, SANDBOX);
     await expect(use("a")).rejects.toThrow(SANDBOX_BLOCKED_REASON);
     expect(launches.every((l) => l.sandbox)).toBe(true);
-    expect(browserStatus().lastLaunchError).toBe(SANDBOX_BLOCKED_REASON);
+    expect(browserStatus().lastLaunchError).toBe(`${SANDBOX_BLOCKED_REASON} Tried: Loxaic's Chromium: its sandbox could not start.`);
+  });
+
+  it("names every browser it tried when none could sandbox", async () => {
+    __setSystemBrowsersForTest([system]);
+    failFor.set(managed, SANDBOX);
+    failFor.set(system.executable, SANDBOX);
+    await expect(use("a")).rejects.toThrow(
+      `Tried: Loxaic's Chromium: its sandbox could not start; Google Chrome (${system.executable}): its sandbox could not start.`,
+    );
   });
 
   it("does not hide any other failure behind a second browser", async () => {

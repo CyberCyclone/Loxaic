@@ -155,6 +155,11 @@ export function desktopUserAgent(version: string, platform: NodeJS.Platform = pr
   return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 
+function choiceLabel(choice: LaunchChoice): string {
+  if (choice.source === "managed") return "Loxaic's Chromium";
+  return `${choice.source === "system" ? (choice.name ?? "a system browser") : "the configured browser"} (${choice.executable})`;
+}
+
 async function launchEntry(conversationId: string, gen: number): Promise<Entry> {
   const choices = launchChoices();
   if (choices.length === 0) {
@@ -163,6 +168,8 @@ async function launchEntry(conversationId: string, gen: number): Promise<Entry> 
   const port = await sinkholePort();
   const chromium = await loadChromium();
   let browser: BrowserLike | null = null;
+  // Each browser tried and why it could not run, for the admin's status.
+  const tried: string[] = [];
   for (const choice of choices) {
     // Re-checked at the moment of use, not only when the list was built.
     if (choice.source === "system" && !isTrustedSystemBrowser(choice.executable)) continue;
@@ -184,14 +191,17 @@ async function launchEntry(conversationId: string, gen: number): Promise<Entry> 
       // exempts may manage where Loxaic's own build cannot. Anything else is
       // reported as it is rather than hidden behind a second attempt.
       if (isSandboxFailure(err)) {
-        lastLaunchError = SANDBOX_BLOCKED_REASON;
+        tried.push(`${choiceLabel(choice)}: its sandbox could not start`);
         continue;
       }
       lastLaunchError = launchFailureReason(err);
       throw new BrowserUnavailableError(`Chromium could not start: ${lastLaunchError}`);
     }
   }
-  if (!browser) throw new BrowserUnavailableError(`Chromium could not start: ${SANDBOX_BLOCKED_REASON}`);
+  if (!browser) {
+    lastLaunchError = `${SANDBOX_BLOCKED_REASON} Tried: ${tried.length > 0 ? tried.join("; ") : "none"}.`;
+    throw new BrowserUnavailableError(`Chromium could not start: ${lastLaunchError}`);
+  }
   lastLaunchError = null;
   try {
     const context = await browser.newContext({
