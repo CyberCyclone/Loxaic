@@ -674,6 +674,8 @@ export type StreamEventKind =
       permission?: ToolPermission;
       /** A screenshot web_fetch took (#281), stored as an attachment. */
       images?: AttachmentRef[];
+      /** web_fetch used the conversation's browser (#281). */
+      browser?: true;
     }
   /** Kept for app builds that read the live list from it; a current client
    * reads the list from the `todo_write` call (apps/mobile/lib/todos.ts). */
@@ -730,6 +732,7 @@ export interface StreamSnapshotMessage {
     diff?: FileDiff[];
     permission?: ToolPermission;
     images?: AttachmentRef[];
+    browser?: true;
   }[];
   status: "streaming" | "complete" | "error" | "cancelled";
   usage?: TurnUsage;

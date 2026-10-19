@@ -1624,6 +1624,7 @@ export async function runToolLoop(ctx: {
           ...(outcome.permission ? { permission: outcome.permission } : {}),
           ...(outcome.images ? { images: outcome.images } : {}),
           ...(outcome.images && outcome.imagesSentToModel ? { images_sent_to_model: true } : {}),
+          ...(outcome.browser ? { browser: true } : {}),
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
         if (outcome.images && outcome.imagesSentToModel) screenshotTurns.push({ callId: call.id, images: outcome.images });
@@ -2056,6 +2057,8 @@ async function runOneToolCall(
   images?: AttachmentRef[];
   /** Whether the model is shown `images`, decided once when stored. */
   imagesSentToModel?: boolean;
+  /** web_fetch used the conversation's browser (#281). */
+  browser?: true;
 }> {
   const { userId, mode, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
@@ -2243,7 +2246,7 @@ async function runOneToolCall(
       // run's Stop. Keyed by the conversation running the call — a
       // sub-agent's own, never its parent's — so no two chats share one.
       ...(builtinName === "web_fetch" && getBrowserSettings().enabled
-        ? { renderer: (url: URL, o: { screenshot: boolean; maxTextChars: number }) => renderPage(ctx.convId, url, { ...o, signal: ctx.signal }) }
+        ? { renderer: (url: URL, o: { screenshot: "required" | "best-effort"; maxTextChars: number }) => renderPage(ctx.convId, url, { ...o, signal: ctx.signal }) }
         : {}),
     },
   );
@@ -2273,16 +2276,17 @@ async function runOneToolCall(
   // A screenshot becomes an attachment before anything is emitted, so the live
   // event, the stored row and the replay all name the same ref. Whether the
   // model is shown it is decided here, once, and stored: re-asking on replay
-  // would change an older part of the prompt whenever the model changes.
+  // would change an older part of the prompt whenever the model changes. A
+  // screenshot the model did not ask for is the person's alone.
   let images: AttachmentRef[] | undefined;
   let imagesSentToModel = false;
   if (result.image) {
     const stored = await storeScreenshot(ctx.convId, call.id, result.image);
     if ("images" in stored) {
       images = stored.images;
-      imagesSentToModel = ctx.screenshotsShown.count < SCREENSHOTS_SHOWN_LIMIT && (await modelSupportsImages(ctx.check.model));
+      imagesSentToModel = result.image.forModel && ctx.screenshotsShown.count < SCREENSHOTS_SHOWN_LIMIT && (await modelSupportsImages(ctx.check.model));
       if (imagesSentToModel) ctx.screenshotsShown.count++;
-    } else {
+    } else if (result.image.forModel) {
       result.output += `\n${stored.note}`;
     }
   }
@@ -2296,6 +2300,7 @@ async function runOneToolCall(
     ...(result.diff ? { diff: result.diff } : {}),
     ...(permission ? { permission } : {}),
     ...(images ? { images } : {}),
+    ...(result.browser ? { browser: true } : {}),
   });
   return {
     output: result.output,
@@ -2303,6 +2308,7 @@ async function runOneToolCall(
     diff: result.diff,
     ...(permission ? { permission } : {}),
     ...(images ? { images, imagesSentToModel } : {}),
+    ...(result.browser ? { browser: true } : {}),
   };
 }
 

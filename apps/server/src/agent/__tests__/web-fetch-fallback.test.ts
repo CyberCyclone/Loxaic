@@ -118,12 +118,32 @@ describe("web_fetch with a renderer", () => {
     const bytes = Buffer.from("\x89PNG....");
     const renderer = vi.fn<PageRenderer>().mockResolvedValue(page({ image: { bytes, mime: "image/png" } }));
     const shot = await fetchWith(`${base}/plain`, renderer, { screenshot: true });
-    expect(renderer).toHaveBeenCalledWith(new URL(`${base}/plain`), { screenshot: true, maxTextChars: 100 * 1024 });
-    expect(shot.image?.bytes).toBe(bytes);
+    expect(renderer).toHaveBeenCalledWith(new URL(`${base}/plain`), { screenshot: "required", maxTextChars: 100 * 1024 });
+    expect(shot.image).toEqual({ bytes, mime: "image/png", forModel: true });
+    expect(shot.browser).toBe(true);
     expect(shot.output).toContain("A screenshot of the page is attached.");
     const refused = await fetchWith(`${base}/plain`, null, { screenshot: true });
     expect(refused.ok).toBe(false);
     expect(refused.output).toContain("Screenshots need web browsing");
+  });
+
+  it("screenshots every fallback for the person, without telling the model or handing it over", async () => {
+    const bytes = Buffer.from("\x89PNG....");
+    const renderer = vi.fn<PageRenderer>().mockResolvedValue(page({ image: { bytes, mime: "image/png" } }));
+    const result = await fetchWith(`${base}/walled`, renderer);
+    expect(renderer).toHaveBeenCalledWith(new URL(`${base}/walled`), { screenshot: "best-effort", maxTextChars: 100 * 1024 });
+    expect(result.image).toEqual({ bytes, mime: "image/png", forModel: false });
+    expect(result.output).not.toContain("screenshot");
+  });
+
+  it("marks every result the browser had a hand in, and none it did not", async () => {
+    const shot = { image: { bytes: Buffer.from("\x89PNG"), mime: "image/png" as const } };
+    expect((await fetchWith(`${base}/walled`, vi.fn<PageRenderer>().mockResolvedValue(page({})))).browser).toBe(true);
+    const errorPage = await fetchWith(`${base}/walled`, vi.fn<PageRenderer>().mockResolvedValue(page({ status: 403, ...shot })));
+    expect(errorPage).toMatchObject({ ok: false, browser: true, image: { forModel: false } });
+    expect((await fetchWith(`${base}/walled`, vi.fn<PageRenderer>().mockRejectedValue(new Error("no sandbox")))).browser).toBe(true);
+    expect((await fetchWith(`${base}/plain`, vi.fn<PageRenderer>())).browser).toBeUndefined();
+    expect((await fetchWith(`${base}/walled`, null)).browser).toBeUndefined();
   });
 
   it("caps the rendered text like the plain path", async () => {

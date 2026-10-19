@@ -172,7 +172,7 @@ describe.skipIf(!executable)("the browser fallback, in a real Chromium", () => {
     for (const k of ["LOXAIC_E2E_FETCH_ALLOW", "BROWSER_DIR", "BROWSER_ENABLED", "BROWSER_ACTION_TIMEOUT_MS"]) Reflect.deleteProperty(process.env, k);
   });
 
-  const opts = { screenshot: false, maxTextChars: 10_000 };
+  const opts = { screenshot: "none" as const, maxTextChars: 10_000 };
 
   it("renders a page whose text only exists once its script has run", async () => {
     const page = await render("conv-js", new URL(`${site.base}/js`), opts);
@@ -218,10 +218,12 @@ describe.skipIf(!executable)("the browser fallback, in a real Chromium", () => {
     await expect(render("conv-s", new URL("file:///etc/passwd"), opts)).rejects.toThrow(/Only http and https/);
   });
 
-  it("returns a real PNG when asked for a screenshot", async () => {
-    const page = await render("conv-shot", new URL(`${site.base}/js`), { ...opts, screenshot: true });
-    expect(page.image?.mime).toBe("image/png");
-    expect(page.image?.bytes.subarray(1, 4).toString()).toBe("PNG");
+  it("returns a real PNG when asked for a screenshot, and when the person is the only one who sees it", async () => {
+    for (const screenshot of ["required", "best-effort"] as const) {
+      const page = await render("conv-shot", new URL(`${site.base}/js`), { ...opts, screenshot });
+      expect(page.image?.mime).toBe("image/png");
+      expect(page.image?.bytes.subarray(1, 4).toString()).toBe("PNG");
+    }
   }, 60_000);
 
   it("gives up on a page whose script never yields, and closes that conversation's browser", async () => {
@@ -282,7 +284,7 @@ describe.skipIf(!executable)("the browser fallback, in a real Chromium", () => {
   }, 60_000);
 
   it("cuts the text where the page cannot interfere", async () => {
-    const page = await render("conv-liar", new URL(`${site.base}/liar`), { screenshot: false, maxTextChars: 1000 });
+    const page = await render("conv-liar", new URL(`${site.base}/liar`), { screenshot: "none", maxTextChars: 1000 });
     expect(page.text.length).toBeLessThanOrEqual(1001);
     expect(page.text).toContain("short");
   }, 60_000);

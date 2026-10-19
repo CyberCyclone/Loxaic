@@ -1,7 +1,8 @@
 /**
  * web_fetch's browser fallback (#281): a page that refuses a plain fetch, or
- * only exists once its script has run, comes back rendered; a screenshot shows
- * on the tool card, opens in the viewer and is still there after a reload;
+ * only exists once its script has run, comes back rendered, with the browser
+ * icon and a screenshot for the person (the model is not sent it); one the
+ * model asks for shows on the card, opens in the viewer and survives a reload;
  * two conversations never share a browser's cookies; and with browsing off,
  * web_fetch is the plain fetch it always was.
  *
@@ -63,13 +64,19 @@ async function enableBrowsing(): Promise<void> {
 }
 
 /** The tool results of a conversation, screenshots included. */
-async function results(creds: Credentials, conversationId: string): Promise<{ call_id: string; output: string; ok?: boolean; images?: { ref: string }[] }[]> {
+async function results(creds: Credentials, conversationId: string): Promise<{ call_id: string; output: string; ok?: boolean; images?: { ref: string }[]; browser?: boolean }[]> {
   const token = await apiToken(creds);
   const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, { headers: { authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`[e2e] messages failed (${String(res.status)})`);
-  const body = (await res.json()) as { messages: { content: { kind: string; call_id?: string; output?: string; ok?: boolean; images?: { ref: string }[] }[] }[] };
+  const body = (await res.json()) as { messages: { content: { kind: string; call_id?: string; output?: string; ok?: boolean; images?: { ref: string }[]; browser?: boolean }[] }[] };
   return body.messages.flatMap((m) =>
-    m.content.filter((b) => b.kind === 'tool_result').map((b) => ({ call_id: b.call_id ?? '', output: b.output ?? '', ok: b.ok, ...(b.images ? { images: b.images } : {}) })),
+    m.content.filter((b) => b.kind === 'tool_result').map((b) => ({
+      call_id: b.call_id ?? '',
+      output: b.output ?? '',
+      ok: b.ok,
+      ...(b.images ? { images: b.images } : {}),
+      ...(b.browser ? { browser: true } : {}),
+    })),
   );
 }
 
@@ -110,7 +117,7 @@ describe('web_fetch falls back to a browser', () => {
     await adminBrowser('PATCH', '/v1/admin/settings/browser', { enabled: false });
   });
 
-  it('reads a page that refuses a plain fetch, and says it used the browser', async function () {
+  it('reads a page that refuses a plain fetch, shows the browser icon and what it saw', async function () {
     this.timeout(3 * 60_000);
     const conv = await sendInNewChat(creds, 'read the walled page');
     await waitForRunDone(creds, conv);
@@ -118,6 +125,15 @@ describe('web_fetch falls back to a browser', () => {
     expect(result.ok).toBe(true);
     expect(result.output).toContain('[Rendered in a browser: the plain fetch returned 403.]');
     expect(result.output).toContain(WALLED_TEXT);
+    // The model did not ask for a screenshot, so it is not told of one; the
+    // person still sees what the browser drew.
+    expect(result.output).not.toContain('screenshot');
+    expect(result.browser).toBe(true);
+    expect(result.images).toHaveLength(1);
+    await scrollTo(`chat.toolCall.screenshot.${result.call_id}`);
+    await waitForVisible(`chat.toolCall.browser.${result.call_id}`);
+    await waitForVisible(`chat.toolCall.screenshot.${result.call_id}`);
+    await shot('web-fetch-browser-icon-and-screenshot');
     await expandCard(result.call_id);
     await waitForFreshText(`chat.toolCall.resultText.${result.call_id}`, WALLED_TEXT);
     await shot('web-fetch-rendered-walled');
@@ -189,6 +205,11 @@ describe('web_fetch falls back to a browser', () => {
       // newest card, and XCUITest reports what it covers as not displayed.
       await scrollTo(`chat.toolCall.failed.${result.call_id}`);
       await waitForVisible(`chat.toolCall.failed.${result.call_id}`);
+      // A plain fetch keeps the globe and shows no screenshot.
+      expect(result.browser).toBeUndefined();
+      expect(result.images).toBeUndefined();
+      await waitForGone(`chat.toolCall.browser.${result.call_id}`);
+      await waitForGone(`chat.toolCall.screenshot.${result.call_id}`);
     } finally {
       await adminBrowser('PATCH', '/v1/admin/settings/browser', { enabled: true });
     }

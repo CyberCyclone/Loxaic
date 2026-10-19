@@ -438,8 +438,14 @@ describe.skipIf(!browserBuild)("a web_fetch screenshot replays identically", () 
 
   beforeAll(async () => {
     dir = mkdtempSync(path.join(tmpdir(), "prefix-screenshot-"));
-    site = createServer((_req, res) => {
+    site = createServer((req, res) => {
       res.setHeader("content-type", "text/html");
+      // Walled to anything but a browser, so web_fetch falls back to one.
+      if (req.url === "/walled" && !req.headers["user-agent"]?.includes("Chrome/")) {
+        res.writeHead(403);
+        res.end("<p>no bots</p>");
+        return;
+      }
       res.end("<p>a page worth looking at</p>");
     });
     await new Promise<void>((resolve) => site.listen(0, "127.0.0.1", resolve));
@@ -448,6 +454,11 @@ describe.skipIf(!browserBuild)("a web_fetch screenshot replays identically", () 
     const shot = { tool: "web_fetch", args: { url: `http://127.0.0.1:${String(port)}/`, screenshot: true } };
     writeFileSync(file, JSON.stringify([
       { match: "screenshot the fixture", steps: [shot], finalText: "[Mock] Took it.\n" },
+      {
+        match: "read the walled page",
+        steps: [{ tool: "web_fetch", args: { url: `http://127.0.0.1:${String(port)}/walled` } }],
+        finalText: "[Mock] Read it.\n",
+      },
       // One more than the model is shown, one per iteration; distinct URLs, or
       // the loop detector stops the repeat.
       {
@@ -497,6 +508,22 @@ describe.skipIf(!browserBuild)("a web_fetch screenshot replays identically", () 
     expect(shown).toEqual([...Array<boolean>(SCREENSHOTS_SHOWN_LIMIT).fill(true), false]);
   }, 90_000);
 
+  it("keeps a fallback's screenshot for the person, and never sends it to the model", async () => {
+    const convId = await turn("read the walled page");
+    await turn("what did it say?", convId);
+    expectEachRequestExtendsTheLast();
+    expect((requests.at(-1) ?? []).some((m) => m.includes('"type":"image_url"'))).toBe(false);
+    const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+    const result = rows
+      .flatMap((r) => r.content as { kind: string; output?: string; images?: unknown[]; images_sent_to_model?: boolean; browser?: boolean }[])
+      .find((b) => b.kind === "tool_result");
+    expect(result?.output).toContain("[Rendered in a browser: the plain fetch returned 403.]");
+    expect(result?.output).not.toContain("screenshot");
+    expect(result?.browser).toBe(true);
+    expect(result?.images).toHaveLength(1);
+    expect(result?.images_sent_to_model).toBeUndefined();
+  }, 60_000);
+
   it("sends the screenshot after the tool results, then the same bytes on the next turn", async () => {
     const convId = await turn("screenshot the fixture");
     await turn("what did it show?", convId);
@@ -511,6 +538,7 @@ describe.skipIf(!browserBuild)("a web_fetch screenshot replays identically", () 
     const result = rows.flatMap((r) => r.content as { kind: string; images?: unknown[]; images_sent_to_model?: boolean }[]).find((b) => b.kind === "tool_result");
     expect(result?.images).toHaveLength(1);
     expect(result?.images_sent_to_model).toBe(true);
+    expect((result as { browser?: boolean } | undefined)?.browser).toBe(true);
   }, 60_000);
 });
 

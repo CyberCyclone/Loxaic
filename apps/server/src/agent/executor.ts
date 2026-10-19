@@ -20,8 +20,12 @@ export interface ToolResult {
   todos?: Todo[];
   /** A screenshot web_fetch took (#281), as bytes. The engine stores it as an
    * attachment and puts the ref on the result; the executor never touches
-   * storage or the database. */
-  image?: { bytes: Buffer; mime: "image/png" };
+   * storage or the database. `forModel`: the model asked for it. Every other
+   * browser load takes one too, for the person only. */
+  image?: { bytes: Buffer; mime: "image/png"; forModel: boolean };
+  /** web_fetch loaded the page in the conversation's browser (#281), whether
+   * or not that worked, so the person can tell it from a plain fetch. */
+  browser?: true;
 }
 
 /**
@@ -29,7 +33,7 @@ export interface ToolResult {
  * the engine to the run's conversation and abort signal. Absent when browsing
  * is off, which makes web_fetch exactly the plain fetch it always was.
  */
-export type PageRenderer = (url: URL, opts: { screenshot: boolean; maxTextChars: number }) => Promise<RenderResult>;
+export type PageRenderer = (url: URL, opts: { screenshot: "required" | "best-effort"; maxTextChars: number }) => Promise<RenderResult>;
 
 const WEB_FETCH_TIMEOUT_MS = 15_000;
 /** Ceiling on the *extracted text* a fetch contributes to the prompt. */
@@ -646,11 +650,13 @@ async function plainFetch(start: URL): Promise<{ result: ToolResult; signal: Pla
 
 /** The browser's answer, in web_fetch's shape and under its text ceiling, so
  * the fallback cannot quietly spend more of the window than the fast path. */
-async function renderedFetch(url: URL, renderer: PageRenderer, screenshot: boolean, why: string | null): Promise<ToolResult> {
+async function renderedFetch(url: URL, renderer: PageRenderer, forModel: boolean, why: string | null): Promise<ToolResult> {
   try {
-    const page = await renderer(url, { screenshot, maxTextChars: WEB_FETCH_MAX_BYTES });
+    const page = await renderer(url, { screenshot: forModel ? "required" : "best-effort", maxTextChars: WEB_FETCH_MAX_BYTES });
+    // What the browser drew goes to the person even when the page is an error.
+    const image = page.image ? { image: { ...page.image, forModel } } : {};
     if (page.status !== null && page.status >= 400) {
-      return { ok: false, output: `HTTP ${String(page.status)} for ${page.finalUrl} (in the browser too)` };
+      return { ok: false, output: `HTTP ${String(page.status)} for ${page.finalUrl} (in the browser too)`, browser: true, ...image };
     }
     const truncated = page.text.length > WEB_FETCH_MAX_BYTES;
     const body = truncated
@@ -660,15 +666,11 @@ async function renderedFetch(url: URL, renderer: PageRenderer, screenshot: boole
       why ? `[Rendered in a browser: ${why}.]` : "[Rendered in a browser.]",
       page.title ? `Title: ${page.title}` : null,
       page.finalUrl !== url.href ? `URL: ${page.finalUrl}` : null,
-      page.image ? "A screenshot of the page is attached." : null,
+      forModel && page.image ? "A screenshot of the page is attached." : null,
     ].filter((line): line is string => line !== null).join("\n");
-    return {
-      ok: true,
-      output: `${header}\n\n${body}`,
-      ...(page.image ? { image: page.image } : {}),
-    };
+    return { ok: true, output: `${header}\n\n${body}`, browser: true, ...image };
   } catch (err) {
-    return { ok: false, output: (err as Error).message };
+    return { ok: false, output: (err as Error).message, browser: true };
   }
 }
 
@@ -692,7 +694,7 @@ async function runWebFetch(args: Record<string, unknown>, renderer: PageRenderer
   if (!decision.render || !renderer) return plain.result;
   const rendered = await renderedFetch(url, renderer, false, decision.reason);
   if (rendered.ok) return rendered;
-  return { ok: false, output: `${plain.result.output}\nThe browser fallback failed too: ${rendered.output}` };
+  return { ...rendered, output: `${plain.result.output}\nThe browser fallback failed too: ${rendered.output}` };
 }
 
 /**

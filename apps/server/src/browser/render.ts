@@ -15,6 +15,16 @@ import type { BrowserContextLike, PageLike } from "./types.ts";
 export const SCREENSHOT_MAX_BYTES = 4 * 1024 * 1024;
 const TITLE_MAX_CHARS = 300;
 const NETWORK_IDLE_MAX_MS = 5_000;
+/** How long a screenshot nobody asked for may take: it is for the person
+ * watching, and must not cost the model its page. */
+const BEST_EFFORT_SCREENSHOT_MS = 5_000;
+
+/**
+ * Whether to screenshot the page. `required`: the model asked, and a page
+ * that cannot be captured is a failed call. `best-effort`: every browser load
+ * shows the person what it saw (#281), and the text stands without it.
+ */
+export type ScreenshotMode = "required" | "best-effort" | "none";
 
 export interface RenderResult {
   /** The document's HTTP status, or null when the browser reported none. */
@@ -108,7 +118,7 @@ async function load(
   context: BrowserContextLike,
   page: PageLike,
   url: URL,
-  opts: { screenshot: boolean; maxTextChars: number; timeoutMs: number },
+  opts: { screenshot: ScreenshotMode; maxTextChars: number; timeoutMs: number },
 ): Promise<RenderResult> {
   const started = Date.now();
   const left = (): number => Math.max(1, opts.timeoutMs - (Date.now() - started));
@@ -127,12 +137,16 @@ async function load(
     title: read.title.slice(0, TITLE_MAX_CHARS),
     text: read.text,
   };
-  if (opts.screenshot) {
-    const bytes = await page.screenshot({ type: "png", fullPage: false, timeout: left() });
+  if (opts.screenshot === "none") return result;
+  const required = opts.screenshot === "required";
+  try {
+    const bytes = await page.screenshot({ type: "png", fullPage: false, timeout: required ? left() : Math.min(BEST_EFFORT_SCREENSHOT_MS, left()) });
     if (bytes.length > SCREENSHOT_MAX_BYTES) {
       throw new RenderError(`The screenshot was ${(bytes.length / 1024 / 1024).toFixed(1)} MB, over the 4 MB limit.`);
     }
     result.image = { bytes, mime: "image/png" };
+  } catch (err) {
+    if (required) throw err;
   }
   return result;
 }
@@ -145,7 +159,7 @@ async function load(
 export async function renderPage(
   conversationId: string,
   url: URL,
-  opts: { screenshot: boolean; maxTextChars: number; signal?: AbortSignal },
+  opts: { screenshot: ScreenshotMode; maxTextChars: number; signal?: AbortSignal },
 ): Promise<RenderResult> {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new RenderError(`Only http and https pages can be opened (got ${url.protocol}).`);

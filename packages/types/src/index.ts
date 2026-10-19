@@ -218,6 +218,9 @@ export type ContentBlock =
        * that predates browsing, and a screenshot a non-vision model never
        * received, replay the same way — as text only. */
       images_sent_to_model?: boolean;
+      /** web_fetch loaded the page in the conversation's own browser (#281),
+       * not the plain fetch. Written only when true. */
+      browser?: true;
     }
   | { kind: "attachment"; ref: string; mime: string; name?: string }
   /** Rides alongside a summary message's text block so a cold REST load can

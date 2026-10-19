@@ -1,6 +1,6 @@
 # Web browsing (web_fetch's browser fallback)
 
-Some sites refuse a plain fetch (a 403 to anything that isn't a browser) or build the page with JavaScript, so `web_fetch` gets back an error or an empty shell. With web browsing on, Loxaic loads those pages in a headless Chromium instead and returns the text a person would see. The model can also ask for a screenshot, which appears on the tool card and, for a model that can see images, is sent to it.
+Some sites refuse a plain fetch (a 403 to anything that isn't a browser) or build the page with JavaScript, so `web_fetch` gets back an error or an empty shell. With web browsing on, Loxaic loads those pages in a headless Chromium instead and returns the text a person would see. A tool call that used the browser shows a browser icon in place of the globe, with a screenshot of what the browser saw. That screenshot is for you; the model only receives one when it asks for it (and can see images).
 
 It is **off by default**.
 

@@ -15,6 +15,7 @@ import {
   HelpCircle,
   Plug,
   BookOpen,
+  AppWindowMac,
 } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -62,7 +63,10 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
   const { token } = useSession();
   const [viewerUri, setViewerUri] = useState<string | null>(null);
   const mcp = splitMcpTool(tool.tool);
-  const ToolIcon = mcp ? Plug : (TOOL_ICONS[tool.tool] ?? HelpCircle);
+  // A web_fetch that went through the chat's own browser (#281) says so: the
+  // plain fetch and the browser answer differently, and the person should be
+  // able to tell which one they are reading.
+  const ToolIcon = mcp ? Plug : tool.browser ? AppWindowMac : (TOOL_ICONS[tool.tool] ?? HelpCircle);
   // A failed call used to render identically to a successful one, so the only
   // sign anything had gone wrong was the model talking about it afterwards —
   // and a card collapsed by default hid the reason. Tinted on a positive
@@ -96,7 +100,9 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
       <Pressable
         testID={tool.callId ? `chat.toolCall.header.${tool.callId}` : undefined}
         onPress={() => { setOpen((o) => !o); }}
-        accessibilityLabel={failed ? 'Tool call failed' : undefined}
+        accessibilityLabel={
+          [tool.browser ? 'Opened in a browser' : null, failed ? 'Tool call failed' : null].filter(Boolean).join(', ') || undefined
+        }
       >
         <HStack className="items-center gap-2 px-3 py-2">
           {/* The failure is carried by colour alone otherwise, which no test
@@ -105,7 +111,13 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
             testID={failed && tool.callId ? `chat.toolCall.failed.${tool.callId}` : undefined}
             className={`h-5 w-5 items-center justify-center rounded-sm ${tint}`}
           >
-            <Icon as={ToolIcon} size="xs" />
+            {tool.browser ? (
+              <Box testID={tool.callId ? `chat.toolCall.browser.${tool.callId}` : undefined}>
+                <Icon as={ToolIcon} size="xs" />
+              </Box>
+            ) : (
+              <Icon as={ToolIcon} size="xs" />
+            )}
           </Box>
           <Text size="sm" className="flex-1 text-card-foreground" numberOfLines={1}>
             {mcp ? (
