@@ -6,7 +6,7 @@ It is **off by default**.
 
 ## Turning it on
 
-1. Settings → Agent Sandbox → **Web browsing** (admins only).
+1. Settings → **Server Settings** → **Web browsing** (admins only).
 2. Press **Install Chromium**. It downloads Playwright's `chromium-headless-shell` build (about 100 MB) into `BROWSER_DIR`. The desktop app keeps it in its data directory; a server run from a checkout uses `apps/server/browsers`.
 3. Switch **Web browsing** on.
 

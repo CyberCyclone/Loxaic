@@ -17,7 +17,7 @@ import { platform, scrollTo, tap, waitForFreshText, waitForGone, waitForVisible 
 import {
   goToSurface,
   listConversations,
-  openSettings,
+  openServerSettings,
   sendInNewRun,
   sendMessage,
   signIn,
@@ -198,11 +198,9 @@ describe('web_fetch falls back to a browser', () => {
     this.timeout(2 * 60_000);
     await signOut();
     await signIn(adminCreds());
-    await openSettings();
-    await scrollTo('settings.nav.sandbox');
-    await tap('settings.nav.sandbox');
-    await scrollTo('sandbox.browser.toggle');
-    await waitForFreshText('sandbox.browser.status', 'Using Chromium.');
+    await openServerSettings();
+    await scrollTo('server.browser.toggle');
+    await waitForFreshText('server.browser.status', 'Using Chromium.');
     await shot('web-fetch-admin-browsing');
   });
 });

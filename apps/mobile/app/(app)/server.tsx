@@ -8,6 +8,8 @@ import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
 import { RunQueueSettings } from '@/components/server/RunQueueSettings';
 import { PermissionCheckSettings } from '@/components/server/PermissionCheckSettings';
+import { WebBrowsingSettings } from '@/components/server/WebBrowsingSettings';
+import { useBrowserSettings } from '@/hooks/useBrowserSettings';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useModels } from '@/hooks/useModels';
 import { useRecentModels } from '@/hooks/useRecentModels';
@@ -17,14 +19,15 @@ import { useServerReachable } from '@/lib/connection';
 
 /**
  * Settings that apply to every conversation on this server, whatever surface
- * it is on: how many runs share the backend, and auto mode's permission
- * check. Admin only. The Agent Sandbox screen is for where tool calls run.
+ * it is on: how many runs share the backend, auto mode's permission check, and
+ * web_fetch's browser fallback (#281). Admin only. The Agent Sandbox screen is for where tool calls run.
  */
 export default function ServerScreen() {
   const shell = useShell();
   const reachable = useServerReachable();
   const { token, isAdmin } = useSession();
   const { settings: inference, update: updateInference } = useInferenceSettings(isAdmin ? token : null);
+  const browser = useBrowserSettings(isAdmin ? token : null);
   // The permission check's model, picked from the same list a chat uses.
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, getName, isKnown } = useModels(isAdmin ? token : null);
   const { recentModels, refreshRecentModels } = useRecentModels(isAdmin ? token : null);
@@ -52,6 +55,15 @@ export default function ServerScreen() {
           onChange={(value) => { void updateInference({ maxConcurrentRuns: value }); }}
           unavailable={!reachable}
         />
+
+        {browser.settings && (
+          <WebBrowsingSettings
+            settings={browser.settings}
+            unavailable={!reachable}
+            onEnabledChange={(enabled) => { void browser.update({ enabled }); }}
+            onInstall={() => { void browser.install(); }}
+          />
+        )}
 
         {/* Hidden against a server that predates the permission check. */}
         {inference.permissionCheckTimeoutMs !== undefined && (

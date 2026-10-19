@@ -25,7 +25,7 @@ export function WebBrowsingSettings({ settings, unavailable, onEnabledChange, on
       </Text>
       <HStack space="sm" className="items-center">
         <Switch
-          testID="sandbox.browser.toggle"
+          testID="server.browser.toggle"
           value={settings.enabled}
           onValueChange={onEnabledChange}
           isDisabled={switchDisabled}
@@ -34,7 +34,7 @@ export function WebBrowsingSettings({ settings, unavailable, onEnabledChange, on
           When a site refuses a plain fetch or needs JavaScript, load it in a browser, and let the model take screenshots
         </Text>
       </HStack>
-      <Text testID="sandbox.browser.status" size="2xs" className="text-muted-foreground">
+      <Text testID="server.browser.status" size="2xs" className="text-muted-foreground">
         {describeBrowserStatus(settings)}
       </Text>
       <Text size="2xs" className="text-muted-foreground">
@@ -48,7 +48,7 @@ export function WebBrowsingSettings({ settings, unavailable, onEnabledChange, on
       )}
       {canInstallBrowser(settings) && (
         <Button
-          testID="sandbox.browser.install"
+          testID="server.browser.install"
           size="sm"
           variant="outline"
           className="self-start"

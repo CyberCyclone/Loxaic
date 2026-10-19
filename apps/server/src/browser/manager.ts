@@ -158,7 +158,7 @@ export function desktopUserAgent(version: string, platform: NodeJS.Platform = pr
 async function launchEntry(conversationId: string, gen: number): Promise<Entry> {
   const choices = launchChoices();
   if (choices.length === 0) {
-    throw new BrowserUnavailableError("No browser is installed on this server. An admin can install one under Settings → Web browsing.");
+    throw new BrowserUnavailableError("No browser is installed on this server. An admin can install one under Settings → Server Settings → Web browsing.");
   }
   const port = await sinkholePort();
   const chromium = await loadChromium();
