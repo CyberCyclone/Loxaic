@@ -43,7 +43,7 @@ async function runGui() {
   const { readSecrets, updateSecrets } = await import("./supervisor/secrets.js");
   const { createUpdater } = await import("./updates/updater.js");
   const { appVariant } = await import("./variant.js");
-  const { probeCandidates } = await import("./probe-host.js");
+  const { probeCandidates, probeRequest } = await import("./probe-host.js");
   const {
     DEFAULT_HOST_PORT,
     buildConfig,
@@ -860,7 +860,7 @@ async function runGui() {
         }
       }
       return probeCandidates(candidates, {
-        request: (target) => fetch(target, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) }),
+        request: probeRequest(PROBE_TIMEOUT_MS),
         // Node's fetch says "fetch failed" for every network error; the reason
         // a person needs — including macOS refusing local network access —
         // is on err.cause. See fetch-error.js.

@@ -90,13 +90,13 @@ export function ServerPicker({
   //
   // The address shown is the host from config.json, not `active`: for a
   // Tailscale client that is the sidecar's loopback proxy, which nobody
-  // typed. Held back until the state arrives, so the loopback never flashes
-  // up first.
+  // typed. Held back while the state is on its way, so the loopback never
+  // flashes up first, and not past that: a failed fetch falls back to it.
   if (electronBridge()) {
     return (
       <VStack space="xs" className="items-center">
         <Text testID="login.server.current" size="2xs" className="text-muted-foreground">
-          Server: {instance ? (desktopServerAddress(instance) ?? active ?? 'not set') : '…'}
+          Server: {instance === undefined ? '…' : (desktopServerAddress(instance) ?? active ?? 'not set')}
         </Text>
         <Pressable testID="login.server.reconfigure" onPress={() => { router.push('/onboarding'); }}>
           <Text size="sm" className="text-link">Connect to a different server</Text>

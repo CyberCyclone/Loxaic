@@ -92,7 +92,9 @@ if (SELF_CONTAINED) {
 
   // Where the fake sidecar's client "proxy" points: the app's own server, so
   // a Tailscale join in onboarding reaches a real Loxaic through it.
-  process.env.FAKE_TSNET_CLIENT_PORT ??= process.env.E2E_PORT;
+  // Guarded: anything assigned to process.env becomes a string, so an unset
+  // E2E_PORT would hand the fake `127.0.0.1:undefined`.
+  if (process.env.E2E_PORT) process.env.FAKE_TSNET_CLIENT_PORT ??= process.env.E2E_PORT;
 
   // Seed the instance config the app would otherwise ask the user for. A data
   // dir with no config.json is, by design, a first run: the app opens

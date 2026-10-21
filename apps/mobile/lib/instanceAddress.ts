@@ -11,10 +11,23 @@ import type { InstanceState } from './endpoint';
  * `mode` is null while the stack is down; `storedMode` still says what
  * config.json holds, and that is when the address matters most.
  */
-export function desktopServerAddress(state: InstanceState | null): string | null {
+export function desktopServerAddress(state: InstanceState | null | undefined): string | null {
   if (!state) return null;
   const mode = state.mode ?? state.storedMode;
   if (!mode) return null;
   if (mode === 'client') return state.client?.hostUrl ?? state.apiBaseUrl;
   return state.effectiveAdvertiseUrl ?? state.host?.advertiseUrl ?? state.apiBaseUrl;
+}
+
+/**
+ * The server to name when a request from this app went unanswered: what the
+ * requests actually go to (`endpoint`), except for a desktop client, whose
+ * requests go to the tailnet sidecar's loopback — there the host it stands
+ * for is the useful name. Solo and Host talk to their own loopback stack, and
+ * that is what failed; naming their advertised address would blame the
+ * network instead.
+ */
+export function unreachableServerName(state: InstanceState | null | undefined, endpoint: string | null): string | null {
+  const client = (state?.mode ?? state?.storedMode) === 'client';
+  return (client ? desktopServerAddress(state) : null) ?? endpoint;
 }

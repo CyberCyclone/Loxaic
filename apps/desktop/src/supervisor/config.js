@@ -103,12 +103,15 @@ export function normalizeControlUrl(value) {
 
 /**
  * The URLs to try, in order, for a host address a person typed into the
- * client form. A scheme they typed is kept. Without one, a tailnet host is
- * `https://` — Tailscale Serve and our own sidecar both serve on :443 with a
- * real certificate — and any other host is tried as `https://` first, then
- * `http://`: nothing about an address says which one it speaks, and a LAN
- * box on plain HTTP is as ordinary as a public server behind TLS. The probe
- * settles which; `buildConfig` takes the first when nothing probed.
+ * client form. A scheme they typed is kept. Without one, a tailnet host —
+ * reached through our sidecar, or a `*.ts.net` name however it is reached —
+ * is `https://` only: Tailscale Serve and our own sidecar both serve on :443
+ * with a real certificate, and a Funnel name is public. Any other host is
+ * tried as `https://` first, then `http://`: nothing about an address says
+ * which one it speaks, and a LAN box on plain HTTP is as ordinary as a
+ * public server behind TLS. The probe settles which, and only falls back
+ * when nothing speaks TLS there (probe-host.js); `buildConfig` takes the
+ * first when nothing probed.
  *
  * The phone's `normalizeUrl` (apps/mobile/lib/server-address.ts) guesses the
  * scheme from the address instead, since its Save does not probe.
@@ -116,21 +119,26 @@ export function normalizeControlUrl(value) {
 export function hostUrlCandidates(value, via = "direct") {
   const trimmed = String(value ?? "").trim();
   const explicit = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed);
-  const typed = explicit ? [trimmed] : via === "tsnet" ? [`https://${trimmed}`] : [`https://${trimmed}`, `http://${trimmed}`];
-  return typed.map((candidate) => {
-    let parsed;
-    try {
-      parsed = new URL(candidate);
-    } catch {
-      throw new Error("That doesn't look like an address.");
-    }
-    if (!trimmed || !parsed.hostname) throw new Error("That doesn't look like an address.");
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("A host address must start with http:// or https://");
-    }
-    // Trailing slashes go because every caller appends its own path.
-    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
-  });
+  const parsed = parseHostUrl(explicit ? trimmed : `https://${trimmed}`);
+  if (explicit) return [parsed];
+  const tailnetName = new URL(parsed).hostname.toLowerCase().replace(/\.$/, "").endsWith(".ts.net");
+  if (via === "tsnet" || tailnetName) return [parsed];
+  return [parsed, parseHostUrl(`http://${trimmed}`)];
+}
+
+/** An http(s) URL without its trailing slashes, which every caller re-adds. */
+function parseHostUrl(candidate) {
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error("That doesn't look like an address.");
+  }
+  if (!parsed.hostname) throw new Error("That doesn't look like an address.");
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("A host address must start with http:// or https://");
+  }
+  return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
 }
 
 /**
@@ -302,13 +310,6 @@ export function buildConfig(input, previous = null) {
     // already carries a scheme and comes back unchanged.
     config.client = { hostUrl: hostUrlCandidates(hostUrl, via)[0] };
     if (via === "tsnet") {
-      // The sidecar derives what to dial from this URL, so it has to be one
-      // it can parse now rather than one that fails at spawn time.
-      try {
-        tsnetTargetFor(config.client.hostUrl);
-      } catch {
-        throw new Error("A Tailscale host address must be a full URL, e.g. https://box.tail1234.ts.net");
-      }
       config.client.via = "tsnet";
       const controlUrl = normalizeControlUrl(client.controlUrl);
       if (controlUrl) config.client.controlUrl = controlUrl;

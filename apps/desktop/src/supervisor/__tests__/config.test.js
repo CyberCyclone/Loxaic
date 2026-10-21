@@ -329,6 +329,13 @@ describe("hostUrlCandidates", () => {
     expect(hostUrlCandidates("100.101.102.103", "tsnet")).toEqual(["https://100.101.102.103"]);
   });
 
+  it("tries only https for a ts.net name on a direct connection too", () => {
+    // Joined through the system Tailscale app: still Serve's https, and a
+    // Funnel name is public, so plain http is never a fallback for one.
+    expect(hostUrlCandidates("box.tail1234.ts.net")).toEqual(["https://box.tail1234.ts.net"]);
+    expect(hostUrlCandidates("Box.Tail1234.TS.net.:8443/")).toEqual(["https://box.tail1234.ts.net.:8443"]);
+  });
+
   it("tries https then http for a direct address, whatever it looks like", () => {
     // Nothing about the address says which scheme it speaks.
     for (const typed of ["box.example.com", "192.168.1.20:4100", "box"]) {

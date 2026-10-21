@@ -52,7 +52,10 @@ export function ServerSettingsModal({
 
   const [hostUrl, setHostUrl] = useState('');
   const [viaTsnet, setViaTsnet] = useState(false);
-  const [probe, setProbe] = useState<{ ok: boolean; reason?: string; cluster?: { name: string } } | null>(null);
+  const [probe, setProbe] = useState<{ ok: boolean; reason?: string; plainHttp?: boolean; cluster?: { name: string } } | null>(null);
+  // Bumped by every edit to what a Check depends on, so a result that comes
+  // back after the address changed is dropped rather than written over it.
+  const clientEdits = useRef(0);
 
   // Re-seed from the live state every time the dialog *opens*, not just once —
   // a save that landed since the last open must not show stale values. But
@@ -92,7 +95,12 @@ export function ServerSettingsModal({
   const checkHostUrl = async () => {
     if (!hostUrl.trim()) return;
     setBusy(true);
+    const edits = clientEdits.current;
     const result = await bridge.instance.probeHost(hostUrl, viaTsnet ? { via: 'tsnet' } : undefined);
+    if (edits !== clientEdits.current) {
+      setBusy(false);
+      return;
+    }
     // The address that answered, scheme and all: what Save then stores.
     if (result.ok && result.url) setHostUrl(result.url);
     setProbe(result);
@@ -169,7 +177,7 @@ export function ServerSettingsModal({
                     <InputField
                       testID="settings.server.client.url"
                       value={hostUrl}
-                      onChangeText={(v) => { setHostUrl(v); setProbe(null); }}
+                      onChangeText={(v) => { clientEdits.current += 1; setHostUrl(v); setProbe(null); }}
                       autoCapitalize="none"
                       onSubmitEditing={() => { void checkHostUrl(); }}
                     />
@@ -180,7 +188,7 @@ export function ServerSettingsModal({
                   <Switch
                     testID="settings.server.client.tsnet"
                     value={viaTsnet}
-                    onValueChange={(v: boolean) => { setViaTsnet(v); setProbe(null); }}
+                    onValueChange={(v: boolean) => { clientEdits.current += 1; setViaTsnet(v); setProbe(null); }}
                     isDisabled={busy}
                   />
                   <Text size="sm" className="flex-1 text-foreground">Connect through Tailscale</Text>
@@ -195,6 +203,11 @@ export function ServerSettingsModal({
                 {probe?.ok && (
                   <Text testID="settings.server.client.found" size="sm" className="text-muted-foreground">
                     Found {probe.cluster?.name ?? 'a Loxaic host'}.
+                  </Text>
+                )}
+                {probe?.ok && probe.plainHttp && (
+                  <Text testID="settings.server.client.plainHttp" size="sm" className="text-warning">
+                    It only answered over plain http://, so your password and session will cross the network unencrypted. Connect only on a network you trust, or put the host behind https.
                   </Text>
                 )}
               </VStack>

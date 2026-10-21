@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceState } from './endpoint';
-import { desktopServerAddress } from './instanceAddress';
+import { desktopServerAddress, unreachableServerName } from './instanceAddress';
 
 const base: InstanceState = {
   mode: null,
@@ -62,8 +62,35 @@ describe('desktopServerAddress', () => {
     expect(desktopServerAddress({ ...tsnetClient, mode: null })).toBe('https://pheonix.tail47eac7.ts.net');
   });
 
-  it('is null off the desktop and before a mode is chosen', () => {
+  it('is null off the desktop, while loading, and before a mode is chosen', () => {
     expect(desktopServerAddress(null)).toBeNull();
+    expect(desktopServerAddress(undefined)).toBeNull();
     expect(desktopServerAddress(base)).toBeNull();
+  });
+});
+
+describe('unreachableServerName', () => {
+  it('names a client by its host, not the loopback it was talking to', () => {
+    expect(unreachableServerName(tsnetClient, 'http://127.0.0.1:49216')).toBe('https://pheonix.tail47eac7.ts.net');
+    expect(unreachableServerName({ ...tsnetClient, mode: null }, 'http://127.0.0.1:49216')).toBe(
+      'https://pheonix.tail47eac7.ts.net',
+    );
+  });
+
+  it('names what actually failed for a host, not the address it advertises', () => {
+    // Its own loopback stack is down; the tailnet has nothing to do with it.
+    const host: InstanceState = {
+      ...base,
+      mode: 'host',
+      storedMode: 'host',
+      apiBaseUrl: 'http://127.0.0.1:4100',
+      effectiveAdvertiseUrl: 'https://box.tail1234.ts.net',
+    };
+    expect(unreachableServerName(host, 'http://127.0.0.1:4100')).toBe('http://127.0.0.1:4100');
+  });
+
+  it('is the endpoint off the desktop', () => {
+    expect(unreachableServerName(null, 'https://box.example.com')).toBe('https://box.example.com');
+    expect(unreachableServerName(undefined, null)).toBeNull();
   });
 });

@@ -185,6 +185,9 @@ export interface LoxaicBridge {
     ) => Promise<{
       ok: boolean;
       url?: string;
+      /** https:// was tried first and nothing spoke TLS there, so this is
+       * the cleartext address — say so before anyone connects to it. */
+      plainHttp?: boolean;
       reason?: string;
       cluster?: { id: string; name: string };
       hosts?: { id: string; name: string; online: boolean }[];

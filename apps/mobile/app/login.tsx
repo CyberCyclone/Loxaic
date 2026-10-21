@@ -15,7 +15,7 @@ import { TailnetStatusCard } from '@/components/settings/TailnetStatusCard';
 import { currentEndpoint } from '@/lib/endpoint';
 import { ServerPicker, serverPickerKind } from '@/components/auth/ServerPicker';
 import { tailnetHint } from '@/lib/server-address';
-import { desktopServerAddress } from '@/lib/instanceAddress';
+import { unreachableServerName } from '@/lib/instanceAddress';
 import { useInstanceState } from '@/hooks/useInstanceState';
 
 export default function LoginScreen() {
@@ -36,8 +36,8 @@ export default function LoginScreen() {
   const revealServerResult = useCallback(() => {
     scrollRef.current?.scrollToEnd({ animated: true });
   }, []);
-  // Null off the desktop. On it, the server to name in an error is the host
-  // in config.json, not the tailnet sidecar's loopback the requests go to.
+  // Null off the desktop. On it, a client's error names the host in
+  // config.json, not the tailnet sidecar's loopback the requests go to.
   const instance = useInstanceState();
 
   if (needsOnboarding) return <Redirect href="/onboarding" />;
@@ -67,7 +67,7 @@ export default function LoginScreen() {
       // this screen was changed to fix, turned the other way round.
       const picker = serverPickerKind();
       if (unreachable && picker === 'form') setServerOpen(true);
-      const endpoint = desktopServerAddress(instance) ?? currentEndpoint();
+      const endpoint = unreachableServerName(instance, currentEndpoint());
       // A tailnet address fails like a wrong one when Tailscale is simply off
       // on this device, and turning it on is the fix, not the address below.
       // Not in a browser: there the endpoint is the page's own origin, so a

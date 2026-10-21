@@ -23,6 +23,17 @@ describe('electron onboarding', () => {
     if (!SELF_CONTAINED) this.skip();
   });
 
+  // Back to Solo whatever the cases left behind: a case that fails after
+  // connecting as a client would otherwise hand every later spec in the run
+  // a fake tailnet host, and bury its own failure under theirs.
+  after(async () => {
+    if (!SELF_CONTAINED || (await instanceState())?.mode === 'solo') return;
+    await returnToOnboarding();
+    await tap('onboarding.mode.solo');
+    await tap('onboarding.solo.submit');
+    await waitForVisible('login.submit', 60_000);
+  });
+
   it('exposes the instance bridge to the renderer', async () => {
     const state = await instanceState();
     expect(state).not.toBeNull();
@@ -118,6 +129,9 @@ describe('electron onboarding', () => {
     await tap('onboarding.client.check');
     await waitForVisible('onboarding.client.found');
     expect(await byTestId('onboarding.client.url').getValue()).toBe(`http://127.0.0.1:${String(port)}`);
+    // Said out loud: the password goes in the clear to an address with no
+    // scheme typed, so the person has to know before pressing Connect.
+    await waitForVisible('onboarding.client.plainHttp');
     await shot('onboarding-client-http-fallback');
   });
 
@@ -135,6 +149,7 @@ describe('electron onboarding', () => {
     // server through it.
     await waitForVisible('onboarding.client.found', 30_000);
     expect(await byTestId('onboarding.client.url').getValue()).toBe(`https://${typed}`);
+    expect(await isVisible('onboarding.client.plainHttp')).toBe(false);
     await shot('onboarding-client-bare-tailnet');
 
     await tap('onboarding.client.submit');
@@ -142,11 +157,5 @@ describe('electron onboarding', () => {
     await waitForFreshText('login.server.current', `Server: https://${typed}`, 60_000);
     expect(await byTestId('login.server.current').getText()).toBe(`Server: https://${typed}`);
     await shot('login-server-tailnet-client');
-
-    // Back to Solo, so whatever runs after this file starts where it did.
-    await returnToOnboarding();
-    await tap('onboarding.mode.solo');
-    await tap('onboarding.solo.submit');
-    await waitForVisible('login.submit', 60_000);
   });
 });
