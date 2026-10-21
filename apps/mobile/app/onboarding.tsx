@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Redirect, useRouter } from 'expo-router';
 import { KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Boxes, Laptop, Server, TriangleAlert } from 'lucide-react-native';
@@ -52,7 +52,10 @@ export default function OnboardingScreen() {
   // Client form
   const [hostUrl, setHostUrl] = useState('');
   const [viaTsnet, setViaTsnet] = useState(false);
-  const [probe, setProbe] = useState<{ ok: boolean; reason?: string; cluster?: { name: string } } | null>(null);
+  const [probe, setProbe] = useState<{ ok: boolean; reason?: string; plainHttp?: boolean; cluster?: { name: string } } | null>(null);
+  // Bumped by every edit to what a Check depends on, so a result that comes
+  // back after the address changed is dropped rather than written over it.
+  const clientEdits = useRef(0);
 
   useEffect(() => {
     if (!bridge) return;
@@ -117,9 +120,18 @@ export default function OnboardingScreen() {
   const checkHostUrl = async () => {
     if (!hostUrl.trim()) return;
     setBusy(true);
+    const edits = clientEdits.current;
     // Through the sidecar, a first run waits here until this machine is
     // approved — the card below shows the link while it does.
-    setProbe(await bridge.instance.probeHost(hostUrl, viaTsnet ? { via: 'tsnet' } : undefined));
+    const result = await bridge.instance.probeHost(hostUrl, viaTsnet ? { via: 'tsnet' } : undefined);
+    if (edits !== clientEdits.current) {
+      setBusy(false);
+      return;
+    }
+    // The address that answered, scheme and all — https:// or http:// when
+    // none was typed — so Connect stores exactly what was checked.
+    if (result.ok && result.url) setHostUrl(result.url);
+    setProbe(result);
     setBusy(false);
   };
 
@@ -304,7 +316,7 @@ export default function OnboardingScreen() {
                     testID="onboarding.client.url"
                     placeholder={viaTsnet ? 'https://box.tail1234.ts.net' : 'http://192.168.1.20:4100'}
                     value={hostUrl}
-                    onChangeText={(v) => { setHostUrl(v); setProbe(null); }}
+                    onChangeText={(v) => { clientEdits.current += 1; setHostUrl(v); setProbe(null); }}
                     autoCapitalize="none"
                     onSubmitEditing={() => { void checkHostUrl(); }}
                   />
@@ -315,7 +327,7 @@ export default function OnboardingScreen() {
                 <Switch
                   testID="onboarding.client.tsnet"
                   value={viaTsnet}
-                  onValueChange={(v: boolean) => { setViaTsnet(v); setProbe(null); }}
+                  onValueChange={(v: boolean) => { clientEdits.current += 1; setViaTsnet(v); setProbe(null); }}
                   isDisabled={busy}
                 />
                 <Text size="sm" className="flex-1 text-foreground">Connect through Tailscale</Text>
@@ -334,6 +346,11 @@ export default function OnboardingScreen() {
               {probe?.ok && (
                 <Text testID="onboarding.client.found" size="sm" className="text-muted-foreground">
                   Found {probe.cluster?.name ?? 'a Loxaic host'}. You&apos;ll sign in next.
+                </Text>
+              )}
+              {probe?.ok && probe.plainHttp && (
+                <Text testID="onboarding.client.plainHttp" size="sm" className="text-warning">
+                  It only answered over plain http://, so your password and session will cross the network unencrypted. Connect only on a network you trust, or put the host behind https.
                 </Text>
               )}
 

@@ -12,6 +12,7 @@ import {
   defaultTailnetHostname,
   firstLanAddress,
   hostSettingsView,
+  hostUrlCandidates,
   loadConfig,
   saveConfig,
   tsnetTargetFor,
@@ -295,13 +296,69 @@ describe("client via tsnet", () => {
     });
   });
 
-  it("rejects an unknown via and an unparseable tsnet host", () => {
+  it("rejects an unknown via and an address that is not one", () => {
     expect(() => buildConfig({ mode: "client", client: { hostUrl: "http://x", via: "carrier-pigeon" } })).toThrow(
       /Client connection must be one of/,
     );
-    expect(() => buildConfig({ mode: "client", client: { hostUrl: "box.tail.ts.net", via: "tsnet" } })).toThrow(
-      /must be a full URL/,
+    expect(() => buildConfig({ mode: "client", client: { hostUrl: "not a host", via: "tsnet" } })).toThrow(
+      /doesn't look like an address/,
     );
+  });
+
+  it("gives a tailnet name typed without a scheme https", () => {
+    // What the host's own status card shows, and what people paste.
+    const config = buildConfig({ mode: "client", client: { hostUrl: "pheonix.tail47eac7.ts.net", via: "tsnet" } });
+    expect(config.client.hostUrl).toBe("https://pheonix.tail47eac7.ts.net");
+    expect(tsnetTargetFor(config.client.hostUrl)).toEqual({ target: "pheonix.tail47eac7.ts.net:443", tls: true });
+  });
+
+  it("stores a direct address with no scheme as https, and keeps a typed http", () => {
+    // Only reached when nothing probed: the form sends the scheme its Check found.
+    expect(buildConfig({ mode: "client", client: { hostUrl: "box.example.com" } }).client.hostUrl).toBe(
+      "https://box.example.com",
+    );
+    expect(buildConfig({ mode: "client", client: { hostUrl: "http://192.168.1.20:4100/" } }).client.hostUrl).toBe(
+      "http://192.168.1.20:4100",
+    );
+  });
+});
+
+describe("hostUrlCandidates", () => {
+  it("tries only https for a tailnet host typed without a scheme, name or IP", () => {
+    expect(hostUrlCandidates("box.tail1234.ts.net", "tsnet")).toEqual(["https://box.tail1234.ts.net"]);
+    expect(hostUrlCandidates("100.101.102.103", "tsnet")).toEqual(["https://100.101.102.103"]);
+  });
+
+  it("tries only https for a ts.net name on a direct connection too", () => {
+    // Joined through the system Tailscale app: still Serve's https, and a
+    // Funnel name is public, so plain http is never a fallback for one.
+    expect(hostUrlCandidates("box.tail1234.ts.net")).toEqual(["https://box.tail1234.ts.net"]);
+    expect(hostUrlCandidates("Box.Tail1234.TS.net.:8443/")).toEqual(["https://box.tail1234.ts.net.:8443"]);
+  });
+
+  it("tries https then http for a direct address, whatever it looks like", () => {
+    // Nothing about the address says which scheme it speaks.
+    for (const typed of ["box.example.com", "192.168.1.20:4100", "box"]) {
+      expect(hostUrlCandidates(typed)).toEqual([`https://${typed}`, `http://${typed}`]);
+    }
+  });
+
+  it("keeps a typed scheme, over either connection", () => {
+    for (const via of ["direct", "tsnet"]) {
+      expect(hostUrlCandidates("http://100.101.102.103:4100", via)).toEqual(["http://100.101.102.103:4100"]);
+      expect(hostUrlCandidates("HTTPS://Box.Example.com", via)).toEqual(["https://box.example.com"]);
+    }
+  });
+
+  it("trims, and drops trailing slashes every caller would double", () => {
+    expect(hostUrlCandidates("  https://box.example.com/loxaic//  ")).toEqual(["https://box.example.com/loxaic"]);
+    expect(hostUrlCandidates("box.example.com/", "tsnet")).toEqual(["https://box.example.com"]);
+  });
+
+  it("refuses what is not an address, and a scheme that is not http(s)", () => {
+    expect(() => hostUrlCandidates("")).toThrow(/doesn't look like an address/);
+    expect(() => hostUrlCandidates("not a host")).toThrow(/doesn't look like an address/);
+    expect(() => hostUrlCandidates("ftp://box.example.com")).toThrow(/http:\/\/ or https:\/\//);
   });
 });
 

@@ -16,11 +16,22 @@ import { browser } from '@wdio/globals';
 import { SELF_CONTAINED } from '../../../scripts/electron-env.ts';
 import { instanceState, returnToOnboarding } from '../../helpers/app.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { isVisible, tap, typeInto, waitForVisible } from '../../helpers/selectors.ts';
+import { byTestId, isVisible, tap, typeInto, waitForFreshText, waitForVisible } from '../../helpers/selectors.ts';
 
 describe('electron onboarding', () => {
   before(function skipUnlessSelfContained() {
     if (!SELF_CONTAINED) this.skip();
+  });
+
+  // Back to Solo whatever the cases left behind: a case that fails after
+  // connecting as a client would otherwise hand every later spec in the run
+  // a fake tailnet host, and bury its own failure under theirs.
+  after(async () => {
+    if (!SELF_CONTAINED || (await instanceState())?.mode === 'solo') return;
+    await returnToOnboarding();
+    await tap('onboarding.mode.solo');
+    await tap('onboarding.solo.submit');
+    await waitForVisible('login.submit', 60_000);
   });
 
   it('exposes the instance bridge to the renderer', async () => {
@@ -103,5 +114,48 @@ describe('electron onboarding', () => {
     await tap('onboarding.client.check');
     await waitForVisible('onboarding.client.found');
     await shot('onboarding-client-probe');
+  });
+
+  it('tries https then http for an address typed without a scheme, and keeps the one that answered', async () => {
+    // A direct client, nothing on the tailnet. The Solo stack speaks plain
+    // HTTP, so https:// fails to connect and http:// answers — and the field
+    // shows that, because it is what Connect would store.
+    const port = (await instanceState())?.listenPort;
+    expect(port).toBeTruthy();
+
+    await browser.url('app://-/onboarding');
+    await tap('onboarding.mode.client');
+    await typeInto('onboarding.client.url', `127.0.0.1:${String(port)}`);
+    await tap('onboarding.client.check');
+    await waitForVisible('onboarding.client.found');
+    expect(await byTestId('onboarding.client.url').getValue()).toBe(`http://127.0.0.1:${String(port)}`);
+    // Said out loud: the password goes in the clear to an address with no
+    // scheme typed, so the person has to know before pressing Connect.
+    await waitForVisible('onboarding.client.plainHttp');
+    await shot('onboarding-client-http-fallback');
+  });
+
+  it('joins a tailnet host typed without a scheme, and the sign-in screen names that host', async () => {
+    // What the host's status card shows, and what people paste. It used to
+    // fail with "Invalid URL" before anything was dialled.
+    const typed = 'loxaic-e2e.tail1234.ts.net';
+    await browser.url('app://-/onboarding');
+    await tap('onboarding.mode.client');
+    await tap('onboarding.client.tsnet');
+    await typeInto('onboarding.client.url', typed);
+    await tap('onboarding.client.check');
+    // The fake sidecar asks for approval, then "joins" with its proxy pointed
+    // at the Solo stack (FAKE_TSNET_CLIENT_PORT), so the probe meets a real
+    // server through it.
+    await waitForVisible('onboarding.client.found', 30_000);
+    expect(await byTestId('onboarding.client.url').getValue()).toBe(`https://${typed}`);
+    expect(await isVisible('onboarding.client.plainHttp')).toBe(false);
+    await shot('onboarding-client-bare-tailnet');
+
+    await tap('onboarding.client.submit');
+    // Not the loopback proxy the requests go to, which is all it used to say.
+    await waitForFreshText('login.server.current', `Server: https://${typed}`, 60_000);
+    expect(await byTestId('login.server.current').getText()).toBe(`Server: https://${typed}`);
+    await shot('login-server-tailnet-client');
   });
 });
