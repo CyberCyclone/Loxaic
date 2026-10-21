@@ -43,6 +43,7 @@ async function runGui() {
   const { readSecrets, updateSecrets } = await import("./supervisor/secrets.js");
   const { createUpdater } = await import("./updates/updater.js");
   const { appVariant } = await import("./variant.js");
+  const { probeCandidates } = await import("./probe-host.js");
   const {
     DEFAULT_HOST_PORT,
     buildConfig,
@@ -51,6 +52,7 @@ async function runGui() {
     defaultTailnetHostname,
     firstLanAddress,
     hostSettingsView,
+    hostUrlCandidates,
     configPath,
     loadConfig,
     normalizeControlUrl,
@@ -811,9 +813,17 @@ async function runGui() {
     // that follows, which reuses it.
     ipcMain.handle("loxaic:probeHost", async (_event, url, opts) => {
       if (typeof url !== "string" || !url.trim()) return { ok: false, reason: "No URL given" };
-      const base = url.trim().replace(/\/+$/, "");
-      let probeBase = base;
-      if (opts && typeof opts === "object" && opts.via === "tsnet") {
+      const viaTsnet = Boolean(opts && typeof opts === "object" && opts.via === "tsnet");
+      // What the person typed, with the scheme(s) it could mean: one for an
+      // explicit scheme or a tailnet host, https then http otherwise.
+      let candidates;
+      try {
+        candidates = hostUrlCandidates(url, viaTsnet ? "tsnet" : "direct").map((base) => ({ url: base }));
+      } catch (err) {
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+      if (viaTsnet) {
+        const base = candidates[0].url;
         try {
           // The same validation setMode applies to the same field: this was
           // the one path a renderer-named control server reached the sidecar
@@ -834,8 +844,8 @@ async function runGui() {
           // `error` held the form for the full ten-minute join timeout with
           // no cancel reachable. The sidecar stays up past this, so a Check
           // after the approval lands reuses it.
-          const url = await withGrace(handle.ready, PROBE_TSNET_WAIT_MS);
-          if (url === null) {
+          const proxied = await withGrace(handle.ready, PROBE_TSNET_WAIT_MS);
+          if (proxied === null) {
             return {
               ok: false,
               reason:
@@ -844,32 +854,24 @@ async function runGui() {
                   : "The tailnet did not come up in time. Try again in a moment.",
             };
           }
-          probeBase = url;
+          candidates = [{ url: base, fetchBase: proxied }];
         } catch (err) {
           return { ok: false, reason: err instanceof Error ? err.message : String(err) };
         }
       }
-      try {
-        const health = await fetch(`${probeBase}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-        if (!health.ok) return { ok: false, reason: `Server answered ${String(health.status)}` };
-        const res = await fetch(`${probeBase}/v1/cluster`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-        if (!res.ok) return { ok: true, url: base };
-        const body = await res.json();
-        return { ok: true, url: base, cluster: body.cluster, hosts: body.hosts };
-      } catch (err) {
+      return probeCandidates(candidates, {
+        request: (target) => fetch(target, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) }),
         // Node's fetch says "fetch failed" for every network error; the reason
         // a person needs — including macOS refusing local network access —
         // is on err.cause. See fetch-error.js.
         //
-        // Named by `base`, not `probeBase`: on the tsnet path the request goes
-        // to the sidecar's loopback listener, an address the person never
-        // typed. And `appVariant().productName`, not `app.getName()`, which is
-        // `@loxaic/desktop` in a checkout — not a row System Settings shows.
-        return {
-          ok: false,
-          reason: describeFetchError(err, { url: base, appName: appVariant().productName }),
-        };
-      }
+        // Named by the candidate, not where the request went: on the tsnet
+        // path that is the sidecar's loopback listener, an address the person
+        // never typed. And `appVariant().productName`, not `app.getName()`,
+        // which is `@loxaic/desktop` in a checkout — not a row System
+        // Settings shows.
+        describe: (err, named) => describeFetchError(err, { url: named, appName: appVariant().productName }),
+      });
     });
 
     // Validates external-database credentials before they are committed, so a

@@ -11,6 +11,8 @@ import { Pressable } from '@/components/ui/pressable';
 import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
 import { getItem, setItem, removeItem } from '@/lib/storage';
 import { normalizeUrl, tailnetHint } from '@/lib/server-address';
+import { desktopServerAddress } from '@/lib/instanceAddress';
+import { useInstanceState } from '@/hooks/useInstanceState';
 
 /**
  * Choosing which server to sign in to, from the sign-in screen itself.
@@ -62,6 +64,9 @@ export function ServerPicker({
   const [url, setUrl] = useState(() => getItem('loxaic-endpoint') ?? currentEndpoint() ?? '');
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
+  // Null off the desktop. Followed rather than read once, so a Connect made
+  // in onboarding shows here without a remount.
+  const instance = useInstanceState();
 
   // The result line appears after the keyboard has already lifted the form,
   // and nothing moves it again: on iOS the second line of a two-line message
@@ -82,11 +87,16 @@ export function ServerPicker({
   // reachable at any time by design — onboarding deliberately has no
   // "already configured, go away" redirect, precisely so a mode can be
   // changed after setup.
+  //
+  // The address shown is the host from config.json, not `active`: for a
+  // Tailscale client that is the sidecar's loopback proxy, which nobody
+  // typed. Held back until the state arrives, so the loopback never flashes
+  // up first.
   if (electronBridge()) {
     return (
       <VStack space="xs" className="items-center">
         <Text testID="login.server.current" size="2xs" className="text-muted-foreground">
-          Server: {active ?? 'not set'}
+          Server: {instance ? (desktopServerAddress(instance) ?? active ?? 'not set') : '…'}
         </Text>
         <Pressable testID="login.server.reconfigure" onPress={() => { router.push('/onboarding'); }}>
           <Text size="sm" className="text-link">Connect to a different server</Text>

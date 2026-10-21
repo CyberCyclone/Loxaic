@@ -13,6 +13,7 @@ import { useInstanceState } from '@/hooks/useInstanceState';
 import { useSession } from '@/lib/session';
 import { disconnectedCopy, useSettledConnection } from '@/lib/connection';
 import { hostOf } from '@/lib/serverHost';
+import { desktopServerAddress } from '@/lib/instanceAddress';
 import { useServerEndpoint } from '@/hooks/useServerEndpoint';
 
 interface SidebarProps {
@@ -83,7 +84,7 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
   // renderer uses; everywhere else it is the endpoint the sockets and
   // requests really resolved to. This used to read only a *typed* endpoint,
   // so a phone on its build's default server said "local server".
-  const instanceUrl = instance?.mode === 'client' ? instance.client?.hostUrl : instance?.effectiveAdvertiseUrl;
+  const instanceUrl = desktopServerAddress(instance);
   const endpoint = useServerEndpoint();
   const serverHost = hostOf(instanceUrl) ?? hostOf(endpoint) ?? 'local server';
   // Settled, so an app switch's silent reconnect does not flicker it.

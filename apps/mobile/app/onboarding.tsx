@@ -119,7 +119,11 @@ export default function OnboardingScreen() {
     setBusy(true);
     // Through the sidecar, a first run waits here until this machine is
     // approved — the card below shows the link while it does.
-    setProbe(await bridge.instance.probeHost(hostUrl, viaTsnet ? { via: 'tsnet' } : undefined));
+    const result = await bridge.instance.probeHost(hostUrl, viaTsnet ? { via: 'tsnet' } : undefined);
+    // The address that answered, scheme and all — https:// or http:// when
+    // none was typed — so Connect stores exactly what was checked.
+    if (result.ok && result.url) setHostUrl(result.url);
+    setProbe(result);
     setBusy(false);
   };
 

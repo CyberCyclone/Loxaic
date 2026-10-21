@@ -92,7 +92,10 @@ export function ServerSettingsModal({
   const checkHostUrl = async () => {
     if (!hostUrl.trim()) return;
     setBusy(true);
-    setProbe(await bridge.instance.probeHost(hostUrl, viaTsnet ? { via: 'tsnet' } : undefined));
+    const result = await bridge.instance.probeHost(hostUrl, viaTsnet ? { via: 'tsnet' } : undefined);
+    // The address that answered, scheme and all: what Save then stores.
+    if (result.ok && result.url) setHostUrl(result.url);
+    setProbe(result);
     setBusy(false);
   };
 

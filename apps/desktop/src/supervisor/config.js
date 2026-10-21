@@ -102,6 +102,38 @@ export function normalizeControlUrl(value) {
 }
 
 /**
+ * The URLs to try, in order, for a host address a person typed into the
+ * client form. A scheme they typed is kept. Without one, a tailnet host is
+ * `https://` — Tailscale Serve and our own sidecar both serve on :443 with a
+ * real certificate — and any other host is tried as `https://` first, then
+ * `http://`: nothing about an address says which one it speaks, and a LAN
+ * box on plain HTTP is as ordinary as a public server behind TLS. The probe
+ * settles which; `buildConfig` takes the first when nothing probed.
+ *
+ * The phone's `normalizeUrl` (apps/mobile/lib/server-address.ts) guesses the
+ * scheme from the address instead, since its Save does not probe.
+ */
+export function hostUrlCandidates(value, via = "direct") {
+  const trimmed = String(value ?? "").trim();
+  const explicit = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed);
+  const typed = explicit ? [trimmed] : via === "tsnet" ? [`https://${trimmed}`] : [`https://${trimmed}`, `http://${trimmed}`];
+  return typed.map((candidate) => {
+    let parsed;
+    try {
+      parsed = new URL(candidate);
+    } catch {
+      throw new Error("That doesn't look like an address.");
+    }
+    if (!trimmed || !parsed.hostname) throw new Error("That doesn't look like an address.");
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("A host address must start with http:// or https://");
+    }
+    // Trailing slashes go because every caller appends its own path.
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
+  });
+}
+
+/**
  * The name this machine advertises on the tailnet, derived from the
  * machine's own name so it reads as "that machine" in the admin console:
  * `loxaic-` plus whatever survives Tailscale's hostname rules (lowercase
@@ -262,11 +294,13 @@ export function buildConfig(input, previous = null) {
     if (typeof hostUrl !== "string" || !hostUrl.trim()) {
       throw new Error("Client mode needs the host's URL");
     }
-    config.client = { hostUrl: hostUrl.trim().replace(/\/+$/, "") };
     const via = client.via ?? "direct";
     if (!CLIENT_VIAS.includes(via)) {
       throw new Error(`Client connection must be one of: ${CLIENT_VIAS.join(", ")}`);
     }
+    // The first candidate: the form sends the one its Check settled on, which
+    // already carries a scheme and comes back unchanged.
+    config.client = { hostUrl: hostUrlCandidates(hostUrl, via)[0] };
     if (via === "tsnet") {
       // The sidecar derives what to dial from this URL, so it has to be one
       // it can parse now rather than one that fails at spawn time.

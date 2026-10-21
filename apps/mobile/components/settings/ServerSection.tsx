@@ -8,6 +8,7 @@ import { useInstanceState } from '@/hooks/useInstanceState';
 import { ServerSettingsModal } from './ServerSettingsModal';
 import { TailnetStatusCard } from './TailnetStatusCard';
 import { electronBridge } from '@/lib/endpoint';
+import { desktopServerAddress } from '@/lib/instanceAddress';
 
 /**
  * Desktop-only: shows this install's current mode and address, with an Edit
@@ -42,10 +43,7 @@ export function ServerSection() {
         : 'Connected to a host';
   // What this install is actually reachable at: for a host, whatever the
   // server was told to advertise — the tailnet address once that join lands.
-  const subtitle =
-    mode === 'client'
-      ? (state.client?.hostUrl ?? state.apiBaseUrl)
-      : (state.effectiveAdvertiseUrl ?? state.host?.advertiseUrl ?? state.apiBaseUrl);
+  const subtitle = desktopServerAddress(state);
 
   return (
     <>

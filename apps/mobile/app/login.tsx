@@ -15,6 +15,8 @@ import { TailnetStatusCard } from '@/components/settings/TailnetStatusCard';
 import { currentEndpoint } from '@/lib/endpoint';
 import { ServerPicker, serverPickerKind } from '@/components/auth/ServerPicker';
 import { tailnetHint } from '@/lib/server-address';
+import { desktopServerAddress } from '@/lib/instanceAddress';
+import { useInstanceState } from '@/hooks/useInstanceState';
 
 export default function LoginScreen() {
   const { token, needsOnboarding, signIn, signUp } = useSession();
@@ -34,6 +36,9 @@ export default function LoginScreen() {
   const revealServerResult = useCallback(() => {
     scrollRef.current?.scrollToEnd({ animated: true });
   }, []);
+  // Null off the desktop. On it, the server to name in an error is the host
+  // in config.json, not the tailnet sidecar's loopback the requests go to.
+  const instance = useInstanceState();
 
   if (needsOnboarding) return <Redirect href="/onboarding" />;
   if (token) return <Redirect href="/" />;
@@ -62,12 +67,15 @@ export default function LoginScreen() {
       // this screen was changed to fix, turned the other way round.
       const picker = serverPickerKind();
       if (unreachable && picker === 'form') setServerOpen(true);
-      const endpoint = currentEndpoint();
+      const endpoint = desktopServerAddress(instance) ?? currentEndpoint();
       // A tailnet address fails like a wrong one when Tailscale is simply off
       // on this device, and turning it on is the fix, not the address below.
       // Not in a browser: there the endpoint is the page's own origin, so a
-      // Funnel- or Serve-hosted page just proved it reachable from here.
-      const hint = picker === 'none' ? null : tailnetHint(endpoint);
+      // Funnel- or Serve-hosted page just proved it reachable from here. Nor
+      // for a desktop joined through its own sidecar: no Tailscale app is
+      // involved, and the tailnet card on this screen says what the sidecar is
+      // doing.
+      const hint = picker === 'none' || instance?.client?.via === 'tsnet' ? null : tailnetHint(endpoint);
       setError(
         unreachable
           ? `Could not reach ${endpoint ?? 'a server'}.${hint ? ` ${hint}` : ''}${

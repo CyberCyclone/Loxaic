@@ -90,6 +90,10 @@ if (SELF_CONTAINED && process.env.E2E_BASE_URL === undefined) {
 if (SELF_CONTAINED) {
   selfContainedDataDir = perRunDir('E2E_SELF_CONTAINED_DATA_DIR', 'loxaic-e2e-selfcontained-');
 
+  // Where the fake sidecar's client "proxy" points: the app's own server, so
+  // a Tailscale join in onboarding reaches a real Loxaic through it.
+  process.env.FAKE_TSNET_CLIENT_PORT ??= process.env.E2E_PORT;
+
   // Seed the instance config the app would otherwise ask the user for. A data
   // dir with no config.json is, by design, a first run: the app opens
   // onboarding and starts no stack at all. This suite is testing the
