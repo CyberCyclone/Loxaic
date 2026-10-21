@@ -126,6 +126,18 @@ export type GuardedResponse = Response;
 const DNS_TIMEOUT_MS = 5_000;
 
 /**
+ * e2e only: `host:port` pairs the guard lets through, so a spec can fetch its
+ * own fixture sites on loopback: an IP literal, or `localhost` for a second
+ * fixture that needs a different host (cookies are per host, not per port).
+ * Honoured only with the mock backend, which no real deployment runs.
+ */
+function testAllowed(host: string, port: string): boolean {
+  if (process.env.MOCK_INFERENCE !== "true") return false;
+  const list = (process.env.LOXAIC_E2E_FETCH_ALLOW ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return list.includes(`${host}:${port}`);
+}
+
+/**
  * The resolver every guarded connection uses. Resolving here, inside the
  * connect, is the point: the address checked is the address dialled, so a name
  * that answers public for a check and private for the connection (DNS
@@ -178,8 +190,12 @@ export async function guardedFetch(url: URL, init: Omit<RequestInit, "dispatcher
   }
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const family = isIP(host);
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+  if (host === "localhost" && testAllowed(host, port)) {
+    return await fetch(url, { ...init, redirect: "manual" });
+  }
   if (family !== 0) {
-    if (isBlockedAddress(host, family)) {
+    if (isBlockedAddress(host, family) && !testAllowed(host, port)) {
       throw new BlockedTargetError(`refusing to fetch a private or loopback address (${host})`);
     }
   }

@@ -152,10 +152,128 @@ export interface ConversationSettingsView extends ConversationSettings {
   envOverrides: { keepDeleted: boolean; keepDeletedDays: boolean };
 }
 
+/**
+ * web_fetch's browser fallback (#281).
+ *
+ * **Off by default.** Turning it on lets model-chosen pages run script on this
+ * host, inside Chromium's own sandbox with every request fetched and checked
+ * by the server (browser/intercept.ts). It also needs a browser build, which an
+ * admin installs from the same screen. A deployment opts in deliberately.
+ */
+export interface BrowserSettings {
+  enabled: boolean;
+  /** How long a conversation's browser may sit unused before it is closed,
+   * and its cookies and storage with it. Nothing is kept to resume. */
+  idleMs: number;
+  /** Browsers running at once, across every conversation on this server. Each
+   * is its own Chromium process, so this is the memory dial. */
+  maxBrowsers: number;
+  /** How long one page may take to load and be read before the fetch gives up
+   * and the conversation's browser is closed. */
+  actionTimeoutMs: number;
+}
+
+export interface BrowserSettingsView extends BrowserSettings {
+  envOverrides: { enabled: boolean; idleMs: boolean; maxBrowsers: boolean; actionTimeoutMs: boolean };
+}
+
+export const BROWSER_DEFAULTS: BrowserSettings = {
+  enabled: false,
+  idleMs: 5 * 60_000,
+  maxBrowsers: 3,
+  actionTimeoutMs: 30_000,
+};
+
+const BROWSER_IDLE_RANGE = { min: 60_000, max: 24 * 60 * 60_000 };
+const BROWSER_COUNT_RANGE = { min: 1, max: 16 };
+const BROWSER_ACTION_RANGE = { min: 5_000, max: 2 * 60_000 };
+
+/**
+ * Resolved browser settings: env > persisted > default (off). An unreadable
+ * row reads as off: "could not read the switch" must not turn on a feature that
+ * runs strangers' pages here.
+ */
+export function getBrowserSettings(): BrowserSettingsView {
+  const enabled = envBool("BROWSER_ENABLED");
+  const idleMs = envPositiveInt("BROWSER_IDLE_MS");
+  const maxBrowsers = envPositiveInt("BROWSER_MAX");
+  const actionTimeoutMs = envPositiveInt("BROWSER_ACTION_TIMEOUT_MS");
+  const stored = browserLoadFailed ? {} : persistedBrowser;
+  return {
+    enabled: enabled ?? (browserLoadFailed ? false : (stored.enabled ?? BROWSER_DEFAULTS.enabled)),
+    idleMs: idleMs ?? stored.idleMs ?? BROWSER_DEFAULTS.idleMs,
+    maxBrowsers: maxBrowsers ?? stored.maxBrowsers ?? BROWSER_DEFAULTS.maxBrowsers,
+    actionTimeoutMs: actionTimeoutMs ?? stored.actionTimeoutMs ?? BROWSER_DEFAULTS.actionTimeoutMs,
+    envOverrides: {
+      enabled: enabled !== null,
+      idleMs: idleMs !== null,
+      maxBrowsers: maxBrowsers !== null,
+      actionTimeoutMs: actionTimeoutMs !== null,
+    },
+  };
+}
+
+function coerceBrowser(raw: unknown): Partial<BrowserSettings> {
+  if (typeof raw !== "object" || raw === null) return {};
+  const value = raw as Record<string, unknown>;
+  const out: Partial<BrowserSettings> = {};
+  const inRange = (v: unknown, r: { min: number; max: number }): v is number =>
+    typeof v === "number" && Number.isInteger(v) && v >= r.min && v <= r.max;
+  if (typeof value.enabled === "boolean") out.enabled = value.enabled;
+  if (inRange(value.idleMs, BROWSER_IDLE_RANGE)) out.idleMs = value.idleMs;
+  if (inRange(value.maxBrowsers, BROWSER_COUNT_RANGE)) out.maxBrowsers = value.maxBrowsers;
+  if (inRange(value.actionTimeoutMs, BROWSER_ACTION_RANGE)) out.actionTimeoutMs = value.actionTimeoutMs;
+  return out;
+}
+
+/** Validates and persists a browser change. Partial, like the others; turning
+ * it off closes every browser, launches still in flight included. */
+export async function updateBrowserSettings(input: unknown): Promise<BrowserSettingsView> {
+  if (typeof input !== "object" || input === null) throw new SettingsError("body must be an object", "invalid");
+  const raw = input as Record<string, unknown>;
+  const env = getBrowserSettings().envOverrides;
+  const patch: Partial<BrowserSettings> = {};
+  if (raw.enabled !== undefined) {
+    if (typeof raw.enabled !== "boolean") throw new SettingsError("enabled must be a boolean", "invalid");
+    if (env.enabled) throw new SettingsError("enabled is pinned by the BROWSER_ENABLED environment variable", "envOverride");
+    patch.enabled = raw.enabled;
+  }
+  if (raw.idleMs !== undefined) patch.idleMs = duration(raw.idleMs, "idleMs", BROWSER_IDLE_RANGE, env.idleMs, "BROWSER_IDLE_MS");
+  if (raw.maxBrowsers !== undefined) {
+    const n = raw.maxBrowsers;
+    if (typeof n !== "number" || !Number.isInteger(n)) throw new SettingsError("maxBrowsers must be an integer", "invalid");
+    if (n < BROWSER_COUNT_RANGE.min || n > BROWSER_COUNT_RANGE.max) {
+      throw new SettingsError(`maxBrowsers must be between ${String(BROWSER_COUNT_RANGE.min)} and ${String(BROWSER_COUNT_RANGE.max)}`, "invalid");
+    }
+    if (env.maxBrowsers) throw new SettingsError("maxBrowsers is pinned by the BROWSER_MAX environment variable", "envOverride");
+    patch.maxBrowsers = n;
+  }
+  if (raw.actionTimeoutMs !== undefined) {
+    patch.actionTimeoutMs = duration(raw.actionTimeoutMs, "actionTimeoutMs", BROWSER_ACTION_RANGE, env.actionTimeoutMs, "BROWSER_ACTION_TIMEOUT_MS");
+  }
+  if (Object.keys(patch).length === 0) throw new SettingsError("nothing to update", "invalid");
+  const [row] = await db
+    .insert(serverSettings)
+    .values({ key: BROWSER_KEY, value: patch, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: serverSettings.key,
+      set: { value: sql`${serverSettings.value} || excluded.value`, updatedAt: new Date() },
+    })
+    .returning({ value: serverSettings.value });
+  persistedBrowser = coerceBrowser(row.value);
+  browserLoadFailed = false;
+  if (!getBrowserSettings().enabled) {
+    const { closeAllBrowsers } = await import("./browser/manager.ts");
+    await closeAllBrowsers();
+  }
+  return getBrowserSettings();
+}
+
 /** Row keys for the settings groups. */
 const SANDBOX_KEY = "sandbox";
 const INFERENCE_KEY = "inference";
 const CONVERSATIONS_KEY = "conversations";
+const BROWSER_KEY = "browser";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -194,6 +312,8 @@ export class SettingsError extends Error {
 }
 
 let persisted: Partial<SandboxSettings> = {};
+let persistedBrowser: Partial<BrowserSettings> = {};
+let browserLoadFailed = false;
 let persistedInference: Partial<InferenceSettings> = {};
 let persistedConversations: Partial<ConversationSettings> = {};
 /**
@@ -771,6 +891,24 @@ export async function loadServerSettings(): Promise<void> {
     // retention policy", which resolves to keep-and-do-not-sweep.
     conversationLoadFailed = true;
   }
+  // Its own try for the same reason: a blip here must not disable sandboxes, and
+  // must not read as "browsing is off" to an admin who turned it on. The
+  // fail-closed direction is the same as the sandbox's (off), because browsing is
+  // the feature whose container renders hostile pages — but the flag is separate
+  // so a read failure here says nothing about execution or retention.
+  try {
+    const browserRow = await db.query.serverSettings.findFirst({
+      where: eq(serverSettings.key, BROWSER_KEY),
+    });
+    persistedBrowser = coerceBrowser(browserRow?.value);
+  } catch (err) {
+    persistedBrowser = {};
+    browserLoadFailed = true;
+    console.error(
+      "[settings] could not read browsing settings — browsing stays off until this is fixed: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
   // Has its own try inside, and fails toward the defaults — see there.
   await loadLocalModelsSettings();
 }
@@ -1071,8 +1209,10 @@ export function resetServerSettingsCache(): void {
   persisted = {};
   persistedInference = {};
   persistedConversations = {};
+  persistedBrowser = {};
   loadFailed = false;
   conversationLoadFailed = false;
+  browserLoadFailed = false;
   __resetLocalModelsSettingsForTest();
 }
 

@@ -2,7 +2,7 @@ import { db, eq } from "@loxaic/db";
 import { inferenceProviders } from "@loxaic/db/schema";
 import { DEFAULT_PROVIDER_ID, isProviderSlug, parseModelRef } from "@loxaic/types";
 import { decryptApiKey, encryptApiKey, ProviderKeyUnreadableError } from "./provider-secrets.ts";
-import { listServableModels } from "../llama/catalog.ts";
+import { listServableModels, rowMmproj } from "../llama/catalog.ts";
 import { checkRoom, NoRoomError } from "../llama/room.ts";
 import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
 import { getLlamaMode } from "../llama/settings.ts";
@@ -691,4 +691,38 @@ export function toApi(row: ProviderRow) {
 /** Test seam: the cache is process-global and vitest shares one process. */
 export function __resetProviderCacheForTest(): void {
   cache = null;
+}
+
+/**
+ * Whether the model a run is about to use can be shown an image (#281).
+ *
+ * Yes only where the server knows: a built-in llama.cpp model loaded with an
+ * `--mmproj` projector and not with vision switched off. A configured provider
+ * row records nothing about its models' inputs, so a provider model answers no:
+ * a screenshot sent to a text-only model would fail every later turn of the
+ * conversation, because the answer is stored with the result and replayed.
+ * The person still sees the screenshot on the tool card either way.
+ *
+ * The answer is written into `images_sent_to_model` once, when the result is
+ * stored; nothing re-derives it, so a model switch never rewrites an older part
+ * of the prompt (the prefix rule in streams/AGENTS.md).
+ */
+export async function modelSupportsImages(ref: string): Promise<boolean> {
+  if (MOCK_MODE()) return true;
+  const { providerSlug, upstreamModel } = parseModelRef(ref);
+  if (providerSlug !== null) return false;
+  try {
+    const servable = await listServableModels();
+    // "default" names the first servable model, which may or may not be a
+    // vision one: answer for what would actually be loaded.
+    const row = upstreamModel === "default" ? servable.at(0) : servable.find((m) => m.id === upstreamModel);
+    if (!row) return false;
+    const settings = row.loadSettings as { vision?: boolean } | null;
+    if (settings && typeof settings === "object" && settings.vision === false) return false;
+    return rowMmproj(row) !== null;
+  } catch {
+    // An unreadable catalog must not spend image tokens on a model that may not
+    // read them, and must not fail the turn. Text-only is the safe answer.
+    return false;
+  }
 }

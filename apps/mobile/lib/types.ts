@@ -118,6 +118,12 @@ export interface ToolCall {
    * command rule, a sandbox that contains it, or auto mode's permission
    * check. Absent when someone approved it, and from older servers. */
   permission?: import('@loxaic/api-client').ToolPermission
+  /** A web_fetch screenshot (#281): attachment refs, served by /v1/files.
+   * Same three construction sites as `plan`. */
+  images?: import('@loxaic/types').AttachmentRef[]
+  /** web_fetch loaded the page in the chat's own browser (#281), not the
+   * plain fetch. Same three construction sites as `images`. */
+  browser?: true
 }
 
 export interface DiffLine {

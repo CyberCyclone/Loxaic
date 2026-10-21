@@ -3,16 +3,20 @@ import { requireAdmin } from "../auth/middleware";
 import { getSandboxStatus } from "../sandbox/status.ts";
 import { probeEngines } from "../sandbox/container-provider.ts";
 import {
+  getBrowserSettings,
   getConversationSettings,
   getInferenceSettings,
   getSandboxSettings,
   SettingsError,
+  updateBrowserSettings,
   updateConversationSettings,
   updateInferenceSettings,
   updateSandboxSettings,
 } from "../settings.ts";
 import { kickScheduler, resolveMaxConcurrent } from "../inference/scheduler.ts";
 import { assertModelResolvable, ModelRefError } from "../inference/providers.ts";
+import { browserStatus } from "../browser/manager.ts";
+import { installBrowser } from "../browser/install.ts";
 
 /**
  * Server-level settings, admin-only.
@@ -83,6 +87,38 @@ export function adminSettingsRoutes(app: FastifyInstance) {
     }
   });
 
+  // web_fetch's browser fallback (#281): the switch, the install, and what a
+  // launch last said.
+  app.get("/v1/admin/settings/browser", async (request, reply) => {
+    await requireAdmin(request, reply);
+    return browserView();
+  });
+
+  app.patch("/v1/admin/settings/browser", async (request, reply) => {
+    await requireAdmin(request, reply);
+    try {
+      await updateBrowserSettings(request.body ?? {});
+    } catch (err) {
+      if (err instanceof SettingsError) {
+        return reply
+          .code(err.code === "envOverride" ? 409 : 400)
+          .send({ error: err.message, ...(err.code === "envOverride" ? { envOverride: true } : {}) });
+      }
+      throw err;
+    }
+    return browserView();
+  });
+
+  /** Starts the managed Chromium download and answers at once; the screen
+   * polls the GET for progress, as it does for llama.cpp's. */
+  app.post("/v1/admin/browser/install", async (request, reply) => {
+    await requireAdmin(request, reply);
+    installBrowser().catch((err: unknown) => {
+      request.log.warn({ err }, "browser install failed");
+    });
+    return browserView();
+  });
+
   app.patch("/v1/admin/settings/sandbox", async (request, reply) => {
     await requireAdmin(request, reply);
     try {
@@ -139,4 +175,8 @@ async function sandboxView() {
     ...(status.customImagesBlocked ? { customImagesBlocked: status.customImagesBlocked } : {}),
     engines,
   };
+}
+
+function browserView() {
+  return { ...getBrowserSettings(), status: browserStatus() };
 }

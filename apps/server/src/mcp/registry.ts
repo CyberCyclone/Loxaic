@@ -14,6 +14,7 @@ import {
   wrapResult,
 } from "./sanitize.ts";
 import { redact } from "./secrets.ts";
+import { getBrowserSettings } from "../settings.ts";
 
 /** The tools available to one agent run: what the model is offered, plus the
  * lookup, approval policy, and dispatch for every name the model may come
@@ -90,6 +91,8 @@ export async function buildToolset(
     handover: opts.handover,
     subagents: opts.subagents,
     skills: opts.skills,
+    // The admin switch, not the browser's health: see WEB_FETCH_BROWSING_TOOL.
+    browsing: getBrowserSettings().enabled,
   }).map((t) =>
     allowlist.has(t.name) && isAllowlistableTool(t.name) ? { ...t, requiresApproval: false } : t,
   );

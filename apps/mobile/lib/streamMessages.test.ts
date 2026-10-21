@@ -433,3 +433,49 @@ describe('why a tool call ran without asking survives every path', () => {
     expect(m.tools?.[0].permission).toEqual(permission);
   });
 });
+
+describe('a web_fetch screenshot reaches the card on every path (#281)', () => {
+  const images = [{ ref: '00000000-0000-4000-8000-000000000001', mime: 'image/png', name: 'screenshot-c1.png' }];
+  const fetchCall = { kind: 'tool_call' as const, call_id: 'c1', tool: 'web_fetch', args: { url: 'https://example.com', screenshot: true } };
+
+  it('from the live result', () => {
+    const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '', tools: [{ tool: 'web_fetch', summary: 'example.com', result: '', callId: 'c1' }] }];
+    const [m] = applyEventToMsgs(msgs, { kind: 'tool.result', message_id: 'a1', call_id: 'c1', tool: 'web_fetch', output: 'ok', ok: true, images, browser: true });
+    expect(m.tools?.[0].images).toEqual(images);
+    expect(m.tools?.[0].browser).toBe(true);
+  });
+
+  it('from history', () => {
+    const msgs = reconstructMessages([
+      row({ id: 'a1', content: [fetchCall] }),
+      row({ id: 't1', authorType: 'tool', lamport: 2, content: [{ kind: 'tool_result', call_id: 'c1', output: 'ok', ok: true, images, images_sent_to_model: true, browser: true }] }),
+    ]);
+    expect(msgs.find((m) => m.id === 'a1')?.tools?.[0].images).toEqual(images);
+    expect(msgs.find((m) => m.id === 'a1')?.tools?.[0].browser).toBe(true);
+  });
+
+  it('from a snapshot', () => {
+    const [m] = applySnapshotToMsgs([], {
+      messages: [
+        {
+          message_id: 'a1',
+          author_type: 'assistant',
+          parent_id: null,
+          text: '',
+          thinking: '',
+          tool_calls: [{ call_id: 'c1', tool: 'web_fetch', args: fetchCall.args, output: 'ok', ok: true, images, browser: true }],
+          status: 'complete',
+        },
+      ],
+    } as unknown as StreamSnapshot);
+    expect(m.tools?.[0].images).toEqual(images);
+    expect(m.tools?.[0].browser).toBe(true);
+  });
+
+  it('and a result without one carries none', () => {
+    const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '', tools: [{ tool: 'web_fetch', summary: 'x', result: '', callId: 'c1' }] }];
+    const [m] = applyEventToMsgs(msgs, { kind: 'tool.result', message_id: 'a1', call_id: 'c1', tool: 'web_fetch', output: 'ok', ok: true });
+    expect(m.tools?.[0].images).toBeUndefined();
+    expect(m.tools?.[0].browser).toBeUndefined();
+  });
+});
