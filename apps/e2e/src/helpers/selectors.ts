@@ -308,6 +308,22 @@ export async function waitForAbsent(id: string, timeout = 10_000): Promise<void>
 }
 
 /**
+ * Fails if any of `ids` is in the tree at any point during `forMs`. For "this
+ * screen does not have X": checked over a while rather than once, so a part
+ * that arrives with a later request is still caught. Android only reports what
+ * is on screen; scroll through the screen and call this at each stop.
+ */
+export async function expectNeverPresent(ids: string[], forMs = 3_000): Promise<void> {
+  const until = Date.now() + forMs;
+  do {
+    for (const id of ids) {
+      if (await byTestId(id).isExisting()) throw new Error(`${id} was on screen`);
+    }
+    await browser.pause(250);
+  } while (Date.now() < until);
+}
+
+/**
  * Whether the Switch carrying `id` is on. Each platform reports it its own
  * way: gluestack's web Switch stamps `data-checked` on the element with the
  * testID, UiAutomator2 exposes a `checked` attribute, and XCUITest a `value`

@@ -4,6 +4,7 @@ import { VStack } from '@/components/ui/vstack';
 import { Box } from '@/components/ui/box';
 import { Text } from '@/components/ui/text';
 import { Spinner } from '@/components/ui/spinner';
+import { Button, ButtonText } from '@/components/ui/button';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
 import { RunQueueSettings } from '@/components/server/RunQueueSettings';
@@ -16,6 +17,7 @@ import { useRecentModels } from '@/hooks/useRecentModels';
 import { useInferenceSettings } from '@/hooks/useInferenceSettings';
 import { useSession } from '@/lib/session';
 import { useServerReachable } from '@/lib/connection';
+import { serverScreenView } from '@/lib/serverScreen';
 
 /**
  * Settings that apply to every conversation on this server, whatever surface
@@ -26,7 +28,12 @@ export default function ServerScreen() {
   const shell = useShell();
   const reachable = useServerReachable();
   const { token, isAdmin } = useSession();
-  const { settings: inference, update: updateInference } = useInferenceSettings(isAdmin ? token : null);
+  const {
+    settings: inference,
+    loadError,
+    refresh: refreshInference,
+    update: updateInference,
+  } = useInferenceSettings(isAdmin ? token : null);
   const browser = useBrowserSettings(isAdmin ? token : null);
   // The permission check's model, picked from the same list a chat uses.
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, getName, isKnown } = useModels(isAdmin ? token : null);
@@ -34,14 +41,27 @@ export default function ServerScreen() {
   const [pickingCheckModel, setPickingCheckModel] = useState(false);
 
   const body = () => {
-    if (!isAdmin) {
+    const view = serverScreenView({ isAdmin, hasSettings: inference !== null, loadError });
+    if (view === 'readOnly') {
       return (
         <Text testID="server.readOnly.notice" size="xs" className="p-4 text-muted-foreground">
           Server settings are set by an administrator.
         </Text>
       );
     }
-    if (!inference) {
+    if (view === 'loadFailed') {
+      return (
+        <Box className="flex-1 items-center justify-center p-6">
+          <Text testID="server.loadFailed" className="mb-3 text-center text-foreground">
+            {loadError}
+          </Text>
+          <Button testID="server.retry" size="sm" variant="outline" onPress={() => { void refreshInference(); }} isDisabled={!reachable}>
+            <ButtonText>Try again</ButtonText>
+          </Button>
+        </Box>
+      );
+    }
+    if (view === 'loading' || !inference) {
       return (
         <Box className="flex-1 items-center justify-center p-6">
           <Spinner />

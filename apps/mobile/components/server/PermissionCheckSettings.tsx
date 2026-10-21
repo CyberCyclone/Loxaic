@@ -81,8 +81,9 @@ export function PermissionCheckSettings({
       )}
       {timeout !== undefined && (
         <>
-          <Text size="xs" className="text-muted-foreground">
-            If the check takes longer than this, the command asks instead.
+          <Text testID="inference.permissionCheck.timeoutSummary" size="xs" className="text-muted-foreground">
+            If the check takes longer than {TIMEOUTS.find((c) => c.ms === timeout)?.label ?? `${String(Math.round(timeout / 1000))} s`}, the
+            command asks instead.
           </Text>
           {timeoutPinned && (
             <Text testID="inference.permissionCheck.timeoutPinned" size="xs" className="text-muted-foreground">
