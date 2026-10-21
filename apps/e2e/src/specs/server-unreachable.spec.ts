@@ -20,50 +20,10 @@ import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { platform, tap, testIdSelector, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import { chooseScratchWorkspace, goToSurface, mockEcho, sendAndAwaitReply, sendMessage, signUp } from '../helpers/app.ts';
+import { cutServer, restoreServer } from '../helpers/outage.ts';
 
 const BANNER = 'shell.offlineBanner';
 const PLAN_PROMPT = 'Propose a plan to tidy the README.';
-
-/** Every request to the API fails as a dead network would, and every socket
- * goes to a port with nothing on it. */
-async function cutServer(): Promise<void> {
-  await browser.execute(() => {
-    const w = window as unknown as {
-      __realFetch?: typeof fetch;
-      __RealWebSocket?: typeof WebSocket;
-    };
-    w.__realFetch ??= window.fetch.bind(window);
-    w.__RealWebSocket ??= window.WebSocket;
-    const realFetch = w.__realFetch;
-    const RealWebSocket = w.__RealWebSocket;
-    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      const path = new URL(url, location.href).pathname;
-      if (/^\/(v1|api|health)(\/|$)/.test(path)) return Promise.reject(new TypeError('Failed to fetch'));
-      return realFetch(input, init);
-    };
-    class DeadSocket extends RealWebSocket {
-      constructor(url: string | URL, protocols?: string | string[]) {
-        super(String(url).includes('/ws/') ? 'ws://127.0.0.1:9/' : url, protocols);
-      }
-    }
-    window.WebSocket = DeadSocket;
-    // Replace the socket that is open now, as a return to the app does.
-    let state: DocumentVisibilityState = 'hidden';
-    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
-    document.dispatchEvent(new Event('visibilitychange'));
-    state = 'visible';
-    document.dispatchEvent(new Event('visibilitychange'));
-  });
-}
-
-async function restoreServer(): Promise<void> {
-  await browser.execute(() => {
-    const w = window as unknown as { __realFetch?: typeof fetch; __RealWebSocket?: typeof WebSocket };
-    if (w.__realFetch) window.fetch = w.__realFetch;
-    if (w.__RealWebSocket) window.WebSocket = w.__RealWebSocket;
-  });
-}
 
 /**
  * Coming back to the app, the server answers the return's own health check and

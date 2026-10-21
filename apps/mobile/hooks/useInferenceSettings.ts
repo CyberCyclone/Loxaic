@@ -1,25 +1,36 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   getInferenceSettings,
+  isUnreachableError,
   updateInferenceSettings,
   type InferenceSettings,
 } from '@loxaic/api-client';
 import { useToastHelper } from './useToastHelper';
+import { describeRequestError, useServerReachable } from '@/lib/connection';
 
 /** Admin-only run-concurrency setting, mirroring useSandboxSettings. `token`
  * gates the fetch since the route 403s for anyone else. */
 export function useInferenceSettings(token: string | null) {
   const [settings, setSettings] = useState<InferenceSettings | null>(null);
   const [loading, setLoading] = useState(true);
+  /** Why the last load failed, or null. Settings already loaded are kept. */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const { showToast } = useToastHelper();
+  const reachable = useServerReachable();
 
   const refresh = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     try {
       setSettings(await getInferenceSettings());
-    } catch {
-      setSettings(null);
+      setLoadError(null);
+    } catch (err) {
+      // describeRequestError's "nothing was changed" is for a write; this only read.
+      setLoadError(
+        isUnreachableError(err)
+          ? "Couldn't load the server settings: can't reach your server."
+          : describeRequestError(err, "Couldn't load the server settings"),
+      );
     } finally {
       setLoading(false);
     }
@@ -28,6 +39,11 @@ export function useInferenceSettings(token: string | null) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // A load that failed is asked again once the server is back.
+  useEffect(() => {
+    if (reachable && loadError !== null) void refresh();
+  }, [reachable, loadError, refresh]);
 
   const update = useCallback(
     async (patch: Parameters<typeof updateInferenceSettings>[0]) => {
@@ -45,5 +61,5 @@ export function useInferenceSettings(token: string | null) {
     [settings, showToast],
   );
 
-  return { settings, loading, refresh, update };
+  return { settings, loading, loadError, refresh, update };
 }

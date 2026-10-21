@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useRouter } from 'expo-router';
-import { BookOpen, Boxes, ChevronRight, Container, GitBranch, HardDrive, Hourglass, Layers, Plug, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
+import { useRouter, type Href } from 'expo-router';
+import { BookOpen, Boxes, Container, GitBranch, HardDrive, Hourglass, Layers, Plug, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -21,6 +21,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { ServerSection } from './ServerSection';
 import { UpdatesRow } from './UpdatesRow';
+import { SettingsNavRow } from './SettingsNavRow';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { useSettings } from '@/hooks/useSettings';
 import { useThemePreference, type ThemePreference } from '@/hooks/useTheme';
@@ -33,7 +34,6 @@ import { setAuthToken } from '@loxaic/api-client';
 import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import type { AgentMode, Settings, ThinkingLevel } from '@/lib/types';
-import { TRUNCATE_TEXT } from '@/lib/truncate';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { imageScreens } from '@/lib/customImages';
 
@@ -45,6 +45,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [settings, setSettings] = useSettings();
   const [themePref, setThemePref] = useThemePreference();
   const router = useRouter();
+  /** Closes the modal and opens a settings screen. */
+  const openScreen = (href: Href) => {
+    onClose();
+    router.push(href);
+  };
   const { showToast } = useToastHelper();
   const { signOut, isAdmin } = useSession();
   const [draft, setDraft] = useState<Settings>(settings);
@@ -320,137 +325,53 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
             <UpdatesRow />
 
-            <Pressable
+            <SettingsNavRow
               testID="settings.nav.account"
-              onPress={() => {
-                onClose();
-                router.push('/account');
-              }}
-              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-            >
-              <HStack space="sm" className="items-center">
-                <Icon as={UserRound} size="sm" className="text-muted-foreground" />
-                <VStack>
-                  <Text size="sm" className="text-foreground">
-                    Account
-                  </Text>
-                  <Text size="2xs" className="text-muted-foreground">
-                    Who you are signed in as, and your password
-                  </Text>
-                </VStack>
-              </HStack>
-              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
-            </Pressable>
+              icon={UserRound}
+              title="Account"
+              subtitle="Who you are signed in as, and your password"
+              onPress={() => { openScreen('/account'); }}
+            />
 
-            <Pressable
+            <SettingsNavRow
               testID="settings.nav.checkins"
-              onPress={() => {
-                onClose();
-                router.push('/checkins');
-              }}
-              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-            >
-              <HStack space="sm" className="items-center">
-                <Icon as={Hourglass} size="sm" className="text-muted-foreground" />
-                <VStack>
-                  <Text size="sm" className="text-foreground">
-                    Check-ins & approvals
-                  </Text>
-                  <Text size="2xs" className="text-muted-foreground">
-                    How long the agent waits for you, and what it does if you are away
-                  </Text>
-                </VStack>
-              </HStack>
-              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
-            </Pressable>
+              icon={Hourglass}
+              title="Check-ins & approvals"
+              subtitle="How long the agent waits for you, and what it does if you are away"
+              onPress={() => { openScreen('/checkins'); }}
+            />
 
-            <Pressable
+            <SettingsNavRow
               testID="settings.nav.permissions"
-              onPress={() => {
-                onClose();
-                router.push('/permissions');
-              }}
-              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-            >
-              <HStack space="sm" className="items-center">
-                <Icon as={ShieldCheck} size="sm" className="text-muted-foreground" />
-                <VStack>
-                  <Text size="sm" className="text-foreground">
-                    Command permissions
-                  </Text>
-                  <Text size="2xs" className="text-muted-foreground">
-                    Which commands the agent may run without asking
-                  </Text>
-                </VStack>
-              </HStack>
-              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
-            </Pressable>
+              icon={ShieldCheck}
+              title="Command permissions"
+              subtitle="Which commands the agent may run without asking"
+              onPress={() => { openScreen('/permissions'); }}
+            />
 
-            <Pressable
+            <SettingsNavRow
               testID="settings.nav.mcp"
-              onPress={() => {
-                onClose();
-                router.push('/mcp');
-              }}
-              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-            >
-              <HStack space="sm" className="items-center">
-                <Icon as={Plug} size="sm" className="text-muted-foreground" />
-                <VStack>
-                  <Text size="sm" className="text-foreground">
-                    MCP Servers
-                  </Text>
-                  <Text size="2xs" className="text-muted-foreground">
-                    Connect external tools for the agent
-                  </Text>
-                </VStack>
-              </HStack>
-              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
-            </Pressable>
+              icon={Plug}
+              title="MCP Servers"
+              subtitle="Connect external tools for the agent"
+              onPress={() => { openScreen('/mcp'); }}
+            />
 
-            <Pressable
+            <SettingsNavRow
               testID="settings.nav.skills"
-              onPress={() => {
-                onClose();
-                router.push('/skills');
-              }}
-              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-            >
-              <HStack space="sm" className="items-center">
-                <Icon as={BookOpen} size="sm" className="text-muted-foreground" />
-                <VStack>
-                  <Text size="sm" className="text-foreground">
-                    Skills
-                  </Text>
-                  <Text size="2xs" className="text-muted-foreground">
-                    Instructions you run with / and the agent can load
-                  </Text>
-                </VStack>
-              </HStack>
-              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
-            </Pressable>
+              icon={BookOpen}
+              title="Skills"
+              subtitle="Instructions you run with / and the agent can load"
+              onPress={() => { openScreen('/skills'); }}
+            />
 
-            <Pressable
+            <SettingsNavRow
               testID="settings.nav.github"
-              onPress={() => {
-                onClose();
-                router.push('/github');
-              }}
-              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-            >
-              <HStack space="sm" className="items-center">
-                <Icon as={GitBranch} size="sm" className="text-muted-foreground" />
-                <VStack>
-                  <Text size="sm" className="text-foreground">
-                    GitHub
-                  </Text>
-                  <Text size="2xs" className="text-muted-foreground">
-                    Connect a repo for the agent to work in
-                  </Text>
-                </VStack>
-              </HStack>
-              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
-            </Pressable>
+              icon={GitBranch}
+              title="GitHub"
+              subtitle="Connect a repo for the agent to work in"
+              onPress={() => { openScreen('/github'); }}
+            />
 
             {/* Admin-only, and only here: unlike the sandbox row — which
                 everyone can open to read what the deployment allows — there
@@ -458,166 +379,67 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 its list is the deployment's own topology and credentials.
                 The route still refuses them; this only stops offering it. */}
             {isAdmin && (
-              <Pressable
+              <SettingsNavRow
                 testID="settings.nav.providers"
-                onPress={() => {
-                  onClose();
-                  router.push('/providers');
-                }}
-                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-              >
-                {/* `min-w-0` and `shrink` on both the row and the label
-                    column, because this subtitle is the longest of the four
-                    and React Native defaults every view to `flexShrink: 0` —
-                    without them it pushed the chevron clean off the card on a
-                    phone, which is only visible on a narrow screen. */}
-                <HStack space="sm" className="min-w-0 shrink items-center">
-                  <Icon as={Server} size="sm" className="shrink-0 text-muted-foreground" />
-                  <VStack className="min-w-0 shrink">
-                    <Text size="sm" className="text-foreground">
-                      Model Providers
-                    </Text>
-                    <Text
-                      size="2xs"
-                      className="text-muted-foreground"
-                      numberOfLines={1}
-                      style={TRUNCATE_TEXT}
-                    >
-                      OpenRouter, OpenAI, or another server
-                    </Text>
-                  </VStack>
-                </HStack>
-                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
-              </Pressable>
+                icon={Server}
+                title="Model Providers"
+                subtitle="OpenRouter, OpenAI, or another server"
+                onPress={() => { openScreen('/providers'); }}
+              />
             )}
 
             {/* Admin-only, like providers: downloading models spends the
                 deployment's disk and bandwidth, and enabling one offers it to
                 every user. */}
             {isAdmin && (
-              <Pressable
+              <SettingsNavRow
                 testID="settings.nav.localModels"
-                onPress={() => {
-                  onClose();
-                  router.push('/host-models');
-                }}
-                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-              >
-                <HStack space="sm" className="min-w-0 shrink items-center">
-                  <Icon as={HardDrive} size="sm" className="shrink-0 text-muted-foreground" />
-                  <VStack className="min-w-0 shrink">
-                    <Text size="sm" className="text-foreground">
-                      Host Models
-                    </Text>
-                    <Text
-                      size="2xs"
-                      className="text-muted-foreground"
-                      numberOfLines={1}
-                      style={TRUNCATE_TEXT}
-                    >
-                      Download models from HuggingFace
-                    </Text>
-                  </VStack>
-                </HStack>
-                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
-              </Pressable>
+                icon={HardDrive}
+                title="Host Models"
+                subtitle="Download models from HuggingFace"
+                onPress={() => { openScreen('/host-models'); }}
+              />
             )}
 
             {/* Settings for every conversation, not one surface: an admin's. */}
             {isAdmin && (
-              <Pressable
+              <SettingsNavRow
                 testID="settings.nav.server"
-                onPress={() => {
-                  onClose();
-                  router.push('/server');
-                }}
-                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-              >
-                <HStack space="sm" className="min-w-0 shrink items-center">
-                  <Icon as={SlidersHorizontal} size="sm" className="shrink-0 text-muted-foreground" />
-                  <VStack className="min-w-0 shrink">
-                    <Text size="sm" className="text-foreground">
-                      Server Settings
-                    </Text>
-                    <Text size="2xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
-                      Apply to every conversation
-                    </Text>
-                  </VStack>
-                </HStack>
-                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
-              </Pressable>
+                icon={SlidersHorizontal}
+                title="Server Settings"
+                subtitle="Apply to every conversation"
+                onPress={() => { openScreen('/server'); }}
+              />
             )}
 
-            <Pressable
+            <SettingsNavRow
               testID="settings.nav.sandbox"
-              onPress={() => {
-                onClose();
-                router.push('/sandbox');
-              }}
-              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-            >
-              <HStack space="sm" className="items-center">
-                <Icon as={Boxes} size="sm" className="text-muted-foreground" />
-                <VStack>
-                  <Text size="sm" className="text-foreground">
-                    Agent Sandbox
-                  </Text>
-                  <Text size="2xs" className="text-muted-foreground">
-                    Where the agent runs tool calls
-                  </Text>
-                </VStack>
-              </HStack>
-              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
-            </Pressable>
+              icon={Boxes}
+              title="Agent Sandbox"
+              subtitle="Where the agent runs tool calls"
+              onPress={() => { openScreen('/sandbox'); }}
+            />
 
             {/* Shared images are loaded here by an admin, for everyone. */}
             {screens.shared && (
-              <Pressable
+              <SettingsNavRow
                 testID="settings.nav.containerImages"
-                onPress={() => {
-                  onClose();
-                  router.push('/container-images');
-                }}
-                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-              >
-                <HStack space="sm" className="min-w-0 shrink items-center">
-                  <Icon as={Layers} size="sm" className="shrink-0 text-muted-foreground" />
-                  <VStack className="min-w-0 shrink">
-                    <Text size="sm" className="text-foreground">
-                      Container Images
-                    </Text>
-                    <Text size="2xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
-                      Images everyone can run agents in
-                    </Text>
-                  </VStack>
-                </HStack>
-                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
-              </Pressable>
+                icon={Layers}
+                title="Container Images"
+                subtitle="Images everyone can run agents in"
+                onPress={() => { openScreen('/container-images'); }}
+              />
             )}
 
             {/* A person's own, admins included: nobody else sees these. */}
             {screens.personal && (
-              <Pressable
+              <SettingsNavRow
                 testID="settings.nav.myImages"
-                onPress={() => {
-                  onClose();
-                  router.push('/my-images');
-                }}
-                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
-              >
-                <HStack space="sm" className="min-w-0 shrink items-center">
-                  <Icon as={Container} size="sm" className="shrink-0 text-muted-foreground" />
-                  <VStack className="min-w-0 shrink">
-                    <Text size="sm" className="text-foreground">
-                      My Images
-                    </Text>
-                    <Text size="2xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
-                      Your own images and registry logins
-                    </Text>
-                  </VStack>
-                </HStack>
-                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
-              </Pressable>
+                icon={Container}
+                title="My Images"
+                subtitle="Your own images and registry logins"
+                onPress={() => { openScreen('/my-images'); }}
+              />
             )}
 
             <Box className="h-px bg-border" />
