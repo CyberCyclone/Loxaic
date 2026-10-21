@@ -50,7 +50,7 @@ describe('server settings, from outside the settings menu', () => {
     await signIn(adminCreds());
     await failRequestsTo('/v1/admin/settings/inference');
     await openServerSettings();
-    await waitForFreshText('server.loadFailed', "Can't reach your server");
+    await waitForFreshText('server.loadFailed', "Couldn't load the server settings: can't reach your server.");
     await shot('server-settings-load-failed');
     await restoreServer();
     await tap('server.retry');
@@ -61,7 +61,7 @@ describe('server settings, from outside the settings menu', () => {
     await cutServer();
     await openServerSettings();
     await waitForTextIn(BANNER, "Can't reach your server", 30_000);
-    await waitForFreshText('server.loadFailed', "Can't reach your server");
+    await waitForFreshText('server.loadFailed', "Couldn't load the server settings: can't reach your server.");
     await restoreServer();
     await tap('shell.offlineRetry');
     await waitForGone(BANNER, 15_000);

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   getInferenceSettings,
+  isUnreachableError,
   updateInferenceSettings,
   type InferenceSettings,
 } from '@loxaic/api-client';
@@ -24,7 +25,12 @@ export function useInferenceSettings(token: string | null) {
       setSettings(await getInferenceSettings());
       setLoadError(null);
     } catch (err) {
-      setLoadError(describeRequestError(err, "Couldn't load the server settings"));
+      // describeRequestError's "nothing was changed" is for a write; this only read.
+      setLoadError(
+        isUnreachableError(err)
+          ? "Couldn't load the server settings: can't reach your server."
+          : describeRequestError(err, "Couldn't load the server settings"),
+      );
     } finally {
       setLoading(false);
     }
