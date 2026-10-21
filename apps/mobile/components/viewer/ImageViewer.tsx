@@ -9,6 +9,7 @@ import Animated, {
 import { Modal, ModalBackdrop, ModalContent } from '@/components/ui/modal';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
@@ -26,6 +27,10 @@ interface ImageViewerProps {
  * closing and reopening the viewer.
  */
 export function ImageViewer({ uri, onClose }: ImageViewerProps) {
+  // Below the status bar and any notch: at a fixed `top-4` the close button
+  // sat under the Dynamic Island, where iOS neither shows it nor lets a test
+  // (or a thumb) reach it.
+  const insets = useSafeAreaInsets();
   return (
     <Modal isOpen={!!uri} onClose={onClose} size="full">
       <ModalBackdrop />
@@ -35,7 +40,8 @@ export function ImageViewer({ uri, onClose }: ImageViewerProps) {
           testID="viewer.close"
           onPress={onClose}
           hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          className="absolute right-4 top-4 rounded-full bg-black/50 p-2"
+          className="absolute right-4 rounded-full bg-black/50 p-2"
+          style={{ top: insets.top + 8 }}
         >
           <Icon as={X} size="md" className="text-white" />
         </Pressable>

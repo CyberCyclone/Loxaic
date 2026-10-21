@@ -437,6 +437,34 @@ export interface ResolvedTool {
 /** Every builtin a run in `mode` may be offered — `PLAN_TOOL` and
  * `QUESTIONS_TOOL` in planning mode only. Write tools are still included here; hiding them from a planning run
  * is the toolset's job, since it has MCP tools to judge the same way. */
+/**
+ * `web_fetch` as offered when the server's browser fallback is on (#281): the
+ * same tool, with a `screenshot` argument and a sentence saying a blocked or
+ * script-built page is loaded in a browser. Swapped in by the admin setting
+ * alone, never by whether a browser is healthy right now: the tool list is
+ * part of every request's prompt prefix, so it changes only when an admin
+ * flips the switch.
+ */
+export const WEB_FETCH_BROWSING_TOOL: ToolDef = {
+  name: "web_fetch",
+  description:
+    "Fetch a public http(s) URL and return its text content. If the site refuses a plain fetch or builds the " +
+    "page with JavaScript, it is loaded in this conversation's own browser instead and the rendered text " +
+    "comes back. Pass screenshot: true to see the page as an image as well.",
+  parameters: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "Absolute http or https URL" },
+      screenshot: {
+        type: "boolean",
+        description: "Also return a screenshot of the page as it renders in a browser. Slower; use when layout or images matter.",
+      },
+    },
+    required: ["url"],
+  },
+  requiresApproval: false,
+};
+
 export function resolveBuiltinTools(
   mode?: PermissionMode,
   opts?: {
@@ -449,10 +477,13 @@ export function resolveBuiltinTools(
     /** Present to offer the `skill` tool, listing these skills (see
      * `skillTool`). Absent when the conversation has none. */
     skills?: readonly SkillListing[];
+    /** The server's browser fallback is on: offer `WEB_FETCH_BROWSING_TOOL`
+     * in place of the plain `web_fetch`. */
+    browsing?: boolean;
   },
 ): ResolvedTool[] {
   const defs = [
-    ...TOOLS,
+    ...TOOLS.map((t) => (t.name === "web_fetch" && opts?.browsing === true ? WEB_FETCH_BROWSING_TOOL : t)),
     ...(mode === "planning" && opts?.handover !== false ? [PLAN_TOOL, QUESTIONS_TOOL] : []),
     ...(opts?.subagents ? [subagentTool(opts.subagents.models ?? undefined)] : []),
     ...(opts?.skills ? [skillTool(opts.skills)] : []),

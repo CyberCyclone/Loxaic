@@ -18,7 +18,22 @@ export interface ToolResult {
   ok: boolean;
   diff?: FileDiff[];
   todos?: Todo[];
+  /** A screenshot web_fetch took (#281), as bytes. The engine stores it as an
+   * attachment and puts the ref on the result; the executor never touches
+   * storage or the database. `forModel`: the model asked for it. Every other
+   * browser load takes one too, for the person only. */
+  image?: { bytes: Buffer; mime: "image/png"; forModel: boolean };
+  /** web_fetch loaded the page in the conversation's browser (#281), whether
+   * or not that worked, so the person can tell it from a plain fetch. */
+  browser?: true;
 }
+
+/**
+ * Loads a page in the conversation's own browser (browser/render.ts), bound by
+ * the engine to the run's conversation and abort signal. Absent when browsing
+ * is off, which makes web_fetch exactly the plain fetch it always was.
+ */
+export type PageRenderer = (url: URL, opts: { screenshot: "required" | "best-effort"; maxTextChars: number }) => Promise<RenderResult>;
 
 const WEB_FETCH_TIMEOUT_MS = 15_000;
 /** Ceiling on the *extracted text* a fetch contributes to the prompt. */
@@ -83,6 +98,8 @@ export async function executeTool(
     /** Extra environment for `bash` — what hardens a read-only command that
      * ran without anyone being asked (engine.ts's READ_ONLY_BASH_ENV). */
     bashEnv?: Record<string, string>;
+    /** web_fetch's browser fallback; see `PageRenderer`. */
+    renderer?: PageRenderer | null;
   },
 ): Promise<ToolResult> {
   try {
@@ -100,7 +117,7 @@ export async function executeTool(
       }
     }
     switch (tool) {
-      case "web_fetch": return await runWebFetch(args);
+      case "web_fetch": return await runWebFetch(args, options?.renderer ?? null);
       case "todo_write": return runTodoWrite(args);
       case "propose_plan": return runProposePlan(args);
       case "ask_questions": return runAskQuestions(args);
@@ -353,6 +370,7 @@ function runTodoWrite(args: Record<string, unknown>): ToolResult {
 
 // ── web_fetch (runs on the server: sandboxes may have no network) ──
 
+import type { RenderResult } from "../browser/render.ts";
 export { assertPublicUrl, isBlockedAddress } from "./address-guard.ts";
 
 const BLOCK_TAGS = ["script", "style"] as const;
@@ -532,25 +550,61 @@ export function extractFetchText(body: string, contentType: string, rawTruncated
   return text;
 }
 
-async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
-  const raw = requireString(args, "url");
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return { ok: false, output: `Invalid URL: ${raw}` };
-  }
+/** What the plain fetch saw, for deciding whether the browser should try. */
+export interface PlainFetchSignal {
+  /** The guard refused the address. Never worth a browser: it would be refused
+   * the same way. */
+  blocked?: boolean;
+  status?: number;
+  networkError?: string;
+  contentType?: string;
+  html?: string;
+  extractedText?: string;
+}
 
+/** Statuses a site sends a script but not a browser: bot walls, rate limits,
+ * "enable JavaScript" interstitials. A 404 is not here; a browser gets the
+ * same 404. */
+const RENDER_STATUSES = new Set([401, 403, 406, 429, 451, 503]);
+/** Connection failures that come from refusing non-browser clients (a reset
+ * after the TLS hello), not from a host that is simply down. */
+const RENDER_NETWORK_ERRORS = /ECONNRESET|socket hang up|other side closed|UND_ERR_SOCKET|EPROTO|handshake/i;
+/** Below this much extracted text, an HTML page that ships script is taken to
+ * build itself in the browser. */
+const RENDER_MIN_TEXT = 200;
+
+/**
+ * Whether web_fetch should fall back to the browser, and the reason it gives.
+ * Pure: every trigger and non-trigger is pinned by a test.
+ */
+export function shouldRender(signal: PlainFetchSignal): { render: boolean; reason: string } {
+  if (signal.blocked) return { render: false, reason: "" };
+  if (signal.status !== undefined && RENDER_STATUSES.has(signal.status)) {
+    return { render: true, reason: `the plain fetch returned ${String(signal.status)}` };
+  }
+  if (signal.networkError && RENDER_NETWORK_ERRORS.test(signal.networkError)) {
+    return { render: true, reason: "the site dropped the plain fetch's connection" };
+  }
+  if (
+    signal.status !== undefined && signal.status >= 200 && signal.status < 300 &&
+    /html/i.test(signal.contentType ?? "") &&
+    (signal.extractedText ?? "").trim().length < RENDER_MIN_TEXT &&
+    /<script\b/i.test(signal.html ?? "")
+  ) {
+    return { render: true, reason: "the page builds itself with JavaScript" };
+  }
+  return { render: false, reason: "" };
+}
+
+async function plainFetch(start: URL): Promise<{ result: ToolResult; signal: PlainFetchSignal }> {
+  let url = start;
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, WEB_FETCH_TIMEOUT_MS);
   try {
     let response: GuardedResponse | null = null;
-    // Redirects are followed by hand so every hop gets the SSRF check —
-    // `redirect: "follow"` would let a public URL bounce to 169.254.169.254.
+    // Redirects are followed by hand so every hop gets the address check —
+    // following them inside fetch would let a public URL bounce to 169.254.169.254.
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      // The address is checked as the connection is made (guardedFetch), so the
-      // address checked is the address dialled: a name that answers public for
-      // a check and private for the connection has nothing to exploit.
       const res = await guardedFetch(url, {
         signal: controller.signal,
         headers: { "User-Agent": "Loxaic-Agent/1.0", Accept: "text/*, application/json;q=0.9, */*;q=0.5" },
@@ -564,23 +618,83 @@ async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
       response = res;
       break;
     }
-    if (!response) return { ok: false, output: `Too many redirects (>${String(MAX_REDIRECTS)})` };
-    if (!response.ok) return { ok: false, output: `HTTP ${String(response.status)} ${response.statusText} for ${url.href}` };
-
+    if (!response) return { result: { ok: false, output: `Too many redirects (>${String(MAX_REDIRECTS)})` }, signal: {} };
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      return {
+        result: { ok: false, output: `HTTP ${String(response.status)} ${response.statusText} for ${url.href}` },
+        signal: { status: response.status, contentType },
+      };
+    }
     const { text: bodyText, truncated: rawTruncated } = await readBoundedText(response);
+    const extracted = extractFetchText(bodyText, contentType, rawTruncated);
     return {
-      ok: true,
-      output: extractFetchText(bodyText, response.headers.get("content-type") ?? "", rawTruncated),
+      result: { ok: true, output: extracted },
+      signal: { status: response.status, contentType, html: bodyText, extractedText: extracted },
     };
   } catch (err) {
-    if (err instanceof BlockedTargetError) return { ok: false, output: `Fetch failed: ${err.message}` };
+    if (err instanceof BlockedTargetError) {
+      return { result: { ok: false, output: `Fetch failed: ${err.message}` }, signal: { blocked: true } };
+    }
+    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+    const detail = [cause?.code, cause?.message].filter(Boolean).join(" ");
     const message = (err as Error).name === "AbortError"
       ? `Request timed out after ${String(WEB_FETCH_TIMEOUT_MS)}ms`
-      : (err as Error).message;
-    return { ok: false, output: `Fetch failed: ${message}` };
+      : detail || (err as Error).message;
+    return { result: { ok: false, output: `Fetch failed: ${message}` }, signal: { networkError: message } };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** The browser's answer, in web_fetch's shape and under its text ceiling, so
+ * the fallback cannot quietly spend more of the window than the fast path. */
+async function renderedFetch(url: URL, renderer: PageRenderer, forModel: boolean, why: string | null): Promise<ToolResult> {
+  try {
+    const page = await renderer(url, { screenshot: forModel ? "required" : "best-effort", maxTextChars: WEB_FETCH_MAX_BYTES });
+    // What the browser drew goes to the person even when the page is an error.
+    const image = page.image ? { image: { ...page.image, forModel } } : {};
+    if (page.status !== null && page.status >= 400) {
+      return { ok: false, output: `HTTP ${String(page.status)} for ${page.finalUrl} (in the browser too)`, browser: true, ...image };
+    }
+    const truncated = page.text.length > WEB_FETCH_MAX_BYTES;
+    const body = truncated
+      ? `${page.text.slice(0, WEB_FETCH_MAX_BYTES)}\n… [truncated at ${String(WEB_FETCH_MAX_BYTES)} characters of rendered text]`
+      : page.text.trim().length > 0 ? page.text : "(the page rendered no readable text)";
+    const header = [
+      why ? `[Rendered in a browser: ${why}.]` : "[Rendered in a browser.]",
+      page.title ? `Title: ${page.title}` : null,
+      page.finalUrl !== url.href ? `URL: ${page.finalUrl}` : null,
+      forModel && page.image ? "A screenshot of the page is attached." : null,
+    ].filter((line): line is string => line !== null).join("\n");
+    return { ok: true, output: `${header}\n\n${body}`, browser: true, ...image };
+  } catch (err) {
+    return { ok: false, output: (err as Error).message, browser: true };
+  }
+}
+
+async function runWebFetch(args: Record<string, unknown>, renderer: PageRenderer | null): Promise<ToolResult> {
+  const raw = requireString(args, "url");
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, output: `Invalid URL: ${raw}` };
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return { ok: false, output: `Fetch failed: only http and https URLs are allowed (got ${url.protocol})` };
+  }
+  if (args.screenshot === true) {
+    if (!renderer) return { ok: false, output: "Screenshots need web browsing, which is off on this server." };
+    return await renderedFetch(url, renderer, true, null);
+  }
+  const plain = await plainFetch(url);
+  const decision = shouldRender(plain.signal);
+  if (!decision.render || !renderer) return plain.result;
+  const rendered = await renderedFetch(url, renderer, false, decision.reason);
+  if (rendered.ok) return rendered;
+  return { ...rendered, output: `${plain.result.output}\nThe browser fallback failed too: ${rendered.output}` };
 }
 
 /**

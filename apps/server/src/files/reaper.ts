@@ -84,9 +84,25 @@ export async function sweepOrphanAttachments(ownerIds?: string[]): Promise<numbe
     : sql``;
   const rows = await db.execute<{ id: string }>(sql`
     WITH referenced AS (
-      SELECT DISTINCT block->>'ref' AS ref
-      FROM messages m, LATERAL jsonb_array_elements(m.content) AS block
-      WHERE jsonb_typeof(m.content) = 'array' AND block->>'kind' = 'attachment'
+      -- One pass over messages for both places a ref can sit: an uploaded
+      -- attachment block, and the images nested in a tool_result (a web_fetch
+      -- screenshot, #281). This predicate and routes/files.ts's
+      -- mayReadAttachment are the pair files/AGENTS.md warns about; they
+      -- change together or a screenshot's bytes vanish from under a
+      -- transcript that still names them.
+      SELECT DISTINCT ref.value AS ref
+      FROM messages m
+      CROSS JOIN LATERAL jsonb_array_elements(m.content) AS block
+      CROSS JOIN LATERAL (
+        SELECT block->>'ref' AS value WHERE block->>'kind' = 'attachment'
+        UNION ALL
+        SELECT image->>'ref'
+        FROM jsonb_array_elements(
+          CASE WHEN block->>'kind' = 'tool_result' AND jsonb_typeof(block->'images') = 'array'
+               THEN block->'images' ELSE '[]'::jsonb END
+        ) AS image
+      ) AS ref
+      WHERE jsonb_typeof(m.content) = 'array' AND ref.value IS NOT NULL
     )
     DELETE FROM attachments a
     WHERE a.created_at < now() - make_interval(hours => ${orphanGraceHours()})

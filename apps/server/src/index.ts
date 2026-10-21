@@ -43,6 +43,7 @@ import { adminLocalModelRoutes } from "./routes/admin-local-models.ts";
 import { contextStageRoutes } from "./routes/context-stage.ts";
 import { migrateLegacyInferenceUrl } from "./inference/legacy-migration.ts";
 import { bootLocalRuntime, runtimeView, stopLocalRuntime } from "./llama/router.ts";
+import { closeAllBrowsers } from "./browser/manager.ts";
 import { startDownloadQueue, stopDownloads } from "./llama/downloads.ts";
 import { fileRoutes } from "./routes/files";
 import { hostingBlockedReason, loadServerSettings } from "./settings";
@@ -351,6 +352,7 @@ async function shutdown(signal: string) {
     await stopAllExtractionSandboxes().catch(() => undefined);
     await stopDownloads().catch(() => undefined);
     await stopLocalRuntime().catch(() => undefined);
+    await closeAllBrowsers().catch(() => undefined);
     await Promise.all(egressProxies.map((p) => p.close().catch(() => undefined)));
     await app.close();
     await closeDb();

@@ -649,6 +649,17 @@ export async function openSandboxSettings(): Promise<void> {
   await waitForVisible('sandbox.status');
 }
 
+/** Opens Settings and navigates to the admin-only Server Settings screen:
+ * what applies to every conversation (the run queue, auto mode's permission
+ * check). */
+export async function openServerSettings(): Promise<void> {
+  await openSidebar();
+  await tap('sidebar.settings');
+  await scrollTo('settings.nav.server');
+  await tap('settings.nav.server');
+  await waitForVisible('server.screen');
+}
+
 /** Selects a sandbox mode from the Agent Sandbox screen (caller must already
  * be there — see openSandboxSettings()), confirming host mode's warning
  * dialog when that's the target. Waits for the status card to reflect it,

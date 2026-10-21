@@ -279,6 +279,9 @@ export async function startStack({
       // so under dataDir for the same reason as uploads, and never inside the
       // bundle an update replaces.
       LLAMA_DIR: path.join(dataDir, "llama"),
+      // The managed Chromium web_fetch falls back to (#281): a downloaded
+      // browser build, so user data, not part of the bundle an update replaces.
+      BROWSER_DIR: path.join(dataDir, "browsers"),
       // The GitHub egress proxy's CA. Kept across updates so a paused
       // sandbox's trust in it stays good, and its key is user data.
       EGRESS_CA_DIR: path.join(dataDir, "egress-ca"),

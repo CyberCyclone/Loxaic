@@ -528,7 +528,19 @@ async function* mockStream(
   // Only the *current* turn counts: earlier turns in the conversation have
   // their own tool messages, and treating those as "already ran" would make
   // the mock refuse to call a tool ever again in a long-lived conversation.
-  const lastUserIndex = messages.map((m) => m.role).lastIndexOf("user");
+  // A web_fetch screenshot reaches the model as a user message after the tool
+  // results (streams/runs/screenshots.ts). It is Loxaic's, not the person's,
+  // so it neither starts a new turn nor becomes the prompt a scenario matches.
+  const isScreenshotMessage = (m: ChatMessage): boolean =>
+    m.role === "user" && typeof m.content !== "string" && m.content.at(0)?.type === "text" &&
+    (m.content.at(0) as { text: string }).text.startsWith("Screenshot from web_fetch");
+  let lastUserIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user" && !isScreenshotMessage(messages[i])) {
+      lastUserIndex = i;
+      break;
+    }
+  }
   const currentTurn = messages.slice(lastUserIndex + 1);
   const alreadyRanTools = currentTurn.some((m) => m.role === "tool");
   const lastUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;

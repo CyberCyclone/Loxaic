@@ -274,6 +274,8 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
           // field, which the card treats as "not told" rather than success.
           tc.ok = b.ok;
           if (b.permission) tc.permission = b.permission;
+          if (b.images?.length) tc.images = b.images;
+          if (b.browser) tc.browser = true;
         }
       }
     }
@@ -321,6 +323,8 @@ export function snapshotMessageToMessage(
             callId: tc.call_id,
             ok: tc.ok,
             ...(tc.permission ? { permission: tc.permission } : {}),
+            ...(tc.images?.length ? { images: tc.images } : {}),
+            ...(tc.browser ? { browser: true as const } : {}),
             ...withPlan(tc.tool, tc.args, sm.message_id),
           }))
         : undefined,
@@ -503,6 +507,8 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
                   diff: diffLinesFor(event.diff),
                   ok: event.ok,
                   ...(event.permission ? { permission: event.permission } : {}),
+                  ...(event.images?.length ? { images: event.images } : {}),
+                  ...(event.browser ? { browser: true as const } : {}),
                 }
               : t,
           ),

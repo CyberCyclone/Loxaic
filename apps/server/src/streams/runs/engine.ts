@@ -46,7 +46,7 @@ import {
   selectAffordableAttachments,
 } from "../../files/storage.ts";
 import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
-import { resolveModelRef } from "../../inference/providers.ts";
+import { modelSupportsImages, resolveModelRef } from "../../inference/providers.ts";
 import {
   addChars,
   apportion,
@@ -96,7 +96,9 @@ import {
   type CheckOutcome,
 } from "../../permissions/check.ts";
 import { addCommandRules, loadCommandRules } from "../../permissions/store.ts";
-import { getInferenceSettings } from "../../settings.ts";
+import { getBrowserSettings, getInferenceSettings } from "../../settings.ts";
+import { renderPage } from "../../browser/render.ts";
+import { countShownScreenshots, screenshotMessage, screenshotTurnsOf, SCREENSHOTS_SHOWN_LIMIT, storeScreenshot, type ScreenshotTurn } from "./screenshots.ts";
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -694,6 +696,9 @@ export async function runToolLoop(ctx: {
     // assistant and tool messages — so this holds for every iteration, until a
     // compaction leaves only the summary.
     let hadImages = chatMessages.some((m) => m.role === "user" && countImageParts(m.content) > 0);
+    // Screenshots the model already sees in this history; each new one is
+    // shown only under SCREENSHOTS_SHOWN_LIMIT (screenshots.ts).
+    const screenshotsShown = { count: countShownScreenshots(chatMessages) };
 
     // Per-message hashes from the previous iteration; safe to reuse because
     // `chatMessages` is only ever appended to below (a compaction resets it).
@@ -992,6 +997,8 @@ export async function runToolLoop(ctx: {
             carriedHashes = undefined;
             lastPrompt = null;
             replayedMessages = 1;
+            // The next run replays from the summary, so the count does too.
+            screenshotsShown.count = countShownScreenshots(chatMessages);
             omittedAttachments = [];
             hadImages = false;
             compactedThisRun = true;
@@ -1421,6 +1428,9 @@ export async function runToolLoop(ctx: {
 
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
+      // Screenshots the model is shown, sent after every result of this
+      // iteration (screenshots.ts says why after, not between).
+      const screenshotTurns: ScreenshotTurn[] = [];
       // Set once a plan or questions have been handed over in this message —
       // see the end of the turn below.
       let handedOver = false;
@@ -1564,6 +1574,7 @@ export async function runToolLoop(ctx: {
               checkpointTurn,
               skills,
               takeTodoReminder,
+              screenshotsShown,
               commandRules,
               isolation: runIsolation,
               check: {
@@ -1611,13 +1622,21 @@ export async function runToolLoop(ctx: {
           ok: outcome.ok,
           ...(outcome.diff ? { diff: outcome.diff } : {}),
           ...(outcome.permission ? { permission: outcome.permission } : {}),
+          ...(outcome.images ? { images: outcome.images } : {}),
+          ...(outcome.images && outcome.imagesSentToModel ? { images_sent_to_model: true } : {}),
+          ...(outcome.browser ? { browser: true } : {}),
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
+        if (outcome.images && outcome.imagesSentToModel) screenshotTurns.push({ callId: call.id, images: outcome.images });
         if (HANDOVER_TOOL_NAMES.has(call.function.name) && outcome.ok) handedOver = true;
         if (call.function.name === "todo_write" && outcome.ok) {
           const written = parseTodoList(safeParseArgs(call.function.arguments));
           if (written) todoStaleness.wrote(written);
         }
+      }
+      if (screenshotTurns.length > 0) {
+        chatMessages.push(await screenshotMessage(screenshotTurns));
+        hadImages = true;
       }
       todoStaleness.endIteration();
       producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
@@ -2014,6 +2033,8 @@ async function runOneToolCall(
     /** The stale-todo reminder, when this iteration owes one and no tool has
      * carried it yet — see todo-staleness.ts. */
     takeTodoReminder?: () => string | null;
+    /** Screenshots shown to the model so far in this history (see screenshots.ts). */
+    screenshotsShown: { count: number };
     /** The sender's command rules, for this run; "Allow always" adds to it. */
     commandRules: CommandRule[];
     /** Whether the workspace contains its commands — asked once per run. */
@@ -2032,6 +2053,12 @@ async function runOneToolCall(
   diff?: { path: string; oldContent: string | null; newContent: string | null }[];
   /** Why it ran without a person approving, or was refused. */
   permission?: ToolPermission;
+  /** A web_fetch screenshot, stored (#281). */
+  images?: AttachmentRef[];
+  /** Whether the model is shown `images`, decided once when stored. */
+  imagesSentToModel?: boolean;
+  /** web_fetch used the conversation's browser (#281). */
+  browser?: true;
 }> {
   const { userId, mode, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
@@ -2213,7 +2240,15 @@ async function runOneToolCall(
     // A read-only command that nobody was asked about still runs inside a
     // repository the model can write to: git's fsmonitor and pager are the
     // repo-config hooks a `git status` or `git log` would otherwise run.
-    permission?.by === "readonly" ? { bashEnv: READ_ONLY_BASH_ENV } : undefined,
+    {
+      ...(permission?.by === "readonly" ? { bashEnv: READ_ONLY_BASH_ENV } : {}),
+      // web_fetch's browser fallback, bound to this conversation and this
+      // run's Stop. Keyed by the conversation running the call — a
+      // sub-agent's own, never its parent's — so no two chats share one.
+      ...(builtinName === "web_fetch" && getBrowserSettings().enabled
+        ? { renderer: (url: URL, o: { screenshot: "required" | "best-effort"; maxTextChars: number }) => renderPage(ctx.convId, url, { ...o, signal: ctx.signal }) }
+        : {}),
+    },
   );
   // A read inside a subdirectory with its own AGENTS.md brings that file
   // along, once — appended here so the live event and the persisted row carry
@@ -2238,6 +2273,23 @@ async function runOneToolCall(
   // which show the live list from it and from the snapshot's `todos`. One
   // small record per todo_write. Remove it once those builds are gone.
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
+  // A screenshot becomes an attachment before anything is emitted, so the live
+  // event, the stored row and the replay all name the same ref. Whether the
+  // model is shown it is decided here, once, and stored: re-asking on replay
+  // would change an older part of the prompt whenever the model changes. A
+  // screenshot the model did not ask for is the person's alone.
+  let images: AttachmentRef[] | undefined;
+  let imagesSentToModel = false;
+  if (result.image) {
+    const stored = await storeScreenshot(ctx.convId, call.id, result.image);
+    if ("images" in stored) {
+      images = stored.images;
+      imagesSentToModel = result.image.forModel && ctx.screenshotsShown.count < SCREENSHOTS_SHOWN_LIMIT && (await modelSupportsImages(ctx.check.model));
+      if (imagesSentToModel) ctx.screenshotsShown.count++;
+    } else if (result.image.forModel) {
+      result.output += `\n${stored.note}`;
+    }
+  }
   producer.emit({
     kind: "tool.result",
     message_id: assistantMsgId,
@@ -2247,8 +2299,17 @@ async function runOneToolCall(
     ok: result.ok,
     ...(result.diff ? { diff: result.diff } : {}),
     ...(permission ? { permission } : {}),
+    ...(images ? { images } : {}),
+    ...(result.browser ? { browser: true } : {}),
   });
-  return { output: result.output, ok: result.ok, diff: result.diff, ...(permission ? { permission } : {}) };
+  return {
+    output: result.output,
+    ok: result.ok,
+    diff: result.diff,
+    ...(permission ? { permission } : {}),
+    ...(images ? { images, imagesSentToModel } : {}),
+    ...(result.browser ? { browser: true } : {}),
+  };
 }
 
 /** What the permission check needs from the run (permissions/check.ts). */
@@ -2796,6 +2857,8 @@ export async function loadHistory(conversationId: string): Promise<{
         if (!presentCallIds.has(block.call_id)) continue;
         out.push(toolResultMessageForPrompt(block.call_id, callNames.get(block.call_id), block.output));
       }
+      const shots = screenshotTurnsOf(blocks, presentCallIds);
+      if (shots.length > 0) out.push(await screenshotMessage(shots));
     }
   }
   return { messages: out, summaryText, omittedAttachments };

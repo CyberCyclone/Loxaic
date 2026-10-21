@@ -30,6 +30,8 @@ import { startMockHf, type MockHf } from './mock-hf.ts';
 import { startMockLlamaReleases, type MockLlamaReleases } from './mock-llama-releases.ts';
 import { startGitServer, type GitServer } from './git-server.ts';
 import { longHistoryScenario } from './long-history.ts';
+import { startMockWeb, webFetchScenarios } from './mock-web.ts';
+import { homedir } from 'node:os';
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = path.resolve(E2E_DIR, '../..');
@@ -100,6 +102,7 @@ let spawnedServer: ChildProcess | null = null;
 let stopMockGithub: (() => Promise<void>) | null = null;
 let stopMockProvider: (() => Promise<void>) | null = null;
 let stopMockHf: (() => Promise<void>) | null = null;
+let stopMockWeb: (() => Promise<void>) | null = null;
 let stopMockLlamaReleases: (() => Promise<void>) | null = null;
 /**
  * `standup()` runs in WebdriverIO's launcher process (the `onPrepare` hook);
@@ -252,12 +255,27 @@ const SCENARIOS_FIXTURE = path.join(FIXTURES_DIR, 'scenarios.json');
  * generated rather than written out (see long-history.ts). */
 const SCENARIOS_FILE = path.join(RUN_DIR, 'scenarios.json');
 
-function writeScenarios(): string {
+function writeScenarios(extra: unknown[] = []): string {
   const fixture = JSON.parse(readFileSync(SCENARIOS_FIXTURE, 'utf8')) as unknown[];
   mkdirSync(RUN_DIR, { recursive: true });
-  writeFileSync(SCENARIOS_FILE, JSON.stringify([...fixture, longHistoryScenario()]), 'utf8');
+  writeFileSync(SCENARIOS_FILE, JSON.stringify([...fixture, longHistoryScenario(), ...extra]), 'utf8');
   return SCENARIOS_FILE;
 }
+
+/** The fixture website web_fetch's browser fallback reads (mock-web.ts). */
+const MOCK_WEB_FILE = path.join(RUN_DIR, 'mock-web.json');
+
+export function mockWeb(): { url: string } {
+  if (!existsSync(MOCK_WEB_FILE)) {
+    throw new Error(`[e2e] no mock website recorded at ${MOCK_WEB_FILE} — was standup() run?`);
+  }
+  return JSON.parse(readFileSync(MOCK_WEB_FILE, 'utf8')) as { url: string };
+}
+
+/** Where the server keeps the Chromium it downloads for the browser
+ * fallback: outside the run directory and the checkout, so it is downloaded
+ * once per machine rather than once per run or per worktree. */
+const E2E_BROWSER_DIR = path.join(homedir(), '.cache', 'loxaic-e2e', 'browsers');
 
 interface Health {
   status: string;
@@ -428,6 +446,11 @@ async function ensureServer(): Promise<void> {
   stopMockGithub = mockGithub.stop;
   writeFileSync(MOCK_GITHUB_FILE, JSON.stringify({ url: mockGithub.url }), 'utf8');
 
+  const web = await startMockWeb();
+  stopMockWeb = web.stop;
+  mkdirSync(RUN_DIR, { recursive: true });
+  writeFileSync(MOCK_WEB_FILE, JSON.stringify({ url: web.url }), 'utf8');
+
   const hf = await startMockHf();
   stopMockHf = hf.stop;
   writeFileSync(MOCK_HF_FILE, JSON.stringify({ url: hf.url, repos: hf.repos, quants: hf.quants, mtpHeads: hf.mtpHeads }), 'utf8');
@@ -490,7 +513,7 @@ async function ensureServer(): Promise<void> {
       GITHUB_WEB_URL: gitServer.webUrl,
       // The egress proxy's CA for this run, kept out of the checkout.
       EGRESS_CA_DIR: path.join(RUN_DIR, 'egress-ca'),
-      MOCK_SCENARIOS_FILE: writeScenarios(),
+      MOCK_SCENARIOS_FILE: writeScenarios(webFetchScenarios(web.url)),
       // Network stays off by default — a spec that clones turns it on through
       // the admin API and resets it after, like every other sandbox setting.
       // The idle-stop reaper's real tick is five minutes.
@@ -529,6 +552,13 @@ async function ensureServer(): Promise<void> {
       LOXAIC_FAKE_MODEL_MIB: '23500',
       LOXAIC_FAKE_VRAM_STATE: FAKE_VRAM_STATE,
       HF_ENDPOINT: hf.url,
+      // web_fetch's browser fallback (#281): the fixture site is on loopback,
+      // which the address guard refuses; this lets exactly it through, and the
+      // server honours it only with the mock backend. Browsing itself stays
+      // off: specs switch it through the admin API (never env-pin a setting a
+      // spec toggles).
+      LOXAIC_E2E_FETCH_ALLOW: web.hostPort,
+      BROWSER_DIR: E2E_BROWSER_DIR,
       // Choosing a llama.cpp version (runtime-version.spec.ts): GitHub's
       // release list and its downloads are the mock above. The fake binary
       // stands in for the bundled build only, so a version chosen in the
@@ -617,6 +647,11 @@ export async function teardown(): Promise<void> {
     stopMockRegistry = null;
   }
   rmSync(MOCK_REGISTRY_FILE, { force: true });
+  if (stopMockWeb) {
+    await stopMockWeb();
+    stopMockWeb = null;
+  }
+  rmSync(MOCK_WEB_FILE, { force: true });
   if (stopMockHf) {
     await stopMockHf();
     stopMockHf = null;

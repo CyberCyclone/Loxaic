@@ -1,4 +1,4 @@
-import type { CompactionStats, ContextBreakdown, ToolPermission } from "./stream-protocol";
+import type { AttachmentRef, CompactionStats, ContextBreakdown, ToolPermission } from "./stream-protocol";
 import type { ModelThinking } from "./thinking";
 
 export type Result<T, E = Error> =
@@ -192,7 +192,36 @@ export type ContentBlock =
    * the client tints on a positive `false` for exactly that reason. Without it
    * a failed call was indistinguishable from a successful one the moment the
    * live stream ended and history was rebuilt from REST. */
-  | { kind: "tool_result"; call_id: string; output: string; ok?: boolean; diff?: FileDiff[]; permission?: ToolPermission }
+  | {
+      kind: "tool_result";
+      call_id: string;
+      output: string;
+      ok?: boolean;
+      diff?: FileDiff[];
+      permission?: ToolPermission;
+      /** A screenshot web_fetch took (#281): ordinary attachment refs with
+       * ordinary rows (files/generated.ts), served by `/v1/files/:ref`. The
+       * reaper's referenced-ref SQL and `mayReadAttachment` both look here
+       * (files/AGENTS.md). Absent on every result without an image. */
+      images?: AttachmentRef[];
+      /** Whether these images were put in front of the model, decided **when the
+       * result was written** and never re-derived.
+       *
+       * A screenshot is only worth sending to a backend that can see images, and
+       * the run's model changes between turns: re-deciding on replay would mean
+       * an older part of the prompt's bytes change when someone picks a
+       * different model, which breaks the backend's prefix cache exactly like a
+       * trim does. So the turn that took the screenshot says whether it went in,
+       * and every later request replays that answer.
+       *
+       * Absent means no: it is written only when true, so a row from a server
+       * that predates browsing, and a screenshot a non-vision model never
+       * received, replay the same way — as text only. */
+      images_sent_to_model?: boolean;
+      /** web_fetch loaded the page in the conversation's own browser (#281),
+       * not the plain fetch. Written only when true. */
+      browser?: true;
+    }
   | { kind: "attachment"; ref: string; mime: string; name?: string }
   /** Rides alongside a summary message's text block so a cold REST load can
    * render the compaction card with its stats — the stream isn't the only
