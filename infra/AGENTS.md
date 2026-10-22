@@ -7,6 +7,12 @@ Dockerfiles and container entrypoints (`docker/`), the sandbox image and its doc
 - The image needs util-linux `setsid -w` for killing a command's process group (absent from busybox/Alpine); re-check it on any base-image change.
 - The image tag is a hash of `sandbox.Dockerfile` and everything under `sandbox/`, so editing either rebuilds every deployment's image once. Anything the Dockerfile `COPY`s must also be staged by `apps/desktop/scripts/build-server.mjs`, or packaged installs fail to build the image.
 
+## Dev image (`docker/dev/`, #320)
+
+- `loxaic-dev` is built `FROM sandbox` (`docker-bake.hcl`'s named context), never by copying `sandbox.Dockerfile`; run `selftest.sh` after any change, under the flags in its header.
+- Keep `loxaic-test.sh` the agent's only way to run a lane: detached, one at a time, egress variables stripped for test runs. Its lane names are documented in `docs/developing-loxaic-in-loxaic.md`.
+- Pin Chrome for Testing and the Android packages by version (and the command-line tools by SHA-1), never `latest`.
+
 ## Document extraction (`docker/sandbox/extract.py`)
 
 - **Run the zip decompression-bomb guard (entry count, total declared size, per-entry ratio, read from the central directory) before opening any zip-based format.** Every format except PDF and RTF is a zip; never inflate to decide.

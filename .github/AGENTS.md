@@ -14,6 +14,10 @@ CI and release workflows: `ci.yml`, `release.yml` (desktop installers, GitHub re
 - `EXPO_TOKEN` can publish JavaScript to every installed app (updates are unsigned on this EAS plan); it is the only Expo secret GitHub holds. EAS holds the App Store Connect and Play service-account keys.
 - Each iOS submit profile in `apps/mobile/eas.json` carries `ascAppId`; non-interactive `eas submit` cannot look it up. It is not a secret.
 
+## Dev image (`dev-image.yml`)
+
+- Only the `publish` job holds `packages: write`, and it runs on `dev` only; a pull request builds and runs the selftest with a read-only token.
+
 ## Desktop release
 
 - The signing certificate must be Developer ID Application; an Apple Development certificate signs but cannot be notarized. Check with `security find-identity -v -p codesigning`.
