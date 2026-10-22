@@ -188,7 +188,7 @@ describe("the policy", () => {
     expect((await call(alice, "POST", "/v1/admin/images", { reference: "ubuntu" })).status).toBe(403);
     const added = await call(admin, "POST", "/v1/admin/images", { reference: "ubuntu", limits: { memoryMb: 2048, cpus: 2, pids: 500 } });
     expect(added.status).toBe(200);
-    expect(added.body.limits).toEqual({ memoryMb: 2048, cpus: 2, pids: 500 });
+    expect(added.body.limits).toEqual({ memoryMb: 2048, cpus: 2, pids: 500, kvm: false });
     await __waitForPull(added.body.id as string);
   });
 
