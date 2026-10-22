@@ -21,7 +21,7 @@ import { expect } from '@wdio/globals';
 import { apiToken, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { BASE_URL, MOCK_MCP_HTTP_TOKEN, mockMcpHttpUrl } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, tap, waitForAbsent, waitForSelected, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { isVisible, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   HTTP_MCP_LOGIN,
   HTTP_MCP_PROMPT,
@@ -76,9 +76,6 @@ describe('agent "Allow always"', () => {
   async function startRun(mode: 'manual' | 'auto', prompt: string): Promise<void> {
     await startNewAgentRun();
     await tap(`agent.mode.${mode}`);
-    // A slow machine (inside a Loxaic sandbox, #320) can take the tap before
-    // the new thread has settled, which puts the selector back.
-    await waitForSelected(`agent.mode.${mode}`);
     await sendMessage(prompt);
   }
 

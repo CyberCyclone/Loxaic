@@ -79,6 +79,8 @@ describe('stopping an agent run', () => {
   it('ends a mid-response run', async function () {
     this.timeout(2 * 60_000);
 
+    // Here as well as in the case above, which host mode skips (#320).
+    await goToSurface('agent');
     await startNewAgentRun();
     await sendMessage(SLOW_PROMPT);
     await waitForTextIn('agent.run.status', 'Running');
