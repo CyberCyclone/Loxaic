@@ -8,11 +8,7 @@ import {
   type SubAgentView,
 } from '@/lib/subAgents';
 import type { SubAgentController } from './useSubAgentState';
-
-/** How long a sheet takes to leave. iOS will not present a second overlay
- * while the first is still being dismissed, so the panel opens after the list
- * has gone — the rule the plan panel's model picker follows. */
-const SHEET_EXIT_MS = 300;
+import { SHEET_EXIT_MS } from '@/lib/sheetExit';
 
 /**
  * One thread's sub-agents, as its screen uses them: the context its cards

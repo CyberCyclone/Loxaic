@@ -63,13 +63,11 @@ import { useSettings } from '@/hooks/useSettings';
 import { useThinkingChoice } from '@/hooks/useThinkingChoice';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
+import { SHEET_EXIT_MS } from '@/lib/sheetExit';
 
 /** Stable, so a screen with no run open does not hand useReview a new
  * array — and so a new list of plans — on every render. */
 const NO_MESSAGES: never[] = [];
-
-/** Long enough for the plan sheet's exit animation (200ms) to finish. */
-const SHEET_EXIT_MS = 300;
 
 export default function AgentScreen() {
   const connection = useConnection();

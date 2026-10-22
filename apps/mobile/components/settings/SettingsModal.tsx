@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter, type Href } from 'expo-router';
-import { BookOpen, Boxes, Container, GitBranch, HardDrive, Hourglass, Layers, Plug, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
+import { BookOpen, Boxes, Container, GitBranch, HardDrive, Hourglass, Layers, Plug, ScrollText, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -41,7 +41,16 @@ const MODES: AgentMode[] = ['planning', 'manual', 'auto'];
 const THINKING: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High'];
 const THEMES: ThemePreference[] = ['light', 'dark', 'system'];
 
-export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function SettingsModal({
+  open,
+  onClose,
+  onOpenChangelog,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Closes this modal and opens the changelog in its place (AppShell owns both). */
+  onOpenChangelog: () => void;
+}) {
   const [settings, setSettings] = useSettings();
   const [themePref, setThemePref] = useThemePreference();
   const router = useRouter();
@@ -324,6 +333,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             <Box className="h-px bg-border" />
 
             <UpdatesRow />
+
+            {/* Bundled with the app, so it reads the same offline. */}
+            <SettingsNavRow
+              testID="settings.nav.changelog"
+              icon={ScrollText}
+              title="Changelog"
+              subtitle="What changed in each release"
+              onPress={onOpenChangelog}
+            />
 
             <SettingsNavRow
               testID="settings.nav.account"

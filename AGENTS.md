@@ -73,7 +73,7 @@ Every pull request carries unit tests and end-to-end tests for what it changes, 
 - JSX only in `.tsx` files.
 - Authenticate only through `apps/server/src/auth/middleware.ts`. Calling `auth.api.getSession` directly skips the ban and password-change checks.
 - Never add a dependency with a required `nativewind` peer. It materialises a second React and breaks hooks on device.
-- Any modal that can grow past a few rows needs both `max-h-[85%]` on `ModalContent` and `scrollEnabled` on `ModalBody`.
+- Any modal that can grow past a few rows needs both `max-h-[85%]` on `ModalContent` and `scrollEnabled` on `ModalBody` (or a virtualised list in its place: `apps/mobile/components/AGENTS.md`).
 - UI colours use semantic gluestack tokens (`text-foreground`, `bg-primary`), never numbered Tailwind colours or hex in `className`. SVG fills and strokes are the exception: `react-native-svg` can't resolve CSS variables.
 - A read without `orderBy` has no order, in tests too. Anything positional (`.at(-1)`, `[0]`) needs one; messages order by `(lamport, created_at)`.
 - An abort listener added to an already-aborted signal never fires. Re-check `signal.aborted` after every await that comes before attaching the listener.
