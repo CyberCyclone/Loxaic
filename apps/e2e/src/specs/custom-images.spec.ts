@@ -326,7 +326,11 @@ describe('custom sandbox images (#253)', function () {
         (i) => i.id === sharedId,
       )?.limits?.kvm;
     await browser.waitUntil(async () => (await kvmOf()) === true, { timeout: 15_000, timeoutMsg: '[e2e] KVM was not saved' });
-    if (kvm?.visible === false) await waitForFreshText(`images.image.kvm.warning.${sharedId}`, "can't see /dev/kvm");
+    if (kvm?.visible === false) {
+      // Under the switch, below a phone's fold.
+      await scrollTo(`images.image.kvm.warning.${sharedId}`);
+      await waitForFreshText(`images.image.kvm.warning.${sharedId}`, "can't see /dev/kvm");
+    }
     else await expectNeverPresent([`images.image.kvm.warning.${sharedId}`]);
     await shot('custom-images-kvm');
 
