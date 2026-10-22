@@ -1,6 +1,7 @@
 const { getDefaultConfig } = require('expo/metro-config');
 const { withUniwindConfig } = require('uniwind/metro');
 const path = require('path');
+const { OUT_FILE, writeChangelog } = require('./scripts/changelog.cjs');
 
 const projectRoot = __dirname;
 const workspaceRoot = path.resolve(projectRoot, '../..');
@@ -20,6 +21,17 @@ config.resolver.nodeModulesPaths = [
 // with react-native-reanimated now). If "Invalid hook call" ever comes back,
 // find the dependency that dragged in a second `react` rather than re-adding
 // the shim — see the root AGENTS.md.
+
+// The changelog Settings shows, from git history, written before anything is
+// bundled: every bundle (web export, OTA update, Electron's build:web, a dev
+// session) goes through this file, and lib/changelog.ts requires the result.
+// A failure here must never stop a bundle, only leave it without a changelog.
+try {
+  writeChangelog();
+} catch (err) {
+  console.warn(`[changelog] not written: ${err instanceof Error ? err.message : String(err)}`);
+  require('fs').writeFileSync(OUT_FILE, `${JSON.stringify({ available: false })}\n`);
+}
 
 // withUniwindConfig must be the outermost wrapper.
 module.exports = withUniwindConfig(config, {

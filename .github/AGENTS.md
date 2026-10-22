@@ -26,6 +26,7 @@ CI and release workflows: `ci.yml`, `release.yml` (desktop installers, GitHub re
 
 ## Mobile OTA and store builds
 
+- Every checkout that bundles the app (`desktop`, `expo-update`, `dev-update.yml`) needs `fetch-depth: 0`: Metro writes the changelog from tags, and a shallow clone ships one that says it is missing.
 - The EAS environment for the beta variant is `preview` (EAS has only development/preview/production); keep it in step with `eas.json`.
 - Submission goes only to TestFlight/App Store Connect and Play's internal track via `--auto-submit-with-profile`; a tag push must never release to users unreviewed.
 - Only the `dev` variant builds an APK; beta and production submit App Bundles to their own Play listings.

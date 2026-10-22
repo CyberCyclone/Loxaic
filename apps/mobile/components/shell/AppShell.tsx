@@ -1,5 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { Keyboard } from 'react-native';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Keyboard, Platform } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Box } from '@/components/ui/box';
@@ -9,6 +9,7 @@ import { Sidebar } from './Sidebar';
 import { UpdateReadyBanner } from './UpdateReadyBanner';
 import { ConnectionBanner } from './ConnectionBanner';
 import { SettingsModal } from '@/components/settings/SettingsModal';
+import { ChangelogModal } from '@/components/settings/ChangelogModal';
 import { startMonitor } from '@/lib/connectionMonitor';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import type { SurfaceId } from '@/lib/types';
@@ -19,6 +20,10 @@ interface ShellState {
   openSidebar: () => void;
   openSettings: () => void;
 }
+
+// How long a closing modal takes to leave on iOS, which refuses to present a
+// second one while the first is still on screen.
+const SHEET_EXIT_MS = 300;
 
 const ShellContext = createContext<ShellState | null>(null);
 
@@ -35,6 +40,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const changelogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // One connection monitor for the signed-in app, whichever screen is open —
   // screens come and go with the Slot, and their sockets with them.
@@ -67,6 +74,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }),
     [overlaySidebar],
   );
+
+  // Settings closes first and the changelog opens in its place: modals never
+  // stack.
+  const openChangelog = useCallback(() => {
+    setSettingsOpen(false);
+    if (changelogTimer.current) clearTimeout(changelogTimer.current);
+    if (Platform.OS !== 'ios') {
+      setChangelogOpen(true);
+      return;
+    }
+    changelogTimer.current = setTimeout(() => {
+      changelogTimer.current = null;
+      setChangelogOpen(true);
+    }, SHEET_EXIT_MS);
+  }, []);
+  useEffect(() => () => {
+    if (changelogTimer.current) clearTimeout(changelogTimer.current);
+  }, []);
 
   const sidebar = (
     <Sidebar
@@ -120,7 +145,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* One settings modal for the whole shell. Each screen used to render its
           own, so the sidebar's Settings did nothing on a screen that had
           forgotten to (Routines, Stats, Admin). */}
-      <SettingsModal open={settingsOpen} onClose={() => { setSettingsOpen(false); }} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => { setSettingsOpen(false); }}
+        onOpenChangelog={openChangelog}
+      />
+      <ChangelogModal open={changelogOpen} onClose={() => { setChangelogOpen(false); }} />
     </ShellContext.Provider>
   );
 }
