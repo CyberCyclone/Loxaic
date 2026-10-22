@@ -14,7 +14,7 @@ import { useShell } from '@/components/shell/AppShell';
 import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
 import { PromptSuggestions } from '@/components/chat/PromptSuggestions';
-import { ToolApprovalDialog } from '@/components/chat/ToolApprovalDialog';
+import { CHAT_APPROVAL_IDS, ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
 import { checkinKey } from '@/lib/pendingWaits';
 import { Composer } from '@/components/composer/Composer';
@@ -370,7 +370,11 @@ export default function ChatScreen() {
       )}
 
       {pendingApproval && (
-        <ToolApprovalDialog
+        <ToolApprovalSheet
+          open
+          testIDBase="chat.approval"
+          ids={CHAT_APPROVAL_IDS}
+          denyLabel="Reject"
           tool={pendingApproval.tool}
           args={pendingApproval.args}
           deadline={pendingApproval.deadline}
@@ -379,9 +383,9 @@ export default function ChatScreen() {
           granterUserId={pendingApproval.granterUserId}
           rules={pendingApproval.rules}
           check={pendingApproval.check}
-          onAllowOnce={() => { handleApprove(pendingApproval.callId); }}
+          onAllow={() => { handleApprove(pendingApproval.callId); }}
           onAllowAlways={() => { handleAllowAlways(pendingApproval.callId); }}
-          onReject={() => { handleDeny(pendingApproval.callId); }}
+          onDeny={() => { handleDeny(pendingApproval.callId); }}
         />
       )}
 

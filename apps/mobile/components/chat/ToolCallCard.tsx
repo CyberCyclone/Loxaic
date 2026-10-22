@@ -26,6 +26,8 @@ import type { ToolCall } from '@/lib/types';
 import { permissionBadge } from '@/lib/permissionBar';
 import { useSession } from '@/lib/session';
 import { ImageViewer } from '@/components/viewer/ImageViewer';
+import { CARD_VALUE_MAX_HEIGHT, ToolCallDetails } from '@/components/chat/ToolCallDetails';
+import { WRAP_ANYWHERE } from '@/lib/truncate';
 
 const TOOL_ICONS: Record<string, typeof FileText> = {
   fs_read: FileText,
@@ -75,6 +77,10 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
   // means the row predates the field. That is "we were not told", which is
   // still not success. See the same note in `lib/types.ts`.
   const failed = tool.ok === false;
+  const id = tool.callId;
+  // No result has come back yet: the call is waiting for approval or running.
+  // Every way a call ends — run, refused, expired, stopped — sends a result.
+  const pending = tool.result === '' && tool.ok === undefined;
   const tint = failed
     ? 'text-destructive bg-destructive/15'
     : mcp
@@ -176,8 +182,18 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
       {tool.images?.length ? <ImageViewer uri={viewerUri} onClose={() => { setViewerUri(null); }} /> : null}
       {open && (
         <Box className="border-t border-border">
+          {/* Everything the call was given, in full (#267) — while it waits
+              for approval or runs as much as after. */}
+          <Box className="border-b border-border px-3 py-2">
+            <ToolCallDetails
+              tool={tool.tool}
+              args={tool.args}
+              argTestID={id ? (key) => `chat.toolCall.arg.${id}.${key}` : undefined}
+              capped
+            />
+          </Box>
           {tool.diff ? (
-            <ScrollView testID={tool.callId ? `chat.toolCall.result.${tool.callId}` : undefined} style={{ maxHeight: 200 }}>
+            <ScrollView testID={id ? `chat.toolCall.result.${id}` : undefined} style={{ maxHeight: CARD_VALUE_MAX_HEIGHT }}>
               {tool.diff.map((line, i) => (
                 <Text
                   key={i}
@@ -195,14 +211,21 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
                 </Text>
               ))}
             </ScrollView>
+          ) : pending ? (
+            <Text testID={id ? `chat.toolCall.pending.${id}` : undefined} size="xs" className="p-3 text-muted-foreground">
+              No result yet
+            </Text>
           ) : (
-            <ScrollView testID={tool.callId ? `chat.toolCall.result.${tool.callId}` : undefined} style={{ maxHeight: 200 }}>
+            <ScrollView testID={id ? `chat.toolCall.result.${id}` : undefined} style={{ maxHeight: CARD_VALUE_MAX_HEIGHT }}>
               <Text
                 // On the Text as well as the scroll view: XCUITest reports a
                 // scroll view's text as empty, so the words are only readable here.
-                testID={tool.callId ? `chat.toolCall.resultText.${tool.callId}` : undefined}
-                className="p-3 text-muted-foreground"
-                style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 18 }}
+                testID={id ? `chat.toolCall.resultText.${id}` : undefined}
+                // `leading-[18px]`, not `lineHeight: 18`: on web this Text is a
+                // <span>, where the number is a multiplier — 216px a line, taller
+                // than the box, so the output sat centred in it and cut off.
+                className="p-3 text-[12px] leading-[18px] text-muted-foreground"
+                style={{ fontFamily: 'monospace', ...WRAP_ANYWHERE }}
               >
                 {tool.result}
               </Text>

@@ -621,6 +621,18 @@
     "finalText": "[Mock] Touched the scratch note."
   },
   {
+    "match": "show the call in full",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch details-note.txt && printf 'x%.0s' $(seq 1 400) && echo && echo first-short-line && echo tail-of-a-long-command-for-267"
+        }
+      }
+    ],
+    "finalText": "[Mock] Showed the call in full."
+  },
+  {
     "match": "list then touch a note",
     "steps": [
       {

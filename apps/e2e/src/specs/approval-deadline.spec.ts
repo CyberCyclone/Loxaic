@@ -2,13 +2,13 @@
  * A tool approval says what happens if nobody answers, and when — on both
  * surfaces, and somewhere the person can actually get to.
  *
- * The chat dialog is the case that needs care. Its body is height-capped, and
- * the vendored ModalBody does not scroll unless told to — so the countdown,
- * the last row in it, is the first thing pushed below a fold nothing can
- * reach. WebDriver calls such an element "displayed", so this asserts
- * reachability (a scrolling ancestor, then a bounding-rect check), the same
- * way mcp-servers.spec.ts and checkin-settings.spec.ts do. Found in review of
- * #198, which added the row without the scroll.
+ * Chat's request is the case that needs care. It is a sheet capped at the
+ * window's height (#267, a modal before), so the countdown, the last row in
+ * its body, is the first thing pushed below the fold — and the answers under
+ * the body must stay on screen when it is. WebDriver calls such an element
+ * "displayed", so this asserts reachability (a scrolling ancestor, then a
+ * bounding-rect check), the same way mcp-servers.spec.ts and
+ * checkin-settings.spec.ts do.
  */
 import { browser } from '@wdio/globals';
 import { uniqueCreds } from '../helpers/auth.ts';
@@ -39,7 +39,7 @@ describe('a tool approval shows its deadline', () => {
     await waitForGone('agent.permission.bar');
   });
 
-  it("in chat's approval dialog, reachable on a short window", async function () {
+  it("in chat's approval sheet, reachable on a short window", async function () {
     this.timeout(2 * 60_000);
     // Overlay testIDs are not visible to the iOS driver (a known harness
     // limit), and window sizing is a browser notion.
@@ -48,13 +48,13 @@ describe('a tool approval shows its deadline', () => {
 
     await goToSurface('chat');
     await sendMessage(TOOL_PROMPT);
-    await waitForVisible('chat.approval.dialog', 60_000);
+    await waitForVisible('chat.approval.panel', 60_000);
     await waitForTextIn('chat.approval.deadline', WONT_RUN);
     await shot('approval-deadline-chat');
 
     const before = await getWindowSize();
     try {
-      // Stepped down rather than fixed: how tall the dialog is depends on the
+      // Stepped down rather than fixed: how tall the sheet is depends on the
       // call being approved, and a window it still fits in proves nothing.
       let verdict = { found: false, overflowing: false, scrollable: false, inView: false };
       for (const height of [420, 340, 280]) {
@@ -85,12 +85,21 @@ describe('a tool approval shows its deadline', () => {
       if (!verdict.overflowing) throw new Error('no window was short enough to put the countdown past the fold');
       if (!verdict.scrollable) throw new Error('the countdown is past the fold with nothing able to scroll to it');
       if (!verdict.inView) throw new Error('the countdown could not be brought into view');
+      // The answers sit under the body, outside what scrolls (#267): the
+      // window that pushed the countdown past the fold must not push them off.
+      const answersInView = await browser.execute((selector: string) => {
+        const el = document.querySelector<HTMLElement>(selector);
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.height > 0 && r.top >= 0 && r.bottom <= window.innerHeight;
+      }, testIdSelector('chat.approval.reject'));
+      if (!answersInView) throw new Error("the sheet's answers are off the screen");
       await shot('approval-deadline-chat-scrolled');
     } finally {
       await setWindowSize(before.width, before.height);
     }
 
     await tap('chat.approval.reject');
-    await waitForGone('chat.approval.dialog');
+    await waitForGone('chat.approval.panel');
   });
 });

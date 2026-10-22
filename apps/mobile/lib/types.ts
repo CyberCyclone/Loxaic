@@ -88,6 +88,11 @@ export interface MessageUsage {
 export interface ToolCall {
   tool: string
   summary: string
+  /** The call's arguments in full, for the card's details (#267). Set by all
+   * three paths that build a ToolCall — the live event, the reconnect
+   * snapshot and REST history — which all carry them; absent only on the
+   * design fixtures. */
+  args?: Record<string, unknown>
   result: string
   duration?: string
   diff?: DiffLine[]

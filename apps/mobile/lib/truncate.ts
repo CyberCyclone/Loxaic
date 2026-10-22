@@ -42,3 +42,14 @@ export function clampLines(lines: number): object | undefined {
     ? { display: '-webkit-box', WebkitLineClamp: lines, WebkitBoxOrient: 'vertical', overflow: 'hidden' }
     : undefined
 }
+
+/**
+ * The opposite need: a long unbroken token — a path, a URL, a run of output
+ * with no spaces — wraps instead of running off the side of its box. The base
+ * class's `word-wrap-break-word` is not a class UniWind resolves, so nothing
+ * breaks such a token on web; an inline style for the reason above. Native
+ * Text already breaks anywhere, so this is undefined there.
+ */
+export const WRAP_ANYWHERE = (
+  Platform.OS === 'web' ? { overflowWrap: 'anywhere', wordBreak: 'break-word' } : undefined
+) as object | undefined

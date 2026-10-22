@@ -521,6 +521,31 @@ export async function getToolResults(
   );
 }
 
+/**
+ * The tool calls a conversation has stored, with their arguments. A call is
+ * saved with its turn, before it runs — so this names a call that is still
+ * waiting for approval, whose id a card's testID carries and a spec cannot
+ * know in advance.
+ */
+export async function getToolCalls(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<{ call_id: string; tool: string; args: Record<string, unknown> }[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] getting tool calls failed (${String(res.status)})`);
+  const body = (await res.json()) as {
+    messages: { content: { kind: string; call_id?: string; tool?: string; args?: Record<string, unknown> }[] }[];
+  };
+  return body.messages.flatMap((m) =>
+    m.content
+      .filter((b) => b.kind === 'tool_call')
+      .map((b) => ({ call_id: b.call_id ?? '', tool: b.tool ?? '', args: b.args ?? {} })),
+  );
+}
+
 // ── Sub-agents ────────────────────────────────────────────
 
 /** One sub-agent call in one assistant message: a child whose two requests

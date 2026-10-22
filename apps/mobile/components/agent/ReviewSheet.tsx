@@ -20,7 +20,9 @@ import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
 
 interface ReviewSheetProps {
   open: boolean;
-  onClose: () => void;
+  /** Absent for a sheet that only an answer ends — a pending approval: no
+   * close button, no drag handle, and the backdrop and Escape do nothing. */
+  onClose?: () => void;
   /** e.g. `agent.plan` — the sheet is `<id>.panel`, the body `<id>.body`,
    * the close button `<id>.close`. */
   testIDBase: string;
@@ -40,10 +42,19 @@ interface ReviewSheetProps {
    * a plain flex view, `<id>.body` still, and its content fills it.
    */
   scroll?: boolean;
+  /**
+   * Fit the content, up to the full height, instead of always taking it: a
+   * short request gets a short sheet. The cap is still set on the inner view,
+   * for the reason in the notes below.
+   */
+  fit?: boolean;
 }
 
+const noop = () => undefined;
+
 /**
- * The full-height sheet a plan or a set of questions is reviewed in (#199).
+ * The full-height sheet a plan or a set of questions is reviewed in (#199),
+ * and a permission request is read and answered in (#267, `fit`).
  *
  * Shared because everything in it was learnt on devices, not on web, and a
  * second copy would have to learn it again:
@@ -71,6 +82,7 @@ export function ReviewSheet({
   children,
   footer,
   scroll = true,
+  fit = false,
 }: ReviewSheetProps) {
   const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -81,12 +93,17 @@ export function ReviewSheet({
   const keyboardHeight = useKeyboardHeight();
 
   return (
-    <Actionsheet isOpen={open} onClose={onClose}>
+    <Actionsheet
+      isOpen={open}
+      onClose={onClose ?? noop}
+      closeOnOverlayClick={onClose !== undefined}
+      isKeyboardDismissable={onClose !== undefined}
+    >
       <ActionsheetBackdrop />
       <ActionsheetContent testID={`${testIDBase}.panel`} className="max-h-full px-0 pt-0 web:select-text">
         <View
           style={{
-            height: sheetHeight,
+            ...(fit ? { maxHeight: sheetHeight } : { height: sheetHeight }),
             width: '100%',
             // The keyboard lifts the footer rather than covering it; the body
             // gives up the height. On iOS the keyboard's height includes the
@@ -96,10 +113,14 @@ export function ReviewSheet({
             paddingBottom: Math.max(0, keyboardHeight - (Platform.OS === 'ios' ? insets.bottom : 0)),
           }}
         >
-          <ActionsheetDragIndicatorWrapper>
-            <ActionsheetDragIndicator />
-          </ActionsheetDragIndicatorWrapper>
-          <HStack space="sm" className="min-w-0 items-center border-b border-border px-4 pb-3">
+          {/* The drag handle is what closes a sheet by dragging; without it
+              nothing can. */}
+          {onClose ? (
+            <ActionsheetDragIndicatorWrapper>
+              <ActionsheetDragIndicator />
+            </ActionsheetDragIndicatorWrapper>
+          ) : null}
+          <HStack space="sm" className={`min-w-0 items-center border-b border-border px-4 pb-3 ${onClose ? '' : 'pt-4'}`}>
             <Icon as={icon} size="sm" className="text-primary" />
             <VStack className="min-w-0 flex-1">
               <Text size="2xs" className="uppercase text-muted-foreground">
@@ -110,14 +131,16 @@ export function ReviewSheet({
               </Text>
             </VStack>
             {headerActions}
-            <Pressable
-              testID={`${testIDBase}.close`}
-              accessibilityLabel="Close"
-              onPress={onClose}
-              className="rounded-sm p-1.5 web:hover:bg-muted/50"
-            >
-              <Icon as={X} size="sm" className="text-muted-foreground" />
-            </Pressable>
+            {onClose ? (
+              <Pressable
+                testID={`${testIDBase}.close`}
+                accessibilityLabel="Close"
+                onPress={onClose}
+                className="rounded-sm p-1.5 web:hover:bg-muted/50"
+              >
+                <Icon as={X} size="sm" className="text-muted-foreground" />
+              </Pressable>
+            ) : null}
           </HStack>
 
           {/* flex:1 + minHeight:0, the Inspector's pattern: gluestack's min-h-0
@@ -127,7 +150,9 @@ export function ReviewSheet({
           {scroll ? (
             <ScrollView
               testID={`${testIDBase}.body`}
-              style={{ flex: 1, minHeight: 0, width: '100%' }}
+              // Fitting, the body takes only what it needs and gives it up
+              // (shrinks, then scrolls) once the sheet reaches its cap.
+              style={fit ? { flexGrow: 0, flexShrink: 1, minHeight: 0, width: '100%' } : { flex: 1, minHeight: 0, width: '100%' }}
               contentContainerStyle={{ padding: 16 }}
               keyboardShouldPersistTaps="handled"
             >

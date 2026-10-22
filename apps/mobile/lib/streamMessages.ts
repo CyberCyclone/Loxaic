@@ -231,6 +231,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         tools.push({
           tool: b.tool,
           summary: toolSummary(b.tool, args),
+          args,
           result: '',
           callId,
           ...withPlan(b.tool, args, row.id),
@@ -317,6 +318,7 @@ export function snapshotMessageToMessage(
         ? sm.tool_calls.map((tc) => ({
             tool: tc.tool,
             summary: toolSummary(tc.tool, tc.args),
+            args: tc.args,
             // Stripped on every path a tool result arrives by (history, snapshot, live).
             result: stripTodoReminder(tc.output ?? ''),
             diff: diffLinesFor(tc.diff),
@@ -485,6 +487,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
                 {
                   tool: event.tool,
                   summary: toolSummary(event.tool, event.args),
+                  args: event.args,
                   result: '',
                   callId: event.call_id,
                   ...withPlan(event.tool, event.args, event.message_id),

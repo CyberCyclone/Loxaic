@@ -1,0 +1,155 @@
+/**
+ * A tool call can be seen in full, before and after it runs — #267.
+ *
+ * - The card's dropdown shows every argument while the call waits for
+ *   approval (and says there is no result yet), then the result once it ran,
+ *   fitted to it: the line height is real pixels on web, not 18 × the font
+ *   size, and a long unbroken token wraps instead of running off the side.
+ * - The agent's permission bar keeps one line of the call; its Details pulls
+ *   up a sheet with the whole of it and the same answers.
+ * - Chat's request is that sheet, opened by itself, which only an answer
+ *   ends: a tap on the backdrop leaves it up.
+ *
+ * The command is a scenario (fixtures/scenarios.json) longer than the bar's
+ * line, ending in a marker only the full command contains.
+ */
+import { browser } from '@wdio/globals';
+import { uniqueCreds } from '../helpers/auth.ts';
+import { shot } from '../helpers/screenshot.ts';
+import {
+  isVisible,
+  platform,
+  scrollTo,
+  tap,
+  testIdSelector,
+  waitForAbsent,
+  waitForFreshText,
+  waitForVisible,
+} from '../helpers/selectors.ts';
+import {
+  TOOL_PROMPT,
+  getToolCalls,
+  goToSurface,
+  sendInNewRun,
+  sendMessage,
+  signUp,
+  startNewAgentRun,
+  waitForRunDone,
+} from '../helpers/app.ts';
+
+const PROMPT = 'show the call in full';
+/** The end of the scenario's 125-character command: past where the bar's
+ * one line stops. */
+const TAIL = 'echo tail-of-a-long-command-for-267';
+const OUTPUT_TAIL = 'tail-of-a-long-command-for-267';
+
+/** A real tap or click near the top of the window: on the backdrop above a
+ * sheet that fits its content. */
+async function tapAboveSheet(): Promise<void> {
+  const { width } = await browser.getWindowSize();
+  const web = platform() === 'web' || platform() === 'electron';
+  await browser
+    .action('pointer', { parameters: { pointerType: web ? 'mouse' : 'touch' } })
+    .move({ x: Math.round(width / 2), y: 60 })
+    .down()
+    .pause(50)
+    .up()
+    .perform();
+  await browser.releaseActions();
+}
+
+describe('tool call details', () => {
+  const creds = uniqueCreds();
+
+  before(async () => {
+    await signUp(creds);
+  });
+
+  it('shows the whole call on the card and in the Details sheet, then the result fitted to it', async function () {
+    this.timeout(4 * 60_000);
+    await goToSurface('agent');
+    await startNewAgentRun();
+    await tap('agent.mode.manual');
+    const conversationId = await sendInNewRun(creds, PROMPT);
+    await waitForVisible('agent.permission.bar', 60_000);
+
+    let callId = '';
+    await browser.waitUntil(
+      async () => {
+        callId = (await getToolCalls(creds, conversationId)).find((c) => c.tool === 'bash')?.call_id ?? '';
+        return callId !== '';
+      },
+      { timeout: 20_000, timeoutMsg: 'the bash call was never stored' },
+    );
+
+    // The card, while the call waits: every argument, and no result yet.
+    await scrollTo(`chat.toolCall.header.${callId}`);
+    await tap(`chat.toolCall.header.${callId}`);
+    await waitForFreshText(`chat.toolCall.arg.${callId}.command`, TAIL);
+    await waitForFreshText(`chat.toolCall.pending.${callId}`, 'No result yet');
+    await shot('tool-details-card-waiting');
+
+    // The bar's Details: the whole command, and the answers under it.
+    await tap('agent.permission.details');
+    await waitForVisible('agent.permission.sheet.panel');
+    await waitForFreshText('agent.permission.sheet.arg.command', TAIL);
+    await shot('tool-details-sheet');
+    await tap('agent.permission.sheet.allow');
+    await waitForAbsent('agent.permission.sheet.panel');
+    await waitForAbsent('agent.permission.bar');
+    await waitForRunDone(creds, conversationId);
+
+    // The same card, now with the result.
+    await scrollTo(`chat.toolCall.resultText.${callId}`);
+    await waitForFreshText(`chat.toolCall.resultText.${callId}`, OUTPUT_TAIL);
+    expect(await isVisible(`chat.toolCall.pending.${callId}`)).toBe(false);
+
+    const p = platform();
+    if (p === 'web' || p === 'electron') {
+      const fit = await browser.execute(
+        (textSel: string, boxSel: string) => {
+          const text = document.querySelector<HTMLElement>(textSel);
+          const box = document.querySelector<HTMLElement>(boxSel);
+          if (!text || !box) return null;
+          return {
+            lineHeight: getComputedStyle(text).lineHeight,
+            textHeight: text.getBoundingClientRect().height,
+            boxHeight: box.getBoundingClientRect().height,
+            textOverflowsSideways: text.scrollWidth > text.clientWidth + 1,
+            boxOverflowsSideways: box.scrollWidth > box.clientWidth + 1,
+          };
+        },
+        testIdSelector(`chat.toolCall.resultText.${callId}`),
+        testIdSelector(`chat.toolCall.result.${callId}`),
+      );
+      if (!fit) throw new Error('the result is not rendered');
+      // Real pixels: a bare 18 on a web span is 18 × the font size.
+      expect(fit.lineHeight).toBe('18px');
+      // The box is the text's height, up to its cap — not a fixed box with
+      // the text centred in it.
+      expect(Math.abs(fit.boxHeight - Math.min(fit.textHeight, 200))).toBeLessThan(2);
+      // The 400-character token wraps.
+      expect(fit.textOverflowsSideways).toBe(false);
+      expect(fit.boxOverflowsSideways).toBe(false);
+    }
+    await shot('tool-details-card-result');
+  });
+
+  it("puts chat's request in a sheet that only an answer ends", async function () {
+    this.timeout(3 * 60_000);
+    await goToSurface('chat');
+    await sendMessage(TOOL_PROMPT);
+    await waitForVisible('chat.approval.panel', 60_000);
+    await waitForFreshText('chat.approval.arg.path', 'notes.txt');
+    await waitForFreshText('chat.approval.arg.content', 'written by the mock agent');
+    await shot('tool-details-chat-sheet');
+
+    await tapAboveSheet();
+    await browser.pause(1_000);
+    expect(await isVisible('chat.approval.panel')).toBe(true);
+    expect(await isVisible('chat.approval.allowOnce')).toBe(true);
+
+    await tap('chat.approval.allowOnce');
+    await waitForAbsent('chat.approval.panel', 20_000);
+  });
+});

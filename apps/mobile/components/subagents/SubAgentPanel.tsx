@@ -113,6 +113,7 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
             <PermissionBar
               key={`${approval.streamId}:${approval.callId}`}
               testIDBase="subagent.permission"
+              detailsSheet={false}
               tool={approval.tool}
               args={approval.args}
               deadline={approval.deadline}

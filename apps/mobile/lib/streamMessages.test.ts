@@ -479,3 +479,35 @@ describe('a web_fetch screenshot reaches the card on every path (#281)', () => {
     expect(m.tools?.[0].browser).toBeUndefined();
   });
 });
+
+describe('a tool call keeps its arguments in full on every path (#267)', () => {
+  const args = { command: `touch a.txt && ${'echo more; '.repeat(30)}`, timeout: 30 };
+
+  it('from the live call', () => {
+    const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '' }];
+    const [m] = applyEventToMsgs(msgs, { kind: 'tool.call', message_id: 'a1', call_id: 'c1', tool: 'bash', args });
+    expect(m.tools?.[0].args).toEqual(args);
+  });
+
+  it('from history', () => {
+    const msgs = reconstructMessages([row({ id: 'a1', content: [{ kind: 'tool_call', call_id: 'c1', tool: 'bash', args }] })]);
+    expect(msgs.find((m) => m.id === 'a1')?.tools?.[0].args).toEqual(args);
+  });
+
+  it('from a snapshot', () => {
+    const [m] = applySnapshotToMsgs([], {
+      messages: [
+        {
+          message_id: 'a1',
+          author_type: 'assistant',
+          parent_id: null,
+          text: '',
+          thinking: '',
+          tool_calls: [{ call_id: 'c1', tool: 'bash', args }],
+          status: 'streaming',
+        },
+      ],
+    } as unknown as StreamSnapshot);
+    expect(m.tools?.[0].args).toEqual(args);
+  });
+});

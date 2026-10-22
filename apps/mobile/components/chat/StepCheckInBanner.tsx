@@ -75,7 +75,7 @@ export function StepCheckInBanner({
   useEffect(() => {
     if (Platform.OS !== 'web') Keyboard.dismiss();
   }, []);
-  // See ToolApprovalDialog: an answer needs an open socket (#231).
+  // See ApprovalActions: an answer needs an open socket (#231).
   const disconnected = !useServerReachable();
   return (
     <VStack
