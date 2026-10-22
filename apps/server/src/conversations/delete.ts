@@ -110,7 +110,9 @@ export async function deleteConversation(id: string, log: DeleteLogger): Promise
  * The conversations of the sub-agents `id` spawned. Found by the parent's id
  * alone, so it still answers after the parent's row is gone — which is what
  * lets the second erase pass collect a child created by a run that was already
- * past authorization when the first pass committed.
+ * past authorization when the first pass committed. A child the first pass
+ * erased is no longer found here at all, so the later passes are also handed
+ * the ids read before it.
  */
 async function childConversationIds(id: string): Promise<string[]> {
   const rows = await db
@@ -196,7 +198,9 @@ function detachedCleanup(
       // message, a stopped tool result), and the ones a send that had already
       // passed authorization was about to write. Both reference a conversation
       // that no longer exists, so nothing but this will ever collect them.
-      await eraseRows(id).catch((err: unknown) => {
+      // The children are named as well as looked up: the first pass deleted their
+      // conversation rows, and with them the only way to find them by parent.
+      await eraseRows(id, childIds).catch((err: unknown) => {
         log.warn({ err, conversationId: id }, "failed to re-erase rows after a deleted conversation's run ended");
       });
     }
@@ -248,7 +252,7 @@ function detachedCleanup(
       // whether or not the run was seen to end.
       if (!ended) {
         const endedLate = await waitForRunEnd(id, unwindCeilingMs());
-        await eraseRows(id).catch((err: unknown) => {
+        await eraseRows(id, childIds).catch((err: unknown) => {
           log.warn({ err, conversationId: id }, "failed the final erase for a deleted conversation");
         });
         if (!endedLate) {
@@ -268,8 +272,11 @@ function detachedCleanup(
  * `conversation_shares` is the only table with a foreign key to
  * `conversations`, so it cascades; nothing else does, which is exactly why
  * this function exists rather than a bare DELETE.
+ *
+ * `knownChildIds` are sub-agents erased with it in an earlier pass, whose
+ * conversation rows are gone and so cannot be found by parent any more.
  */
-async function eraseRows(id: string): Promise<void> {
+async function eraseRows(id: string, knownChildIds: Iterable<string> = []): Promise<void> {
   await db.transaction(async (tx) => {
     // Its sub-agents go with it, in the same transaction: their conversations
     // carry no foreign key to this one (and a cascade could not reach their
@@ -280,8 +287,8 @@ async function eraseRows(id: string): Promise<void> {
       .select({ id: conversations.id })
       .from(conversations)
       .where(eq(conversations.parentConversationId, id));
-    if (children.length > 0) {
-      const childIds = children.map((c) => c.id);
+    const childIds = [...new Set([...knownChildIds, ...children.map((c) => c.id)])];
+    if (childIds.length > 0) {
       await tx.delete(messages).where(inArray(messages.conversationId, childIds));
       await tx
         .update(usageRecords)

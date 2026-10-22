@@ -16,7 +16,7 @@ import {
 import { isToolName } from "@loxaic/agent";
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
 import { NotFoundError, actingRole, assertConversationAccess, resolveAccess } from "../../authz.ts";
-import { getRun, getRunByConversation } from "../../registry.ts";
+import { getRun, getRunByConversation, registerRun, unregisterRun } from "../../registry.ts";
 import { startAgentRun } from "../agentRun.ts";
 import { startChatRun } from "../chatRun.ts";
 import { listSubagents, reconcileOrphanedSubagents, runSubagent } from "../subagentRun.ts";
@@ -812,4 +812,57 @@ describe("sub-agents", () => {
     // The stream log held its transcript too.
     await waitFor("the child's stream log to go", async () => (await getStreamBroker().getMeta(info.streamId)) === null);
   }, 30_000);
+
+  it("erases what a child writes after its row is gone, once the thread's run has unwound", async () => {
+    // The order the race needs, made deterministic: the first pass erases the
+    // child's conversation row while the parent's run still holds the thread,
+    // the child then writes on its way out, and only then does the run end.
+    const convId = await newConversation();
+    const [child] = await db
+      .insert(conversations)
+      .values({
+        ownerId: userId,
+        title: "Unwinding",
+        kind: "subagent",
+        parentConversationId: convId,
+        parentMessageId: uuid(),
+        parentCallId: "call_0",
+        subagent: { description: "Unwinding", model: MODEL, mode: "auto", streamId: uuid(), status: "running", startedAt: Date.now() } satisfies SubAgentInfo,
+      })
+      .returning();
+    // Its parent is erased with it, so `afterAll` would no longer find it.
+    convIds.push(child.id);
+    const runStreamId = uuid();
+    let usageId = "";
+    registerRun({ streamId: runStreamId, conversationId: convId, userId, abort: new AbortController(), approvals: new Map() });
+    try {
+      await purgeConversation(convId, { warn: () => undefined });
+      expect(await db.query.conversations.findFirst({ where: eq(conversations.id, child.id) })).toBeUndefined();
+
+      // What the child writes while it unwinds: its cancelled reply, and the
+      // usage of the request that was cut off.
+      const lateId = uuid();
+      await db.insert(messages).values({
+        id: lateId,
+        conversationId: child.id,
+        authorType: "assistant",
+        origin: "server",
+        lamport: Date.now(),
+        content: [{ kind: "text", text: "The task the parent handed over." }],
+        status: "cancelled",
+        createdAt: new Date(),
+      });
+      usageId = uuid();
+      await db
+        .insert(usageRecords)
+        .values({ id: usageId, userId, conversationId: child.id, messageId: lateId, model: MODEL, inputTokens: 1, outputTokens: 1 });
+    } finally {
+      unregisterRun(runStreamId);
+    }
+
+    await waitFor("the child's late row to be erased", async () => (await rowsOf(child.id)).length === 0, 5_000);
+    // Usage is kept and detached, as the first pass does.
+    const usage = await db.query.usageRecords.findFirst({ where: eq(usageRecords.id, usageId) });
+    expect(usage).toMatchObject({ conversationId: null, messageId: null });
+  });
 });
