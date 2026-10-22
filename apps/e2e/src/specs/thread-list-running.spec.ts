@@ -96,6 +96,7 @@ describe('running status in the thread list', () => {
     // other than the one running. In a thread of its own: the chat surface
     // reopens whichever thread an earlier spec left open for this admin.
     await startNewThread('chat');
+    await waitForComposerReady();
     const idleChat = await sendAndCapture('a thread to switch back to');
     await waitForRunDone(adminCreds(), idleChat);
 

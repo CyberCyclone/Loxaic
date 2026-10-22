@@ -552,11 +552,19 @@ there is no container engine. `E2E_SANDBOX_MODE=host` adapts stand-up to that:
 - **Proxy and browser:** the egress proxy listens on loopback, and web_fetch's Chromium runs without its own sandbox (`BROWSER_NO_SANDBOX=1`).
 - **The mock registry:** not started, because it needs Docker.
 
-Specs about the engine itself skip with a stated reason (`requiresContainerEngine`):
-- the custom-image specs;
-- `sandbox-degraded`, which switches the pinned mode.
+What host mode cannot have skips, with its reason (`requiresContainerEngine`):
+- **The engine itself:** the custom-image specs (`custom-images`, `custom-images-switch`), and
+  `sandbox-settings`' engine picker and mode switch.
+- **A mode switch:** `sandbox-degraded`, and `sandbox-bash`'s live switch to host mode.
+- **A sandbox without network** (a host sandbox always has it): the no-network cases in
+  `bash-classifier`, `agent-live-mode` and `agent-github-workspace`. Their other cases, where the
+  sandbox has the network, still run.
+- **A container's stop:** `agent-stop`'s "Stopping…" (a host-mode kill is immediate), and
+  `sandbox-allocation`'s Pause (offered for a container only). Its refusal and the Sandboxes
+  screen still run.
 
-Everything a person does in a chat still runs.
+Everything else a person does in a chat runs. `E2E_SANDBOX_MODE=host` with `E2E_NO_STANDUP=1`
+checks that the running server is in host mode; with `E2E_SELF_CONTAINED=1` it is refused.
 
 ## Writing a spec
 

@@ -13,7 +13,7 @@
  * up every time, so a retry is visibly a new reply rather than the same echo.
  */
 import { browser } from '@wdio/globals';
-import { BASE_URL, mockProviderApiBase } from '../../scripts/standup.ts';
+import { BASE_URL, SANDBOX_HOST_MODE, mockProviderApiBase } from '../../scripts/standup.ts';
 import { VALID_KEY } from '../../scripts/mock-provider.ts';
 import { adminCreds, apiToken, provisionAdmin, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
@@ -35,7 +35,6 @@ import {
   startNewThread,
   waitForComposerReady,
   waitForRunDone,
-  requiresContainerEngine,
 } from '../helpers/app.ts';
 import { attachImage } from '../helpers/attachments.ts';
 import { pauseServer, resumeServer } from '../helpers/server.ts';
@@ -305,11 +304,11 @@ describe('rewinding and retrying', () => {
   });
 
   it("puts back the files the agent's edit tools changed, and leaves what a command made", async function () {
-    requiresContainerEngine(this, 'it switches the sandbox mode, which host mode pins');
     this.timeout(5 * 60_000);
     // A host sandbox: no container engine needed, and its files are the
-    // server's to read back through the exec API.
-    await patchSandboxSettings({ mode: 'host' });
+    // server's to read back through the exec API. A server pinned to host
+    // mode is one already.
+    if (!SANDBOX_HOST_MODE) await patchSandboxSettings({ mode: 'host' });
     const known = new Set((await listConversations(alice)).map((c) => c.id));
     await goToSurface('agent');
     await chooseScratchWorkspace();

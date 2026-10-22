@@ -620,10 +620,30 @@ async function ensureServer(): Promise<void> {
   log('server is healthy');
 }
 
+/**
+ * E2E_SANDBOX_MODE=host is this process's belief; a server this harness did
+ * not start has to share it, or specs skip what it could run and settings
+ * resets leave its mode alone.
+ */
+async function assertServerInHostMode(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/v1/config`).catch(() => null);
+  const mode = res?.ok ? ((await res.json()) as { sandbox?: { mode?: string } }).sandbox?.mode : undefined;
+  if (mode !== 'host') {
+    throw new Error(
+      `E2E_SANDBOX_MODE=host, but the server at ${BASE_URL} runs sandboxes in mode "${mode ?? 'unknown'}". ` +
+        'Start it with SANDBOX_MODE=host, or leave E2E_SANDBOX_MODE unset.',
+    );
+  }
+}
+
 export async function standup(): Promise<{ baseUrl: string }> {
   if (process.env.E2E_NO_STANDUP === '1') {
     log(`E2E_NO_STANDUP=1 — assuming a stack is already serving ${BASE_URL}`);
+    if (SANDBOX_HOST_MODE) await assertServerInHostMode();
     return { baseUrl: BASE_URL };
+  }
+  if (SELF_CONTAINED && SANDBOX_HOST_MODE) {
+    throw new Error('E2E_SANDBOX_MODE=host pins the server this harness starts; E2E_SELF_CONTAINED=1 starts none.');
   }
   if (SELF_CONTAINED) {
     log(`E2E_SELF_CONTAINED=1 — the packaged app brings its own stack at ${BASE_URL}`);

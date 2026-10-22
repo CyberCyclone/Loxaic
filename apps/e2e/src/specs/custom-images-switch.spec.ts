@@ -7,7 +7,7 @@
  * loaded through the API; loading one through the screens is
  * custom-images.spec.ts's subject.
  */
-import { BASE_URL, mockRegistry } from '../../scripts/standup.ts';
+import { BASE_URL, SANDBOX_HOST_MODE, mockRegistry } from '../../scripts/standup.ts';
 import { REGISTRY_PASSWORD, REGISTRY_USERNAME } from '../../scripts/mock-registry.ts';
 import { adminCreds, apiToken, provisionAdmin, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
@@ -86,6 +86,8 @@ describe("changing a conversation's image (#253)", function () {
   });
 
   after(async () => {
+    // Mocha runs `after` even when `before` skipped the suite.
+    if (SANDBOX_HOST_MODE) return;
     const admin = adminCreds();
     await api(admin, 'DELETE', `/v1/admin/images/${sharedId}`).catch(() => undefined);
     const logins = ((await api(admin, 'GET', '/v1/admin/images/logins').catch(() => ({ logins: [] }))) as { logins: { id: string }[] }).logins;

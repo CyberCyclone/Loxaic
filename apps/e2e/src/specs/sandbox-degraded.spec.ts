@@ -17,6 +17,7 @@ import {
   startNewAgentRun,
   requiresContainerEngine,
 } from '../helpers/app.ts';
+import { SANDBOX_HOST_MODE } from '../../scripts/standup.ts';
 
 describe('sandbox degraded UX', () => {
   before(async function () {
@@ -29,6 +30,8 @@ describe('sandbox degraded UX', () => {
   });
 
   after(async () => {
+    // Mocha runs `after` even when `before` skipped the suite.
+    if (SANDBOX_HOST_MODE) return;
     await resetSandboxSettings();
   });
 

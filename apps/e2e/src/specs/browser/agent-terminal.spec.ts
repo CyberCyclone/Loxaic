@@ -27,7 +27,6 @@ import {
   sendMessage,
   signIn,
   waitForRunDone,
-  execInSandbox,
   listSandboxes,
 } from '../../helpers/app.ts';
 
@@ -65,11 +64,13 @@ describe('agent terminal panel', () => {
     await waitForTextIn('chat.messageList', MOCK_TOOL_DONE);
     const [conversation] = await listConversations(creds);
     await waitForRunDone(creds, conversation.id);
-    // Where the agent's own commands run, asked of the sandbox: the checkout
-    // in a container, the sandbox's folder in host mode (#320).
+    // Where the agent's own commands run, fixed here rather than asked of the
+    // code under test: the checkout in a container, the sandbox's own folder's
+    // checkout in host mode (#320).
     const token = await apiToken(creds);
     const [sandbox] = await listSandboxes(token, conversation.id);
-    workdir = (await execInSandbox(token, sandbox.id, 'pwd')).stdout.trim();
+    workdir = sandbox.provider === 'host' ? `${sandbox.containerId}/repo` : '/home/loxaic/repo';
+    expect(workdir.length).toBeGreaterThan('/repo'.length);
 
     await tap('agent.terminal.toggle');
     await waitForVisible('agent.terminal.panel');
