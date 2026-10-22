@@ -27,7 +27,7 @@ import { permissionBadge } from '@/lib/permissionBar';
 import { useSession } from '@/lib/session';
 import { ImageViewer } from '@/components/viewer/ImageViewer';
 import { CARD_VALUE_MAX_HEIGHT, ToolCallDetails } from '@/components/chat/ToolCallDetails';
-import { WRAP_ANYWHERE } from '@/lib/truncate';
+import { TRUNCATE_TEXT, WRAP_ANYWHERE } from '@/lib/truncate';
 
 const TOOL_ICONS: Record<string, typeof FileText> = {
   fs_read: FileText,
@@ -110,7 +110,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
           [tool.browser ? 'Opened in a browser' : null, failed ? 'Tool call failed' : null].filter(Boolean).join(', ') || undefined
         }
       >
-        <HStack className="items-center gap-2 px-3 py-2">
+        <HStack className="min-w-0 items-center gap-2 px-3 py-2">
           {/* The failure is carried by colour alone otherwise, which no test
               can select on. */}
           <Box
@@ -125,7 +125,9 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
               <Icon as={ToolIcon} size="xs" />
             )}
           </Box>
-          <Text size="sm" className="flex-1 text-card-foreground" numberOfLines={1}>
+          {/* One line on web as on native: the whole call is in the dropdown
+              (#267), so the header need not wrap to show it. */}
+          <Text size="sm" className="min-w-0 flex-1 text-card-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
             {mcp ? (
               <>
                 {`${mcp.server} · ${mcp.tool}`}
