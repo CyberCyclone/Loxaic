@@ -134,6 +134,9 @@ export interface ToolCall {
   /** web_fetch loaded the page in the chat's own browser (#281), not the
    * plain fetch. Same three construction sites as `images`. */
   browser?: true
+  /** A failure a person can act on (#254: the sandbox allocation is full),
+   * so the card offers the way out. Same three construction sites. */
+  notice?: import('@loxaic/types').ToolNotice
 }
 
 export interface DiffLine {

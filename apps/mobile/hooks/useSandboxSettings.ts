@@ -40,7 +40,11 @@ export function useSandboxSettings(token: string | null) {
       // Optimistic per-field merge — a full server round trip (engine probe
       // included) can take a couple seconds and the picker should react
       // immediately; refresh() below reconciles once the real response lands.
-      setSettings((s) => (s ? { ...s, ...patch } : s));
+      // The allocation is merged a level down, as the server merges it: a
+      // patch naming one of its fields leaves the others as they are.
+      setSettings((s) =>
+        s ? { ...s, ...patch, allocation: s.allocation && { ...s.allocation, ...patch.allocation } } : s,
+      );
       try {
         const next = await updateSandboxSettings(patch);
         setSettings(next);

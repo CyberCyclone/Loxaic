@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { adminListUsers, adminResetUserPassword, type AdminUser } from '@loxaic/api-client';
+import { adminListUsers, adminResetUserPassword, type AdminUser, type UserSandboxAllocation } from '@loxaic/api-client';
 import { VStack } from '@/components/ui/vstack';
 import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
@@ -12,6 +12,8 @@ import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { describeRequestError, useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { UserAllocationModal } from '@/components/admin/UserAllocationModal';
+import { allocationSummary } from '@/lib/sandboxAllocation';
 
 /**
  * Accounts on this server, and resetting a forgotten password — the only way
@@ -37,6 +39,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<AdminUser | null>(null);
   const [result, setResult] = useState<{ email: string; temporaryPassword: string } | null>(null);
+  const [allocating, setAllocating] = useState<(AdminUser & { sandbox: UserSandboxAllocation }) | null>(null);
   // Typing is debounced — each search is two scans of the user table on the
   // server — and only the newest answer may land, or a slow early one
   // overwrites the list for what was typed after it.
@@ -179,6 +182,29 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
               <Text size="xs" className="min-w-0 text-muted-foreground" style={TRUNCATE_TEXT}>
                 {item.email}
               </Text>
+              {/* Absent from a server that predates allocations (#254). Your
+                  own row too: an admin raises their own here like anyone's. */}
+              {item.sandbox && (
+                <Button
+                  testID={`admin.user.${item.id}.allocation`}
+                  variant="link"
+                  size="sm"
+                  className="h-auto self-start px-0 py-0"
+                  isDisabled={!reachable}
+                  onPress={() => {
+                    const sandbox = item.sandbox;
+                    if (sandbox) setAllocating({ ...item, sandbox });
+                  }}
+                >
+                  <ButtonText testID={`admin.user.${item.id}.allocation.label`} className="text-2xs font-normal">
+                    {`Sandboxes: ${allocationSummary(item.sandbox.allocation, item.sandbox.used)}${
+                      item.sandbox.overridden.memoryMb || item.sandbox.overridden.cpus || item.sandbox.overridden.maxRunning
+                        ? ' (set for them)'
+                        : ''
+                    }`}
+                  </ButtonText>
+                </Button>
+              )}
             </VStack>
             {item.id === currentUserId ? (
               <Text size="xs" className="shrink-0 text-muted-foreground">
@@ -198,6 +224,12 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
             )}
           </HStack>
         )}
+      />
+
+      <UserAllocationModal
+        user={allocating}
+        onClose={() => { setAllocating(null); }}
+        onSaved={() => { void load(query); }}
       />
 
       <WarningConfirmModal

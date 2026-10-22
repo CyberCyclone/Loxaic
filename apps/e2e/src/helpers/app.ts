@@ -1090,6 +1090,9 @@ export async function resetSandboxSettings(): Promise<void> {
       reapEnabled: true,
       reapAfterMs: 30 * 24 * 60 * 60 * 1000,
       customImages: 'off',
+      // The default per-user allocation (#254), so a spec that lowered it
+      // does not refuse every later spec's sandbox.
+      allocation: { memoryMb: 2560, cpus: 5, maxRunning: 5 },
     }),
   });
   if (!res.ok) {
@@ -1097,6 +1100,70 @@ export async function resetSandboxSettings(): Promise<void> {
       `[e2e] sandbox settings reset failed (${String(res.status)}): ${await res.text()}`,
     );
   }
+}
+
+/** The Sandboxes screen (#254), reached from Settings. */
+export async function openSandboxes(): Promise<void> {
+  await openSidebar();
+  await tap('sidebar.settings');
+  await scrollTo('settings.nav.sandboxes');
+  await tap('settings.nav.sandboxes');
+  await waitForVisible('sandboxes.bar.running');
+}
+
+export interface MyAllocation {
+  allocation: { memoryMb: number; cpus: number; maxRunning: number };
+  used: { running: number; memoryMb: number; cpus: number };
+  sandboxes: { id: string; conversation_id: string | null; provider: string; status: string; busy: boolean }[];
+}
+
+/** The signed-in user's allocation and sandboxes, from the API (#254). */
+export async function myAllocation(creds: Pick<Credentials, 'email' | 'password'>): Promise<MyAllocation> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/sandboxes/allocation`, { headers: { authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`[e2e] GET /v1/sandboxes/allocation failed (${String(res.status)})`);
+  return (await res.json()) as MyAllocation;
+}
+
+/** Pauses every running container sandbox of this user's (#254), so a spec
+ * that counts sandboxes starts from none — earlier specs leave theirs
+ * running for the idle timer. */
+export async function pauseAllMySandboxes(creds: Pick<Credentials, 'email' | 'password'>): Promise<void> {
+  const token = await apiToken(creds);
+  for (const row of (await myAllocation(creds)).sandboxes) {
+    if (row.status !== 'running' || row.provider !== 'container') continue;
+    const res = await fetch(`${BASE_URL}/v1/sandboxes/${row.id}/pause`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`[e2e] pausing ${row.id} failed (${String(res.status)}): ${await res.text()}`);
+  }
+}
+
+/** Sets (a patch) or clears (null) one user's allocation override, as an admin. */
+export async function setUserAllocation(
+  userId: string,
+  patch: Partial<Record<'memoryMb' | 'cpus' | 'maxRunning', number | null>> | null,
+): Promise<void> {
+  const token = await apiToken(adminCreds());
+  const res = await fetch(`${BASE_URL}/v1/admin/users/${encodeURIComponent(userId)}/sandbox-allocation`, {
+    method: patch === null ? 'DELETE' : 'PUT',
+    headers: { authorization: `Bearer ${token}`, ...(patch === null ? {} : { 'content-type': 'application/json' }) },
+    ...(patch === null ? {} : { body: JSON.stringify(patch) }),
+  });
+  if (!res.ok) throw new Error(`[e2e] allocation change for ${userId} failed (${String(res.status)}): ${await res.text()}`);
+}
+
+/** A user's id, looked up by email through the admin list. */
+export async function userIdFor(email: string): Promise<string> {
+  const token = await apiToken(adminCreds());
+  const res = await fetch(`${BASE_URL}/v1/admin/users?q=${encodeURIComponent(email)}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] GET /v1/admin/users failed (${String(res.status)})`);
+  const found = ((await res.json()) as { users: { id: string; email: string }[] }).users.find((u) => u.email === email);
+  if (!found) throw new Error(`[e2e] no user ${email}`);
+  return found.id;
 }
 
 /**

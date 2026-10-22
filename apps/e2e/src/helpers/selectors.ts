@@ -283,6 +283,35 @@ export async function scrollTo(id: string, timeout = 20_000, across = 0.5): Prom
   await byTestId(id).waitForDisplayed({ timeout });
 }
 
+/**
+ * `scrollTo`, then on a phone brings the element towards the middle of the
+ * screen. XCUITest calls an element under a fixed header "displayed" while it
+ * is found and "not displayed" when it is tapped, so the edge of the scrolled
+ * area is not a place to leave it.
+ */
+export async function scrollToMiddle(id: string): Promise<void> {
+  await scrollTo(id);
+  const p = platform();
+  if (p === 'web' || p === 'electron') return;
+  const { width, height } = await browser.getWindowSize();
+  for (let i = 0; i < 4; i++) {
+    const { y } = await byTestId(id).getLocation();
+    const at = y / height;
+    if (at > 0.3 && at < 0.7) return;
+    const shift = Math.max(-0.3, Math.min(0.3, 0.5 - at));
+    const from = shift > 0 ? 0.35 : 0.65;
+    await browser
+      .action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ x: Math.round(width / 2), y: Math.round(height * from) })
+      .down()
+      .pause(100)
+      .move({ duration: 400, x: Math.round(width / 2), y: Math.round(height * (from + shift)) })
+      .up()
+      .perform();
+    await browser.pause(300);
+  }
+}
+
 export async function waitForVisible(id: string, timeout = 20_000): Promise<void> {
   await byTestId(id).waitForDisplayed({ timeout });
 }

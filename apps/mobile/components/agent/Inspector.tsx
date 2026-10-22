@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Linking, ScrollView } from 'react-native';
+import { useRouter } from 'expo-router';
 import { X, Check, Circle, Loader } from 'lucide-react-native';
 import { Switch } from '@/components/ui/switch';
 import { Box } from '@/components/ui/box';
@@ -107,6 +108,7 @@ function InstructionsSection({ workspace }: { workspace: WorkspaceView }) {
  * in-app half of the warning that issue #5 will eventually also push.
  */
 function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
+  const router = useRouter();
   const { retention, sandbox } = workspace;
   const ws = workspace.workspace ?? { kind: 'scratch' as const };
   const paused = sandbox?.status === 'stopped';
@@ -200,6 +202,12 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
           Deleted {formatDeadline(sandbox.reap_at)} unless this conversation is used again.
         </Text>
       )}
+      {/* Every sandbox of yours against your allocation, with Pause (#254). */}
+      <Pressable testID="agent.inspector.workspace.sandboxes" onPress={() => { router.push('/sandboxes'); }}>
+        <Text size="2xs" className="text-link">
+          Your sandboxes and allocation
+        </Text>
+      </Pressable>
     </VStack>
   );
 }
