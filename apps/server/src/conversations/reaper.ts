@@ -13,7 +13,7 @@
 import { db, and, eq, isNotNull, lt } from "@loxaic/db";
 import { conversations } from "@loxaic/db/schema";
 import { conversationRetentionUnknown, getConversationSettings } from "../settings.ts";
-import { purgeConversations, type DeleteLogger } from "./delete.ts";
+import { purgeConversations, sweepOrphanedRows, type DeleteLogger } from "./delete.ts";
 
 /** How often the sweep runs once started. Matches the attachment sweep: a
  * retention window is measured in days, so the hour it takes to notice one
@@ -70,6 +70,24 @@ export async function sweepRetainedConversations(ownerId?: string): Promise<numb
     rows.map((r) => r.id),
     consoleLogger,
   );
+}
+
+/**
+ * Sweeps rows left by erased conversations (`sweepOrphanedRows`) on the same
+ * hour. Unlike the sweep above it never stands down on an unreadable policy:
+ * what it erases belongs to no conversation under any policy.
+ */
+export function startOrphanRowReaper(onSweep?: (count: number) => void): NodeJS.Timeout {
+  const timer = setInterval(() => {
+    void sweepOrphanedRows().then(
+      (n) => {
+        if (n > 0) onSweep?.(n);
+      },
+      () => undefined,
+    );
+  }, SWEEP_INTERVAL_MS);
+  timer.unref();
+  return timer;
 }
 
 export function startConversationReaper(onSweep?: (count: number) => void): NodeJS.Timeout {

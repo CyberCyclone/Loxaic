@@ -16,7 +16,7 @@
  *
  * The ordering below is the load-bearing part, and it is not the obvious one.
  */
-import { db, and, eq, inArray } from "@loxaic/db";
+import { db, and, eq, inArray, isNotNull, lt, sql } from "@loxaic/db";
 import { checkpointFiles, conversations, messages, routineRuns, sandboxes, usageRecords } from "@loxaic/db/schema";
 import { destroyConversationSandboxes } from "../agent/sandbox-manager.ts";
 import { closeConversationBrowser } from "../browser/manager.ts";
@@ -384,4 +384,61 @@ export async function purgeConversations(ids: string[], log: DeleteLogger): Prom
     }
   }
   return purged;
+}
+
+/**
+ * How old a row of a missing conversation must be before the sweep below takes
+ * it. Every writer inserts its conversation first (a routine's run shares a
+ * transaction with it), so this is a margin rather than a guard against a
+ * known race, and it is well past the delete's own final pass.
+ */
+const ORPHAN_GRACE_MS = 60 * 60 * 1000;
+
+type ConversationIdColumn =
+  | typeof messages.conversationId
+  | typeof checkpointFiles.conversationId
+  | typeof routineRuns.conversationId
+  | typeof usageRecords.conversationId;
+
+/**
+ * Erases what `eraseRows` would have, for every conversation whose row is
+ * gone: messages, checkpoint manifests and routine runs deleted, usage kept
+ * and detached. Returns how many messages it deleted.
+ *
+ * The backstop, not the mechanism. A delete collects its own rows in its
+ * passes above; what it cannot collect is a row written after its last one, by
+ * a run that outlived even the ceiling. Such a row keeps the content of a
+ * conversation the user was told was erased, and its uploads with it, since
+ * `files/reaper.ts` only collects an attachment no message references.
+ *
+ * A retained conversation still has its row, so nothing of it is touched here.
+ *
+ * `scope` limits it to those conversation ids. Production passes nothing; the
+ * suites share one Postgres, and an unscoped sweep would act on whatever
+ * another suite is in the middle of.
+ */
+export async function sweepOrphanedRows(scope?: { conversationIds: string[] }): Promise<number> {
+  const cutoff = new Date(Date.now() - ORPHAN_GRACE_MS);
+  const orphaned = (conversationId: ConversationIdColumn) =>
+    and(
+      sql`NOT EXISTS (SELECT 1 FROM ${conversations} WHERE ${conversations.id} = ${conversationId})`,
+      scope ? inArray(conversationId, scope.conversationIds) : undefined,
+    );
+  return db.transaction(async (tx) => {
+    const erased = await tx
+      .delete(messages)
+      .where(and(orphaned(messages.conversationId), lt(messages.createdAt, cutoff)))
+      .returning({ id: messages.id });
+    await tx
+      .delete(checkpointFiles)
+      .where(and(orphaned(checkpointFiles.conversationId), lt(checkpointFiles.createdAt, cutoff)));
+    await tx
+      .delete(routineRuns)
+      .where(and(orphaned(routineRuns.conversationId), lt(routineRuns.startedAt, cutoff)));
+    await tx
+      .update(usageRecords)
+      .set({ conversationId: null, messageId: null })
+      .where(and(isNotNull(usageRecords.conversationId), orphaned(usageRecords.conversationId), lt(usageRecords.createdAt, cutoff)));
+    return erased.length;
+  });
 }
