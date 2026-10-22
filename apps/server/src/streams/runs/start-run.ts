@@ -1,7 +1,7 @@
 import type { AttachmentRef } from "@loxaic/types";
 import { turnErrorText } from "../error-text.ts";
 import { getStreamBroker } from "../index.ts";
-import { unregisterRun, type RunHandle } from "../registry.ts";
+import { startModeLog, unregisterRun, type RunHandle } from "../registry.ts";
 import type { StreamProducer } from "../broker.ts";
 import { announceNewRun } from "../watchers.ts";
 import { runToolLoop } from "./engine.ts";
@@ -69,6 +69,7 @@ export async function startRunOnRow(input: {
     ...(row.attachments.length ? { attachments: row.attachments } : {}),
   });
   producer.emit({ kind: "message.end", message_id: row.id, status: "complete" });
+  startModeLog(claim, (mode) => { producer.emit({ kind: "run.mode", mode }); });
   announceNewRun(convId, streamId);
 
   // Wired before the loop starts, because a run that fails inside its first

@@ -65,7 +65,7 @@ export interface RunHandle {
    */
   mode?: PermissionMode;
   /** Writes the change into the run's log, so every device following it
-   * hears. Set by the tool loop once its producer is open. */
+   * hears. Set by `startModeLog` the moment the run's producer opens. */
   emitMode?: (mode: PermissionMode) => void;
   /** The approvals waiting in this run, each told to decide its call again
    * when the mode changes. Through `onRunModeChange` only. */
@@ -101,6 +101,18 @@ export function setRunMode(handle: RunHandle, requested: PermissionMode): boolea
   handle.emitMode?.(next);
   for (const listener of [...(handle.modeListeners ?? [])]) listener();
   return true;
+}
+
+/**
+ * Put the run's mode in its log now, and every switch from here on (#311).
+ * Called by whatever opens the run's producer, so a switch made before the
+ * tool loop starts is in the log too. A run with no mode (chat, compaction)
+ * logs none.
+ */
+export function startModeLog(handle: RunHandle, emit: (mode: PermissionMode) => void): void {
+  if (handle.mode === undefined) return;
+  handle.emitMode = emit;
+  emit(handle.mode);
 }
 
 /** Be told when the run's mode changes; returns the way to stop. */

@@ -13,6 +13,7 @@ import {
   sendStepsDecision,
   createConversation,
   deleteConversation,
+  getConversation,
   getConversations,
   getMessages,
   updateConversation,
@@ -57,7 +58,7 @@ import { ConversationWatches } from '@/lib/conversationWatch';
 import { rowBadgesFor, useRunNotices } from './useRunNotices';
 import { isSubAgentEvent } from '@/lib/subAgents';
 import { useSubAgentState } from './useSubAgentState';
-import { followSelector, modeChangeNotice, type SelectorSource } from '@/lib/modeSelector';
+import { followSelector, modeChangeNotice, ownStoredMode, type SelectorSource } from '@/lib/modeSelector';
 
 export type { WorkspaceChoice } from '@/lib/types';
 
@@ -310,6 +311,23 @@ export function useAgentSession(
     subscribeStreams(ws, convId, tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined);
   }, []);
 
+  /** A thread's last mode (#311), as the server stored it or a pick here set it. */
+  const recordThreadMode = useCallback((convId: string, next: PermissionMode | null) => {
+    setRuns((prev) =>
+      prev.some((r) => r.id === convId && (r.permissionMode ?? null) !== next)
+        ? prev.map((r) => (r.id === convId ? { ...r, permissionMode: next } : r))
+        : prev,
+    );
+  }, []);
+  /** Read the thread's stored mode again. Picks on an idle thread are told
+   * only to sockets watching it, so a device that was not, or was offline,
+   * holds an old one; opening the thread, or reconnecting on it, asks. */
+  const refreshThreadMode = useCallback((convId: string) => {
+    getConversation(convId)
+      .then((c) => { recordThreadMode(convId, c.permissionMode ?? null); })
+      .catch(() => undefined);
+  }, [recordThreadMode]);
+
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
     setActiveIdState(id);
@@ -318,6 +336,7 @@ export function useAgentSession(
     // heard of them, and the id gets swapped for the real one as soon as
     // turn.started arrives, no fetch required.
     if (!id || !isServerConvId(id)) return;
+    refreshThreadMode(id);
     // What its runs spawned before this session — once per thread.
     loadSubAgents(id);
     // Watched only after the history fetch settles, as the chat hook does. A
@@ -350,16 +369,7 @@ export function useAgentSession(
         setHistorySettledIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
         watchConversation(id);
       });
-  }, [recordPaging, watchConversation, loadSubAgents]);
-
-  /** A thread's last mode (#311), as its run or a pick here last set it. */
-  const recordThreadMode = useCallback((convId: string, next: PermissionMode) => {
-    setRuns((prev) =>
-      prev.some((r) => r.id === convId && r.permissionMode !== next)
-        ? prev.map((r) => (r.id === convId ? { ...r, permissionMode: next } : r))
-        : prev,
-    );
-  }, []);
+  }, [recordPaging, watchConversation, loadSubAgents, refreshThreadMode]);
 
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: updater(r.msgs) } : r)));
@@ -409,7 +419,11 @@ export function useAgentSession(
         setRuns((prev) => {
           const existing = new Set(prev.map((r) => r.id));
           const fresh = apiRuns.filter((r) => !existing.has(r.id));
-          return [...fresh, ...prev];
+          // A thread already here keeps its messages, and takes the stored
+          // mode as the server has it now (#311).
+          const stored = new Map(apiRuns.map((r) => [r.id, r.permissionMode ?? null]));
+          const kept = prev.map((r) => (stored.has(r.id) && stored.get(r.id) !== (r.permissionMode ?? null) ? { ...r, permissionMode: stored.get(r.id) } : r));
+          return [...fresh, ...kept];
         });
 
         // History for this run — and any other the user selects — is fetched
@@ -545,14 +559,6 @@ export function useAgentSession(
         updateRunMsgs(convId, (msgs) =>
           applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now, now: arrivedAt }),
         );
-        // A switch made elsewhere while this socket was away is the thread's
-        // mode now, as the server recorded it. Only a switch: the run's mode
-        // alone is not the thread's when Planning was picked meanwhile.
-        const heardMode = runLevelOf(runLevelsRef.current, convId).runMode;
-        const snapshotMode = event.snapshot.mode;
-        if (event.status === 'active' && snapshotMode && heardMode && heardMode !== snapshotMode) {
-          recordThreadMode(convId, snapshotMode);
-        }
         applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
         const stageSnapshot = event.snapshot.context_stage;
         if (stageSnapshot) {
@@ -634,7 +640,6 @@ export function useAgentSession(
         });
 
         const inner = event.event;
-        if (inner.kind === 'run.mode') recordThreadMode(convId, inner.mode);
         if (inner.kind === 'context.stage') {
           const { kind: _kind, ...status } = inner;
           setStageCardByConv((prev) => ({ ...prev, [convId]: foldStageCard(prev[convId] ?? null, event.stream_id, status, Date.now()) }));
@@ -688,7 +693,13 @@ export function useAgentSession(
         // A run may have JIT-loaded the model, changing the context window.
         onStreamEndRef.current?.();
       } else if (event.type === 'agent.mode_changed') {
-        setModeState(event.mode);
+        // For clients older than #311, which moved their selector on it. It
+        // names no thread and can land after the person has opened another,
+        // so it is ignored: the selector is this device's, the run's mode
+        // comes through its log, and the thread's through `conversation.mode`.
+      } else if (event.type === 'conversation.mode') {
+        // The owner picked or sent on another device (or this one).
+        recordThreadMode(event.conversation_id, event.mode);
       } else if (event.type === 'conversation.workspace') {
         // Its owner moved it to another image (#253), maybe on another
         // device: the pill and the Inspector follow.
@@ -757,6 +768,9 @@ export function useAgentSession(
         attempt = 0;
         trackSocket(SOCKET_KEY, 'open');
         resubscribeKnown();
+        // Whatever was picked on the open thread while this socket was away.
+        const openId = activeIdRef.current;
+        if (openId && isServerConvId(openId)) refreshThreadMode(openId);
         // A new socket has heard no liveness notices and the server does not
         // replay them: clear what the last one said, and ask again for the
         // list on screen (#282).
@@ -798,13 +812,13 @@ export function useAgentSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, recordThreadMode]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, recordThreadMode, refreshThreadMode]);
 
   // The selector follows the thread on screen (#311): its live run's mode,
   // else its last one, on opening it, on a load and on a reconnect; and the
   // run's mode whenever that changes, from any device. See followSelector.
   const activeRunMode = runLevelOf(runLevels, activeId).runMode;
-  const activeStoredMode = runs.find((r) => r.id === activeId)?.permissionMode ?? null;
+  const activeStoredMode = ownStoredMode(runs.find((r) => r.id === activeId));
   const followedRef = useRef<SelectorSource | null>(null);
   useEffect(() => {
     const next: SelectorSource = { convId: activeId, runMode: activeRunMode, storedMode: activeStoredMode };

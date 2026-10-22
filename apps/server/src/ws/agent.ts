@@ -7,7 +7,7 @@ import { resolveCommandSkill } from "../skills/resolve.ts";
 import { recordSkillUse } from "../skills/usage.ts";
 import { createDelivery } from "./delivery.ts";
 import { assertConversationAccess } from "../streams/authz.ts";
-import { answerApproval, answerCheckin, changeRunMode, mayActOnRun } from "./run-actions.ts";
+import { answerApproval, answerCheckin, changeRunMode, isPermissionMode, mayActOnRun } from "./run-actions.ts";
 import { getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
 import { beginSendFor, sendErrorFor, sendOutcomeFor } from "./send-outcomes.ts";
@@ -112,7 +112,9 @@ export function agentWsHandler(app: FastifyInstance) {
             userId,
             content: msg.content,
             model: msg.model ?? "default",
-            mode: (msg.mode ?? "manual"),
+            // Checked, not cast: it becomes the run's live mode and the
+            // thread's stored one.
+            mode: isPermissionMode(msg.mode) ? msg.mode : "manual",
             conversationId: msg.conversation_id,
             parentId: msg.parent_id,
             attachments: msg.attachments ?? [],
@@ -140,7 +142,7 @@ export function agentWsHandler(app: FastifyInstance) {
             userId,
             conversationId: msg.conversation_id,
             model: msg.model ?? "default",
-            mode: msg.mode === "planning" || msg.mode === "auto" ? msg.mode : "manual",
+            mode: isPermissionMode(msg.mode) ? msg.mode : "manual",
             thinkingLevel: isThinkingLevel(msg.thinking_level) ? msg.thinking_level : undefined,
             restoreFiles: msg.restore_files === true,
           });
@@ -219,11 +221,12 @@ export function agentWsHandler(app: FastifyInstance) {
           const run = getRun(msg.stream_id);
           if (run && (await mayActOnRun(userId, run.conversationId))) run.abort.abort();
         } else if (msg.type === "agent.mode") {
-          // Switches the conversation's live run and remembers the pick (see
-          // changeRunMode). Every send still carries its own mode; the echo is
-          // for clients that predate #311, which move their selector on it.
-          await changeRunMode(userId, msg.conversation_id, msg.mode);
+          // The echo is for clients that predate #311, which move their
+          // selector on it, and goes first, as it always did. A current client
+          // ignores it: the selector is its own, and the run's mode comes
+          // through the run's log.
           safeSend({ type: "agent.mode_changed", mode: msg.mode });
+          await changeRunMode(userId, msg.conversation_id, msg.mode);
         } else if (msg.type === "agent.approve" || msg.type === "agent.deny") {
           // See answerApproval: run-scoped, and a named stream is the only run
           // answered.

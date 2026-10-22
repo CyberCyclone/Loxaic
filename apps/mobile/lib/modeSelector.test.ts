@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { followSelector, modeChangeNotice, type SelectorSource } from './modeSelector';
+import { followSelector, modeChangeNotice, ownStoredMode, type SelectorSource } from './modeSelector';
 
 const at = (convId: string | null, runMode: SelectorSource['runMode'], storedMode: SelectorSource['storedMode']): SelectorSource => ({
   convId,
@@ -45,6 +45,34 @@ describe('the mode selector follows the thread on screen (#311)', () => {
     expect(followSelector('manual', at('A', null, null), at('A', null, 'auto'))).toBe('auto');
     // But never over a pick made here once one was known.
     expect(followSelector('planning', at('A', null, 'auto'), at('A', null, 'planning'))).toBe('planning');
+  });
+});
+
+describe('a new last mode for the thread on screen', () => {
+  it('is taken when the selector still shows the old one: a pick on another device', () => {
+    expect(followSelector('auto', at('A', null, 'auto'), at('A', null, 'manual'))).toBe('manual');
+    expect(followSelector('manual', at('A', 'manual', 'manual'), at('A', 'manual', 'planning'))).toBe('planning');
+  });
+
+  it('is not taken over a pick made here since', () => {
+    expect(followSelector('planning', at('A', null, 'auto'), at('A', null, 'manual'))).toBe('planning');
+  });
+});
+
+describe('whose last mode a selector follows', () => {
+  it('follows the owner’s own, and a thread created here', () => {
+    expect(ownStoredMode({ role: 'owner', permissionMode: 'auto' })).toBe('auto');
+    expect(ownStoredMode({ permissionMode: 'planning' })).toBe('planning');
+  });
+
+  it('never follows it for an editor or a viewer, whose next message would go out in the owner’s mode', () => {
+    expect(ownStoredMode({ role: 'editor', permissionMode: 'auto' })).toBeNull();
+    expect(ownStoredMode({ role: 'viewer', permissionMode: 'auto' })).toBeNull();
+  });
+
+  it('is nothing for an unknown thread or one with none stored', () => {
+    expect(ownStoredMode(undefined)).toBeNull();
+    expect(ownStoredMode({ role: 'owner', permissionMode: null })).toBeNull();
   });
 });
 

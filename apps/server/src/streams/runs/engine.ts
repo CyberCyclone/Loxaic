@@ -581,13 +581,6 @@ export async function runToolLoop(ctx: {
   let slot: RunSlot | null = null;
 
   try {
-    // The run's mode, in its log for every device following it, and again on
-    // each switch. Not for chat, which has no selector and always asks.
-    if (ctx.surface === "agent") {
-      const handle = getRun(streamId);
-      if (handle) handle.emitMode = (next) => { producer.emit({ kind: "run.mode", mode: next }); };
-      producer.emit({ kind: "run.mode", mode: liveMode() });
-    }
     // One read for both: the iteration ceiling and the builtin allowlist live
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
     // again on the next line.
@@ -686,11 +679,9 @@ export async function runToolLoop(ctx: {
     if (!ctx.role) recordRequestShape(convId, { model, system: systemPrompt, tools, thinking: thinkingBody });
     // Recorded on the conversation for a run nobody sends: a compaction after
     // a restart has no request shape to copy the level from. Best-effort.
-    // And the mode, which the thread opens in after a reload (#311). Not on
-    // a sub-agent's row, which nobody sends into.
     await db
       .update(conversations)
-      .set({ thinkingLevel, ...(ctx.surface === "agent" && !ctx.role ? { permissionMode: liveMode() } : {}) })
+      .set({ thinkingLevel })
       .where(eq(conversations.id, convId))
       .catch((err: unknown) => { console.warn(`recording the thinking level of ${convId} failed: ${(err as Error).message}`); });
     // Appended to as the run goes; rebuilt only by a compaction inside it.

@@ -41,7 +41,7 @@ const { startAgentRun } = await import("../../streams/runs/agentRun.ts");
 const { __resetMockScenariosForTest } = await import("../../inference/mock-scenarios.ts");
 const { PERMISSION_CHECK_MARKER, PERMISSION_CHECK_PLACEHOLDER } = await import("../check.ts");
 const { destroyConversationSandboxes } = await import("../../agent/sandbox-manager.ts");
-const { changeRunMode } = await import("../../ws/run-actions.ts");
+const { changeRunMode, isPermissionMode } = await import("../../ws/run-actions.ts");
 const { createDelivery } = await import("../../ws/delivery.ts");
 
 /**
@@ -416,14 +416,16 @@ describe("switching a run's mode while it works (#311)", () => {
     await ended(convId);
   }, 30_000);
 
-  it("is a silent no-op for a viewer and a stranger, and works for an editor", async () => {
+  it("lets only the run's sender switch it, and only the owner's pick be remembered", async () => {
     const convId = await newConversation();
     await db.insert(conversationShares).values([
       { conversationId: convId, userId: viewerId, role: "viewer", createdBy: ownerId },
       { conversationId: convId, userId: editorId, role: "editor", createdBy: ownerId },
     ]);
     const streamId = await parked(convId, "manual", bash("touch shared-live.txt"));
-    for (const who of [viewerId, strangerId]) {
+    // An editor may answer the calls one at a time; Auto would let the
+    // owner's tools run unasked, so it is not theirs to give.
+    for (const who of [viewerId, strangerId, editorId]) {
       await changeRunMode(who, convId, "auto");
       expect(getRun(streamId)?.mode).toBe("manual");
       expect(await storedMode(convId)).toBe("manual");
@@ -434,9 +436,50 @@ describe("switching a run's mode while it works (#311)", () => {
     await changeRunMode(ownerId, "not-a-uuid", "auto");
     expect(getRun(streamId)?.mode).toBe("manual");
 
-    await changeRunMode(editorId, convId, "auto");
+    await changeRunMode(ownerId, convId, "auto");
     expect((await ended(convId)).at(-1)).toMatchObject({ ok: true, permission: { by: "classifier" } });
     expect(await storedMode(convId)).toBe("auto");
+  }, 30_000);
+
+  it("never stores an editor's own send as the owner's mode", async () => {
+    const convId = await newConversation();
+    await db.insert(conversationShares).values({ conversationId: convId, userId: editorId, role: "editor", createdBy: ownerId });
+    await changeRunMode(ownerId, convId, "manual");
+    const match = `live-${uuid().slice(0, 8)}`;
+    useScenario(match, [bash("ls")]);
+    await startAgentRun({ userId: editorId, content: `please ${match}`, model: MODEL, mode: "auto", conversationId: convId });
+    await waitFor("the run to end", () => (getRunByConversation(convId) ? null : true));
+    expect(await storedMode(convId)).toBe("manual");
+  }, 30_000);
+
+  it("keeps a Planning pick made as the run starts, for the next message", async () => {
+    const convId = await newConversation();
+    const match = `live-${uuid().slice(0, 8)}`;
+    useScenario(match, [bash("touch picked-early.txt")]);
+    const { streamId } = await startAgentRun({ userId: ownerId, content: `please ${match}`, model: MODEL, mode: "manual", conversationId: convId });
+    // Before the loop has even built its tools.
+    await changeRunMode(ownerId, convId, "planning");
+    await waitFor("the run to ask", () => ((getRun(streamId)?.approvals.size ?? 0) > 0 ? true : null));
+    expect(await storedMode(convId)).toBe("planning");
+    deny(streamId);
+    await ended(convId);
+    expect(await storedMode(convId)).toBe("planning");
+  }, 30_000);
+
+  it("knows the three modes and nothing else", () => {
+    expect(["planning", "manual", "auto"].every(isPermissionMode)).toBe(true);
+    for (const bad of ["yolo", "", undefined, null, 1, ["auto"]]) expect(isPermissionMode(bad)).toBe(false);
+  });
+
+  it("tells the owner's other devices about a pick on an idle thread", async () => {
+    const convId = await newConversation();
+    const inbox: ServerMessage[] = [];
+    const delivery = createDelivery(ownerId, (m) => inbox.push(m), () => 0);
+    await delivery.handleSubscribe(convId);
+    await changeRunMode(ownerId, convId, "auto");
+    await waitFor("the notice", () => (inbox.some((m) => m.type === "conversation.mode") ? true : null));
+    expect(inbox.filter((m) => m.type === "conversation.mode")).toEqual([{ type: "conversation.mode", conversation_id: convId, mode: "auto" }]);
+    delivery.close();
   }, 30_000);
 
   it("tells every device following the run, not only the one that switched", async () => {

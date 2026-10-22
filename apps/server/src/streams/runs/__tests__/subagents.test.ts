@@ -659,27 +659,41 @@ describe("sub-agents", () => {
   }, 40_000);
 
   it("switches a running child with its parent, and decides its waiting call again (#311)", async () => {
-    const convId = await newConversation();
-    const streamId = await agentRun(convId, "Use a sub-agent: write a file called notes", "manual");
-    await waitFor("the child's approval to reach the parent's stream", async () =>
-      (await snapshotOf(streamId)).subagents?.[0]?.pending_approval !== undefined,
-    );
-    const [child] = await childrenOf(convId);
-    const info = child.subagent as SubAgentInfo;
+    // The write runs: in host mode, so no container image has to exist.
+    const sandbox = { mode: process.env.SANDBOX_MODE, root: process.env.SANDBOX_HOST_ROOT };
+    process.env.SANDBOX_MODE = "host";
+    process.env.SANDBOX_HOST_ROOT = path.join(dir, "sandboxes");
+    try {
+      const convId = await newConversation();
+      const streamId = await agentRun(convId, "Use a sub-agent: write a file called notes", "manual");
+      await waitFor("the child's approval to reach the parent's stream", async () =>
+        (await snapshotOf(streamId)).subagents?.[0]?.pending_approval !== undefined,
+      );
+      const [child] = await childrenOf(convId);
+      const info = child.subagent as SubAgentInfo;
 
-    await changeRunMode(userId, convId, "auto");
-    await waitFor("the parent to end", ended(convId));
-    // Nobody answered: in Auto, a write inside the workspace runs.
-    const [childResult] = await resultsOf(child.id);
-    expect(childResult).toMatchObject({ ok: true });
-    const childModes = (await getStreamBroker().readFrom(info.streamId, 0))
-      .map((r) => r.event)
-      .filter((e) => e.kind === "run.mode")
-      .map((e) => (e as { mode: string }).mode);
-    expect(childModes).toEqual(["manual", "auto"]);
-    expect((await snapshotOf(streamId)).subagents?.[0]?.pending_approval).toBeUndefined();
-    // The write ran, in the parent's sandbox: this suite's own to remove.
-    await destroyConversationSandboxes(convId);
+      // Never by the child's own id: its mode is its parent's.
+      await changeRunMode(userId, child.id, "auto");
+      expect(getRun(info.streamId)?.mode).toBe("manual");
+      await changeRunMode(userId, convId, "auto");
+      await waitFor("the parent to end", ended(convId));
+      // Nobody answered: in Auto, a write inside the workspace runs.
+      const [childResult] = await resultsOf(child.id);
+      expect(childResult).toMatchObject({ ok: true });
+      const childModes = (await getStreamBroker().readFrom(info.streamId, 0))
+        .map((r) => r.event)
+        .filter((e) => e.kind === "run.mode")
+        .map((e) => (e as { mode: string }).mode);
+      expect(childModes).toEqual(["manual", "auto"]);
+      expect((await snapshotOf(streamId)).subagents?.[0]?.pending_approval).toBeUndefined();
+      // The write ran, in the parent's sandbox: this suite's own to remove.
+      await destroyConversationSandboxes(convId);
+    } finally {
+      for (const [key, value] of [["SANDBOX_MODE", sandbox.mode], ["SANDBOX_HOST_ROOT", sandbox.root]] as const) {
+        if (value === undefined) Reflect.deleteProperty(process.env, key);
+        else process.env[key] = value;
+      }
+    }
   }, 40_000);
 
   it("gives a planning parent a read-only child with nothing to hand over", async () => {

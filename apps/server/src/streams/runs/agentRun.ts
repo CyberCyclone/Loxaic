@@ -30,6 +30,7 @@ import { describeWorkspace, loadWorkspace } from "../../agent/workspace.ts";
 import { combinedText, ensureInstructions, renderRootInstructions, resolveDecision, saveDecision } from "../../agent/instructions.ts";
 import { modelRunInfo } from "../../inference/models.ts";
 import { prepareInstructions } from "../../agent/instruction-updates.ts";
+import { recordPermissionMode } from "../../conversations/permission-mode.ts";
 
 /**
  * Built at call time from the conversation's immutable workspace and the
@@ -197,6 +198,10 @@ export async function startAgentRun(input: {
   };
   claimConversation(claim);
   try {
+    // The thread's mode is the one its owner last sent in (#311), recorded
+    // the moment the run holds the conversation: a pick made after this lands
+    // after it, so a Planning pick for the next message is never overwritten.
+    if (ownerId === userId) await recordPermissionMode(convId, mode);
     // See chatRun.ts. The agent may have created the conversation up front to
     // choose a workspace, so "opens" is "has no messages", not "created here".
     const opening = await hasNoMessages(convId);
@@ -277,6 +282,10 @@ export async function retryAgentRun(input: {
   };
   claimConversation(claim);
   try {
+    // The thread's mode is the one its owner last sent in (#311), recorded
+    // the moment the run holds the conversation: a pick made after this lands
+    // after it, so a Planning pick for the next message is never overwritten.
+    if (ownerId === userId) await recordPermissionMode(convId, mode);
     const row = await removeAfterForRetry(convId, { restoreFiles: input.restoreFiles, signal: claim.abort.signal });
     await recordModelUse(userId, model);
     const started = await startRunOnRow({

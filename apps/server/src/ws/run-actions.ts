@@ -1,6 +1,5 @@
-import { db, eq } from "@loxaic/db";
-import { conversations } from "@loxaic/db/schema";
 import type { PermissionMode } from "@loxaic/types";
+import { recordPermissionMode } from "../conversations/permission-mode.ts";
 import { actingRole, atLeast, resolveAccess } from "../streams/authz.ts";
 import {
   clearRunApproval,
@@ -116,39 +115,38 @@ export async function answerCheckin(
 }
 
 /** Whether a mode off a socket is one of the three words. */
-function isPermissionMode(value: unknown): value is PermissionMode {
+export function isPermissionMode(value: unknown): value is PermissionMode {
   return value === "planning" || value === "manual" || value === "auto";
 }
 
 /**
- * Someone moved the mode selector on a conversation (#311). Whoever may act
- * on its run (`mayActOnRun`, as Stop and approvals) switches the run going
- * there now, its sub-agents with it, and the conversation remembers the pick
- * as the mode it opens in.
+ * Someone moved the mode selector on an agent thread (#311).
  *
- * The run moves only between Manual and Auto (`liveModeAfter`): Planning, in
- * or out, waits for the next message. A switch has every approval the runs
- * are waiting on decided again in the new mode (engine.ts, `regate`), and
- * each run's log says so, which is how every device following it hears.
+ * - **The run.** Only the run's sender switches the run going there, and its
+ *   sub-agents with it, between Manual and Auto (`liveModeAfter`; Planning,
+ *   in or out, waits for the next message). Auto lets the sender's tools run
+ *   unasked under the sender's identity, so it is a standing grant, and like
+ *   "Allow always" only the sender may give it: an editor answers calls one
+ *   at a time, or stops the run. A switch has every approval the runs are
+ *   waiting on decided again (engine.ts, `regate`), and each run's log says
+ *   so, which is how every device following it hears.
+ * - **The thread's mode.** Only the owner's pick is remembered, for the same
+ *   reason (`recordPermissionMode`).
  *
- * A silent no-op for anyone else, and for a conversation that does not exist
- * — the same "no existence oracle" rule as `stream.stop`.
+ * Only an agent thread itself: never a sub-agent's conversation (its mode is
+ * its parent's), a chat or a routine. A silent no-op otherwise, and for a
+ * conversation that does not exist — the same "no existence oracle" rule as
+ * `stream.stop`.
  */
 export async function changeRunMode(userId: string, conversationId: unknown, mode: unknown): Promise<void> {
   if (typeof conversationId !== "string" || !isPermissionMode(mode)) return;
-  if (!(await mayActOnRun(userId, conversationId))) return;
+  const grant = await resolveAccess(userId, conversationId);
+  if (grant?.kind !== "agent" || !atLeast(grant.role, "editor")) return;
   // Read after the await: the run may have started or ended meanwhile.
   const run = getRunByConversation(conversationId);
-  if (run) {
+  if (run?.userId === userId) {
     setRunMode(run, mode);
     for (const child of listChildRuns(conversationId)) setRunMode(child, mode);
   }
-  // Best-effort: a pick that is not remembered still switched the run.
-  await db
-    .update(conversations)
-    .set({ permissionMode: mode })
-    .where(eq(conversations.id, conversationId))
-    .catch((err: unknown) => {
-      console.warn(`recording the mode of ${conversationId} failed: ${(err as Error).message}`);
-    });
+  if (grant.role === "owner") await recordPermissionMode(conversationId, mode);
 }
