@@ -174,37 +174,44 @@ describe('tool call details', () => {
     // the sidebar and Settings are open, so the composer's `+` sheet stands
     // in: one tap, and held by the same gate.
     const desktop = platform() === 'web' || platform() === 'electron';
-    await goToSurface('chat');
-    // A send goes into the open thread: the case before left one open.
-    await startNewThread('chat');
-    const before = new Set((await listConversations(creds)).map((c) => c.id));
-    await sendMessage(SLOW_TOOL_PROMPT);
-    // A keyboard left up after the send can take the next tap.
-    await closeKeyboard();
-    const overlay = desktop ? 'settings.close' : 'composer.attach.library';
-    if (desktop) await openSettings();
-    else await openPlusMenu();
-    await waitForVisible(overlay);
+    // The running reply's counter keeps UiAutomator2 waiting for idle about
+    // eleven seconds a query, longer than the mock's eight.
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 0 });
+    try {
+      await goToSurface('chat');
+      // A send goes into the open thread: the case before left one open.
+      await startNewThread('chat');
+      const before = new Set((await listConversations(creds)).map((c) => c.id));
+      await sendMessage(SLOW_TOOL_PROMPT);
+      // A keyboard left up after the send can take the next tap.
+      await closeKeyboard();
+      const overlay = desktop ? 'settings.close' : 'composer.attach.library';
+      if (desktop) await openSettings();
+      else await openPlusMenu();
+      await waitForVisible(overlay);
 
-    // The request has arrived, and the call is stored, while the overlay is up.
-    let conversationId = '';
-    await browser.waitUntil(
-      async () => {
-        conversationId = (await listConversations(creds)).find((c) => c.kind === 'chat' && !before.has(c.id))?.id ?? '';
-        return conversationId !== '' && (await getToolCalls(creds, conversationId)).some((c) => c.tool === 'fs_write');
-      },
-      { timeout: 60_000, timeoutMsg: 'the fs_write call never arrived' },
-    );
-    await browser.pause(1_500);
-    expect(await isVisible('chat.approval.panel')).toBe(false);
-    expect(await isVisible(overlay)).toBe(true);
-    await shot('tool-details-chat-held-under-overlay');
+      // The request has arrived, and the call is stored, while the overlay is up.
+      let conversationId = '';
+      await browser.waitUntil(
+        async () => {
+          conversationId = (await listConversations(creds)).find((c) => c.kind === 'chat' && !before.has(c.id))?.id ?? '';
+          return conversationId !== '' && (await getToolCalls(creds, conversationId)).some((c) => c.tool === 'fs_write');
+        },
+        { timeout: 60_000, timeoutMsg: 'the fs_write call never arrived' },
+      );
+      await browser.pause(1_500);
+      expect(await isVisible('chat.approval.panel')).toBe(false);
+      expect(await isVisible(overlay)).toBe(true);
+      await shot('tool-details-chat-held-under-overlay');
 
-    if (desktop) await tap('settings.close');
-    else await closePlusMenu();
-    await waitForVisible('chat.approval.panel', 20_000);
-    await waitForFreshText('chat.approval.arg.path', 'notes.txt');
-    await tap('chat.approval.reject');
-    await waitForAbsent('chat.approval.panel', 20_000);
+      if (desktop) await tap('settings.close');
+      else await closePlusMenu();
+      await waitForVisible('chat.approval.panel', 20_000);
+      await waitForFreshText('chat.approval.arg.path', 'notes.txt');
+      await tap('chat.approval.reject');
+      await waitForAbsent('chat.approval.panel', 20_000);
+    } finally {
+      if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 10_000 });
+    }
   });
 });
