@@ -48,6 +48,20 @@ import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.t
  */
 process.env.MOCK_INFERENCE = "true";
 
+/** Which conversations a delete closed the browser of. Passed through: no case
+ * here opens one. */
+const closedBrowsers = vi.hoisted(() => [] as string[]);
+vi.mock("../../../browser/manager.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../../browser/manager.ts")>();
+  return {
+    ...original,
+    closeConversationBrowser: (conversationId: string) => {
+      closedBrowsers.push(conversationId);
+      return original.closeConversationBrowser(conversationId);
+    },
+  };
+});
+
 const MODEL = "llama-3.1-8b-instruct";
 type ToolResultBlock = Extract<ContentBlock, { kind: "tool_result" }>;
 type ToolCallBlock = Extract<ContentBlock, { kind: "tool_call" }>;
@@ -813,11 +827,8 @@ describe("sub-agents", () => {
     await waitFor("the child's stream log to go", async () => (await getStreamBroker().getMeta(info.streamId)) === null);
   }, 30_000);
 
-  it("erases what a child writes after its row is gone, once the thread's run has unwound", async () => {
-    // The order the race needs, made deterministic: the first pass erases the
-    // child's conversation row while the parent's run still holds the thread,
-    // the child then writes on its way out, and only then does the run end.
-    const convId = await newConversation();
+  /** A sub-agent of `convId`, as a run would have written it. */
+  async function childOf(convId: string): Promise<string> {
     const [child] = await db
       .insert(conversations)
       .values({
@@ -832,37 +843,137 @@ describe("sub-agents", () => {
       .returning();
     // Its parent is erased with it, so `afterAll` would no longer find it.
     convIds.push(child.id);
-    const runStreamId = uuid();
-    let usageId = "";
-    registerRun({ streamId: runStreamId, conversationId: convId, userId, abort: new AbortController(), approvals: new Map() });
+    return child.id;
+  }
+
+  /** What a child writes while it unwinds: its cancelled reply, and the usage
+   * of the request that was cut off. Returns the usage row's id. */
+  async function writeLate(childId: string): Promise<string> {
+    const messageId = uuid();
+    await db.insert(messages).values({
+      id: messageId,
+      conversationId: childId,
+      authorType: "assistant",
+      origin: "server",
+      lamport: Date.now(),
+      content: [{ kind: "text", text: "The task the parent handed over." }],
+      status: "cancelled",
+      createdAt: new Date(),
+    });
+    const usageId = uuid();
+    await db.insert(usageRecords).values({ id: usageId, userId, conversationId: childId, messageId, model: MODEL, inputTokens: 1, outputTokens: 1 });
+    return usageId;
+  }
+
+  /** Holds a conversation's run open, as an unwinding run does. */
+  function holdRun(convId: string): string {
+    const streamId = uuid();
+    registerRun({ streamId, conversationId: convId, userId, abort: new AbortController(), approvals: new Map() });
+    return streamId;
+  }
+
+  /** Runs `body` with the delete's two waits pinned, then restores them. */
+  async function withUnwindWaits(timeoutMs: number, ceilingMs: number, body: () => Promise<void>): Promise<void> {
+    process.env.DELETE_RUN_UNWIND_TIMEOUT_MS = String(timeoutMs);
+    process.env.DELETE_RUN_UNWIND_CEILING_MS = String(ceilingMs);
     try {
-      await purgeConversation(convId, { warn: () => undefined });
-      expect(await db.query.conversations.findFirst({ where: eq(conversations.id, child.id) })).toBeUndefined();
-
-      // What the child writes while it unwinds: its cancelled reply, and the
-      // usage of the request that was cut off.
-      const lateId = uuid();
-      await db.insert(messages).values({
-        id: lateId,
-        conversationId: child.id,
-        authorType: "assistant",
-        origin: "server",
-        lamport: Date.now(),
-        content: [{ kind: "text", text: "The task the parent handed over." }],
-        status: "cancelled",
-        createdAt: new Date(),
-      });
-      usageId = uuid();
-      await db
-        .insert(usageRecords)
-        .values({ id: usageId, userId, conversationId: child.id, messageId: lateId, model: MODEL, inputTokens: 1, outputTokens: 1 });
+      await body();
     } finally {
-      unregisterRun(runStreamId);
+      Reflect.deleteProperty(process.env, "DELETE_RUN_UNWIND_TIMEOUT_MS");
+      Reflect.deleteProperty(process.env, "DELETE_RUN_UNWIND_CEILING_MS");
     }
+  }
 
-    await waitFor("the child's late row to be erased", async () => (await rowsOf(child.id)).length === 0, 5_000);
+  async function expectErasedAndDetached(childId: string, usageId: string): Promise<void> {
+    await waitFor("the child's late rows to be erased", async () => (await rowsOf(childId)).length === 0, 5_000);
     // Usage is kept and detached, as the first pass does.
     const usage = await db.query.usageRecords.findFirst({ where: eq(usageRecords.id, usageId) });
     expect(usage).toMatchObject({ conversationId: null, messageId: null });
+  }
+
+  it("erases what a child writes after its row is gone, once the thread's run has unwound", async () => {
+    // The order the race needs, made deterministic: the first pass erases the
+    // child's conversation row while the parent's run still holds the thread,
+    // the child then writes on its way out, and only then does the run end —
+    // well inside the first wait, so the second pass is what collects it.
+    await withUnwindWaits(20_000, 20_000, async () => {
+      const convId = await newConversation();
+      const childId = await childOf(convId);
+      const runStreamId = holdRun(convId);
+      let usageId = "";
+      try {
+        await purgeConversation(convId, { warn: () => undefined });
+        expect(await db.query.conversations.findFirst({ where: eq(conversations.id, childId) })).toBeUndefined();
+        usageId = await writeLate(childId);
+      } finally {
+        unregisterRun(runStreamId);
+      }
+      await expectErasedAndDetached(childId, usageId);
+    });
+  });
+
+  it("waits for a child whose run outlives its parent's before erasing again", async () => {
+    // No run holds the thread, only its child: the case `abortRuns` names
+    // children for. A second pass that waited on the thread alone would run
+    // at once and the final one would be skipped as unneeded.
+    await withUnwindWaits(20_000, 20_000, async () => {
+      const convId = await newConversation();
+      const childId = await childOf(convId);
+      const childStreamId = holdRun(childId);
+      let usageId = "";
+      try {
+        await purgeConversation(convId, { warn: () => undefined });
+        // Long past when a pass that did not wait for the child would have run.
+        await new Promise((r) => setTimeout(r, 300));
+        usageId = await writeLate(childId);
+      } finally {
+        unregisterRun(childStreamId);
+      }
+      await expectErasedAndDetached(childId, usageId);
+    });
+  });
+
+  it("closes the browser of a child the unwinding run started after the first pass", async () => {
+    await withUnwindWaits(20_000, 20_000, async () => {
+      const convId = await newConversation();
+      const runStreamId = holdRun(convId);
+      let lateChildId = "";
+      try {
+        await purgeConversation(convId, { warn: () => undefined });
+        // Past authorization before the delete committed, so it lands anyway.
+        lateChildId = await childOf(convId);
+      } finally {
+        unregisterRun(runStreamId);
+      }
+      await waitFor("the late child's browser to be closed", () => closedBrowsers.includes(lateChildId), 5_000);
+    });
+  });
+
+  it("erases what a child writes after the second pass, once a wedged run finally ends", async () => {
+    // The first wait expires while the run still holds the thread, so the
+    // second pass runs early; what lands after it is the final pass's to
+    // collect.
+    await withUnwindWaits(100, 20_000, async () => {
+      const convId = await newConversation();
+      const childId = await childOf(convId);
+      const runStreamId = holdRun(convId);
+      let usageId = "";
+      try {
+        await purgeConversation(convId, { warn: () => undefined });
+        // The second pass is seen to have run once a row written for it is
+        // gone: keep one arriving until it collects one.
+        let written = 0;
+        await waitFor("the second pass to run", async () => {
+          if (written > 0 && (await rowsOf(childId)).length < written) return true;
+          await writeLate(childId);
+          written++;
+          return false;
+        }, 5_000);
+        usageId = await writeLate(childId);
+      } finally {
+        unregisterRun(runStreamId);
+      }
+      await expectErasedAndDetached(childId, usageId);
+    });
   });
 });

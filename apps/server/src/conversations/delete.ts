@@ -110,9 +110,7 @@ export async function deleteConversation(id: string, log: DeleteLogger): Promise
  * The conversations of the sub-agents `id` spawned. Found by the parent's id
  * alone, so it still answers after the parent's row is gone — which is what
  * lets the second erase pass collect a child created by a run that was already
- * past authorization when the first pass committed. A child the first pass
- * erased is no longer found here at all, so the later passes are also handed
- * the ids read before it.
+ * past authorization when the first pass committed.
  */
 async function childConversationIds(id: string): Promise<string[]> {
   const rows = await db
@@ -146,10 +144,10 @@ export async function purgeConversation(id: string, log: DeleteLogger): Promise<
   // nothing new can start a run, send a message, or read the thread. Deleting
   // the messages first and the row second would leave a window in which the
   // conversation still exists and is empty, which a live socket can write into.
-  // Its sub-agents' ids are read before the rows go: their stream logs are
-  // keyed by them, and after the erase nothing else remembers what they were.
-  const childIds = await childConversationIds(id);
-  await eraseRows(id);
+  // Its sub-agents' ids come back from the erase itself: their stream logs
+  // are keyed by them, and after it nothing else remembers what they were. A
+  // separate read before it would miss a child created in between.
+  const childIds = await eraseRows(id);
 
   // Only now stop the run. Anything it writes from here on is an orphan by
   // construction (its conversation is gone), which is what the second pass
@@ -176,15 +174,22 @@ function detachedCleanup(
     // Wait for the aborted run to actually finish before cleaning up: it is
     // still writing message rows, and its tool calls still hold the sandbox we
     // are about to destroy.
-    const ended = await waitForRunEnd(id, unwindTimeoutMs());
+    const timeoutMs = unwindTimeoutMs();
+    const deadline = Date.now() + timeoutMs;
+    const parentEnded = await waitForRunEnd(id, timeoutMs);
     // Sub-agents the run spawned after the first pass read them are found
     // again here — after the wait, never before it: an unwinding run can
     // still be starting a child, and one read too early kept its stream log
-    // (the task its parent's model wrote) until the TTL. Before the second
-    // pass, which erases their rows and with them the only record of their
-    // ids.
+    // (the task its parent's model wrote) until the TTL. Their ids are kept
+    // from here on, because the second pass erases their rows and with them
+    // the only way to find them by parent.
     const childIds = new Set(opts?.childIds ?? []);
     for (const childId of await childConversationIds(id).catch(() => [])) childIds.add(childId);
+    // A child's run can outlive its parent's entry in the registry (the case
+    // `abortRuns` names them for), and what it writes on its way out is as
+    // orphaned as its parent's. Waited on within the same deadline.
+    const childrenEnded = await waitForRunsEnd(childIds, Math.max(0, deadline - Date.now()));
+    const ended = parentEnded && childrenEnded;
     if (!ended) {
       log.warn(
         { conversationId: id },
@@ -198,8 +203,6 @@ function detachedCleanup(
       // message, a stopped tool result), and the ones a send that had already
       // passed authorization was about to write. Both reference a conversation
       // that no longer exists, so nothing but this will ever collect them.
-      // The children are named as well as looked up: the first pass deleted their
-      // conversation rows, and with them the only way to find them by parent.
       await eraseRows(id, childIds).catch((err: unknown) => {
         log.warn({ err, conversationId: id }, "failed to re-erase rows after a deleted conversation's run ended");
       });
@@ -227,7 +230,7 @@ function detachedCleanup(
     });
     // Its browser (#281) and the logins in it go with it; a sub-agent's are
     // its own conversations' and go with those.
-    for (const browserConvId of [id, ...(opts?.childIds ?? [])]) {
+    for (const browserConvId of [id, ...childIds]) {
       await closeConversationBrowser(browserConvId).catch(() => undefined);
     }
 
@@ -251,7 +254,7 @@ function detachedCleanup(
       // timer is unref'd) and the erase is idempotent, so the final pass runs
       // whether or not the run was seen to end.
       if (!ended) {
-        const endedLate = await waitForRunEnd(id, unwindCeilingMs());
+        const endedLate = await waitForRunsEnd([id, ...childIds], unwindCeilingMs());
         await eraseRows(id, childIds).catch((err: unknown) => {
           log.warn({ err, conversationId: id }, "failed the final erase for a deleted conversation");
         });
@@ -275,9 +278,10 @@ function detachedCleanup(
  *
  * `knownChildIds` are sub-agents erased with it in an earlier pass, whose
  * conversation rows are gone and so cannot be found by parent any more.
+ * Returns every sub-agent it erased, named or found.
  */
-async function eraseRows(id: string, knownChildIds: Iterable<string> = []): Promise<void> {
-  await db.transaction(async (tx) => {
+async function eraseRows(id: string, knownChildIds: Iterable<string> = []): Promise<string[]> {
+  return db.transaction(async (tx) => {
     // Its sub-agents go with it, in the same transaction: their conversations
     // carry no foreign key to this one (and a cascade could not reach their
     // messages, which have none either), so nothing but this erases them — and
@@ -318,7 +322,14 @@ async function eraseRows(id: string, knownChildIds: Iterable<string> = []): Prom
       .set({ conversationId: null, messageId: null })
       .where(eq(usageRecords.conversationId, id));
     await tx.delete(conversations).where(eq(conversations.id, id));
+    return childIds;
   });
+}
+
+/** True when every one of `ids` ended within `timeoutMs`. */
+async function waitForRunsEnd(ids: Iterable<string>, timeoutMs: number): Promise<boolean> {
+  const ended = await Promise.all([...ids].map((convId) => waitForRunEnd(convId, timeoutMs)));
+  return ended.every(Boolean);
 }
 
 /**
