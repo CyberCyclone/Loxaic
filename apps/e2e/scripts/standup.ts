@@ -498,7 +498,10 @@ async function ensureServer(): Promise<void> {
   await waitUntil('the mock HTTP MCP server to listen', () => tcpOpen('127.0.0.1', mcpPort), 60_000);
   mkdirSync(RUN_DIR, { recursive: true });
   writeFileSync(MOCK_MCP_HTTP_FILE, JSON.stringify({ url: `http://127.0.0.1:${String(mcpPort)}/mcp` }), 'utf8');
-  const child = spawn('npx', ['tsx', 'src/index.ts'], {
+  // tsx itself, not `npx tsx`: teardown stops the server by signalling this
+  // pid, and inside a Loxaic sandbox (#320) npx exits on SIGTERM without
+  // passing it on, which left the server holding the port for the next run.
+  const child = spawn(path.join(REPO_ROOT, 'apps/server/node_modules/.bin/tsx'), ['src/index.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
     stdio: 'ignore',
     detached: false,
