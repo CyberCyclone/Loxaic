@@ -208,22 +208,26 @@ describe('sandbox allocations (#254)', () => {
   });
 
   it('reads a saved default as saved, however it was typed', async () => {
-    await openSandboxSettings();
-    await scrollTo('sandbox.allocation.memoryGb');
-    await typeInto('sandbox.allocation.memoryGb', '3.0');
-    await closeKeyboard();
-    await scrollTo('sandbox.allocation.save');
-    await tap('sandbox.allocation.save');
-    await browser.waitUntil(async () => (await defaultAllocation()).memoryMb === 3072, {
-      timeout: 15_000,
-      timeoutMsg: '[e2e] the default allocation was not saved',
-    });
-    // Saved as 3 GB, which is what was typed: nothing is left to save.
-    await browser.waitUntil(async () => !(await byTestId('sandbox.allocation.save').isEnabled()), {
-      timeout: 10_000,
-      timeoutMsg: '[e2e] Save stayed on after the allocation was saved',
-    });
-    await resetSandboxSettings();
+    try {
+      await openSandboxSettings();
+      await scrollTo('sandbox.allocation.memoryGb');
+      await typeInto('sandbox.allocation.memoryGb', '3.0');
+      await closeKeyboard();
+      await scrollTo('sandbox.allocation.save');
+      await tap('sandbox.allocation.save');
+      await browser.waitUntil(async () => (await defaultAllocation()).memoryMb === 3072, {
+        timeout: 15_000,
+        timeoutMsg: '[e2e] the default allocation was not saved',
+      });
+      // Saved as 3 GB, which is what was typed: nothing is left to save.
+      await browser.waitUntil(async () => !(await byTestId('sandbox.allocation.save').isEnabled()), {
+        timeout: 10_000,
+        timeoutMsg: '[e2e] Save stayed on after the allocation was saved',
+      });
+    } finally {
+      // The later cases read the default allocation.
+      await resetSandboxSettings();
+    }
   });
 
   it("lets an admin override one person's allocation and put it back", async () => {
