@@ -54,7 +54,7 @@ import { bootEgressProxy } from "./egress/boot.ts";
 import { egressCa } from "./egress/ca.ts";
 import type { EgressProxy } from "./egress/proxy.ts";
 import { startExtractionReaper, stopAllExtractionSandboxes } from "./files/extract";
-import { startConversationReaper, sweepRetainedConversations } from "./conversations/reaper";
+import { startConversationReaper, startOrphanRowReaper, sweepRetainedConversations } from "./conversations/reaper";
 
 const app = Fastify({
   logger: {
@@ -276,6 +276,7 @@ let mcpReaperTimer: NodeJS.Timeout | null = null;
 let attachmentReaperTimer: NodeJS.Timeout | null = null;
 let extractionReaperTimer: NodeJS.Timeout | null = null;
 let conversationReaperTimer: NodeJS.Timeout | null = null;
+let orphanRowReaperTimer: NodeJS.Timeout | null = null;
 let egressProxies: EgressProxy[] = [];
 
 app.listen({ port: PORT, host: HOST }, (err) => {
@@ -332,6 +333,8 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   conversationReaperTimer = startConversationReaper((n) => {
     app.log.info(`Erased ${String(n)} deleted conversation(s) past the retention window`);
   });
+  // What erased conversations left behind: late rows, orphaned sub-agents.
+  orphanRowReaperTimer = startOrphanRowReaper(app.log);
 });
 
 // ── Graceful shutdown ─────────────────────────────────────
@@ -349,6 +352,7 @@ async function shutdown(signal: string) {
     if (attachmentReaperTimer) clearInterval(attachmentReaperTimer);
     if (extractionReaperTimer) clearInterval(extractionReaperTimer);
     if (conversationReaperTimer) clearInterval(conversationReaperTimer);
+    if (orphanRowReaperTimer) clearInterval(orphanRowReaperTimer);
     await stopAllExtractionSandboxes().catch(() => undefined);
     await stopDownloads().catch(() => undefined);
     await stopLocalRuntime().catch(() => undefined);
