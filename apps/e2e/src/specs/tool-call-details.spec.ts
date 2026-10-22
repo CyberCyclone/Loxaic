@@ -20,6 +20,7 @@ import { browser } from '@wdio/globals';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import {
+  closeKeyboard,
   isVisible,
   platform,
   scrollTo,
@@ -171,6 +172,8 @@ describe('tool call details', () => {
     await startNewThread('chat');
     const before = new Set((await listConversations(creds)).map((c) => c.id));
     await sendMessage(SLOW_TOOL_PROMPT);
+    // A keyboard left up after the send can take the tap on the menu button.
+    await closeKeyboard();
     await openSettings();
     await waitForVisible('settings.close');
 
