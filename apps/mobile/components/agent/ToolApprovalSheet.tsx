@@ -24,7 +24,10 @@ export const CHAT_APPROVAL_IDS = {
 interface ToolApprovalSheetProps {
   open: boolean;
   /** Absent where only an answer may end it — chat's request, which used to
-   * be a modal for the same reason: it must not be tapped away by accident. */
+   * be a modal for the same reason: it must not be tapped away by accident.
+   * Chat's is mounted already open and ends by unmounting when the approval
+   * clears: on web, a sheet mounted open does not close when `open` turns
+   * false. */
   onClose?: () => void;
   /** `<base>.panel`, `<base>.body`, `<base>.arg.<key>`, and the notes. */
   testIDBase: string;
