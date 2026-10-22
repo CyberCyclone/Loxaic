@@ -34,6 +34,7 @@ import {
   sendMessage,
   signUp,
   startNewAgentRun,
+  tapOverlayBackdrop,
   waitForRunDone,
 } from '../helpers/app.ts';
 
@@ -42,21 +43,6 @@ const PROMPT = 'show the call in full';
  * one line stops. */
 const TAIL = 'echo tail-of-a-long-command-for-267';
 const OUTPUT_TAIL = 'tail-of-a-long-command-for-267';
-
-/** A real tap or click near the top of the window: on the backdrop above a
- * sheet that fits its content. */
-async function tapAboveSheet(): Promise<void> {
-  const { width } = await browser.getWindowSize();
-  const web = platform() === 'web' || platform() === 'electron';
-  await browser
-    .action('pointer', { parameters: { pointerType: web ? 'mouse' : 'touch' } })
-    .move({ x: Math.round(width / 2), y: 60 })
-    .down()
-    .pause(50)
-    .up()
-    .perform();
-  await browser.releaseActions();
-}
 
 describe('tool call details', () => {
   const creds = uniqueCreds();
@@ -144,7 +130,7 @@ describe('tool call details', () => {
     await waitForFreshText('chat.approval.arg.content', 'written by the mock agent');
     await shot('tool-details-chat-sheet');
 
-    await tapAboveSheet();
+    await tapOverlayBackdrop();
     await browser.pause(1_000);
     expect(await isVisible('chat.approval.panel')).toBe(true);
     expect(await isVisible('chat.approval.allowOnce')).toBe(true);

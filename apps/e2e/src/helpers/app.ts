@@ -1350,11 +1350,23 @@ export async function closeContextPopover(): Promise<void> {
 }
 
 /**
- * A native tap on the dimmed screen near the top, by position. An overlay's
- * backdrop is not an element XCUITest exposes, and near the top because sheets
- * and popovers rise from the bottom and can pass the middle.
+ * A tap on the dimmed screen near the top, by position. An overlay's backdrop
+ * is not an element XCUITest exposes, and near the top because sheets and
+ * popovers rise from the bottom and can pass the middle. On web and Electron
+ * a mouse click at the same spot of the viewport — measured from the page,
+ * since Electron's chromedriver has no window commands.
  */
-async function tapOverlayBackdrop(): Promise<void> {
+export async function tapOverlayBackdrop(): Promise<void> {
+  if (platform() === 'web' || platform() === 'electron') {
+    const { width, height } = await browser.execute(() => ({ width: window.innerWidth, height: window.innerHeight }));
+    await browser
+      .action('pointer', { parameters: { pointerType: 'mouse' } })
+      .move({ x: Math.round(width / 2), y: Math.round(height * 0.15) })
+      .down()
+      .up()
+      .perform();
+    return;
+  }
   const { width, height } = await browser.getWindowSize();
   await browser
     .action('pointer', { parameters: { pointerType: 'touch' } })
