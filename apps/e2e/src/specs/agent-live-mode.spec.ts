@@ -11,6 +11,7 @@
 import { provisionAdmin, provisionUser, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import {
+  isSelected,
   isVisible,
   tap,
   waitForAbsent,
@@ -95,6 +96,7 @@ describe('switching the agent mode while a run works', () => {
     await goToSurface('agent');
     await selectThread(conversationId, 'agent');
     await waitForSelected('agent.mode.auto');
+    expect(await isSelected('agent.mode.manual')).toBe(false);
     await waitForFreshText('agent.permission.checkNote', 'The mock was told to ask about this one.', 60_000);
     await shot('live-mode-auto-after-relaunch');
 
@@ -132,6 +134,7 @@ describe('switching the agent mode while a run works', () => {
     await goToSurface('agent');
     await selectThread(conversationId, 'agent');
     await waitForSelected('agent.mode.auto');
+    expect(await isSelected('agent.mode.manual')).toBe(false);
     await shot('live-mode-idle-after-relaunch');
   });
 
