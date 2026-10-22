@@ -558,7 +558,7 @@ describe('a call knows when its result came back, empty or not (#267)', () => {
 
 describe('a full sandbox allocation reaches the card on every path (#254)', () => {
   const notice = { kind: 'sandbox_allocation' as const, reason: 'count' as const };
-  const output = 'Could not start a sandbox: You already have 1 sandbox running, which is your allocation.';
+  const output = 'Could not start a sandbox: You have 1 sandbox running or starting, and your allocation allows 1.';
   const bashCall = { kind: 'tool_call' as const, call_id: 'c1', tool: 'bash', args: { command: 'ls' } };
 
   it('from the live result', () => {
