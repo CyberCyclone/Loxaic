@@ -9,7 +9,8 @@
  *   up a sheet with the whole of it and the same answers.
  * - Chat's request is that sheet, opened by itself, which only an answer
  *   ends: a tap on the backdrop leaves it up. It waits for an overlay that
- *   is already open (Settings) rather than stacking on it.
+ *   is already open (Settings, or the composer's `+` on a phone) rather than
+ *   stacking on it.
  * - A character that changes what is displayed (a right-to-left override)
  *   is shown as an escape, on the bar and in the sheet.
  *
@@ -34,7 +35,9 @@ import {
   TOOL_PROMPT,
   getToolCalls,
   goToSurface,
+  closePlusMenu,
   listConversations,
+  openPlusMenu,
   openSettings,
   sendInNewRun,
   sendMessage,
@@ -165,19 +168,25 @@ describe('tool call details', () => {
     await waitForAbsent('agent.permission.bar');
   });
 
-  it("holds chat's request while Settings is open, then shows it", async function () {
+  it("holds chat's request while another overlay is open, then shows it", async function () {
     this.timeout(3 * 60_000);
+    // Settings on a desktop. On a phone the mock's eight seconds go before
+    // the sidebar and Settings are open, so the composer's `+` sheet stands
+    // in: one tap, and held by the same gate.
+    const desktop = platform() === 'web' || platform() === 'electron';
     await goToSurface('chat');
     // A send goes into the open thread: the case before left one open.
     await startNewThread('chat');
     const before = new Set((await listConversations(creds)).map((c) => c.id));
     await sendMessage(SLOW_TOOL_PROMPT);
-    // A keyboard left up after the send can take the tap on the menu button.
+    // A keyboard left up after the send can take the next tap.
     await closeKeyboard();
-    await openSettings();
-    await waitForVisible('settings.close');
+    const overlay = desktop ? 'settings.close' : 'composer.attach.library';
+    if (desktop) await openSettings();
+    else await openPlusMenu();
+    await waitForVisible(overlay);
 
-    // The request has arrived, and the call is stored, while Settings is up.
+    // The request has arrived, and the call is stored, while the overlay is up.
     let conversationId = '';
     await browser.waitUntil(
       async () => {
@@ -188,10 +197,11 @@ describe('tool call details', () => {
     );
     await browser.pause(1_500);
     expect(await isVisible('chat.approval.panel')).toBe(false);
-    expect(await isVisible('settings.close')).toBe(true);
-    await shot('tool-details-chat-held-under-settings');
+    expect(await isVisible(overlay)).toBe(true);
+    await shot('tool-details-chat-held-under-overlay');
 
-    await tap('settings.close');
+    if (desktop) await tap('settings.close');
+    else await closePlusMenu();
     await waitForVisible('chat.approval.panel', 20_000);
     await waitForFreshText('chat.approval.arg.path', 'notes.txt');
     await tap('chat.approval.reject');
