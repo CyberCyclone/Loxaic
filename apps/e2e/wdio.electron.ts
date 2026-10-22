@@ -148,6 +148,8 @@ export const config: WebdriverIO.Config = {
           // spec here may depend on a window being minimised (see sleep-wake).
           '--disable-backgrounding-occluded-windows',
           '--disable-renderer-backgrounding',
+          // Inside a Loxaic sandbox (#320): see wdio.web.ts.
+          ...(process.env.E2E_CHROME_NO_SANDBOX === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : []),
           ...(SELF_CONTAINED ? [`--loxaic-port=${process.env.E2E_PORT ?? ''}`] : []),
         ],
       },

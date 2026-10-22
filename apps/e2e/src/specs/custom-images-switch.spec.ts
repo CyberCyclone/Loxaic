@@ -30,6 +30,7 @@ import {
   startNewAgentRun,
   waitForRunDone,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 async function api(creds: Pick<Credentials, 'email' | 'password'>, method: string, pathname: string, body?: unknown): Promise<unknown> {
@@ -64,7 +65,8 @@ describe("changing a conversation's image (#253)", function () {
   let conversationId = '';
   let historyBefore: string[] = [];
 
-  before(async () => {
+  before(async function () {
+    requiresContainerEngine(this, 'custom images need a container engine and the mock registry');
     const registry = mockRegistry();
     const admin = await provisionAdmin();
     await resetSandboxSettings();

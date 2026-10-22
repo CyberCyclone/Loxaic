@@ -15,10 +15,12 @@ import {
   setSandboxMode,
   signIn,
   startNewAgentRun,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 describe('sandbox degraded UX', () => {
-  before(async () => {
+  before(async function () {
+    requiresContainerEngine(this, 'it switches the sandbox mode, which host mode pins');
     await provisionAdmin();
     // See sandbox-bash.spec.ts: the persisted mode outlives the process, so
     // start from a known one rather than trusting the previous run's cleanup.

@@ -46,6 +46,15 @@ export const BASE_URL = process.env.E2E_BASE_URL ?? `http://localhost:${String(P
  * tears down nothing — the app owns its stack's lifecycle.
  */
 export const SELF_CONTAINED = process.env.E2E_SELF_CONTAINED === '1';
+/**
+ * Running inside a Loxaic sandbox (the dev image, #320): there is no
+ * container engine to run sandboxes in, and none is needed — the test
+ * container is the isolation already. The server under test runs its agents'
+ * commands in host mode, Postgres is the sandbox's own (`loxaic-test pg`),
+ * and the mock registry, which needs Docker, is not started. Specs about the
+ * engine itself skip (`requiresContainerEngine` in helpers/app.ts).
+ */
+export const SANDBOX_HOST_MODE = process.env.E2E_SANDBOX_MODE === 'host';
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/loxaic';
 /**
@@ -358,6 +367,12 @@ async function ensurePostgres(): Promise<void> {
     log(`postgres already listening on ${host}:${String(port)} — reusing it`);
     return;
   }
+  if (SANDBOX_HOST_MODE) {
+    throw new Error(
+      `[e2e:standup] Postgres isn't answering at ${host}:${String(port)}. Inside a sandbox there is no Docker ` +
+        'to start one: run `loxaic-test pg` first.',
+    );
+  }
   log('starting postgres (docker compose up -d db)');
   await run('docker', ['compose', 'up', '-d', 'db'], REPO_ROOT);
   await waitUntil('postgres to accept connections', () => tcpOpen(host, port), 60_000);
@@ -465,10 +480,14 @@ async function ensureServer(): Promise<void> {
   const mockProvider = await startMockProvider();
   stopMockProvider = mockProvider.stop;
   writeFileSync(MOCK_PROVIDER_FILE, JSON.stringify({ apiBase: mockProvider.apiBase }), 'utf8');
-  log('starting the mock container registry and pushing its test images');
-  const registry = await startMockRegistry();
-  stopMockRegistry = registry.stop;
-  writeFileSync(MOCK_REGISTRY_FILE, JSON.stringify({ host: registry.host, marker: registry.marker, noSetsid: registry.noSetsid }), 'utf8');
+  if (SANDBOX_HOST_MODE) {
+    log('no container engine in host mode: the mock registry is not started, and the custom-image specs skip');
+  } else {
+    log('starting the mock container registry and pushing its test images');
+    const registry = await startMockRegistry();
+    stopMockRegistry = registry.stop;
+    writeFileSync(MOCK_REGISTRY_FILE, JSON.stringify({ host: registry.host, marker: registry.marker, noSetsid: registry.noSetsid }), 'utf8');
+  }
   const mcpPort = await freePort();
   mockMcpHttp = spawn(path.join(REPO_ROOT, 'apps/server/node_modules/.bin/tsx'), ['test-fixtures/mock-mcp-http-server.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
@@ -567,6 +586,20 @@ async function ensureServer(): Promise<void> {
       // The spec publishes a release while the picker is open.
       LLAMA_RELEASES_FRESH_MS: '0',
       LLAMA_RELEASES_URL: llamaReleases.downloadUrl,
+      ...(SANDBOX_HOST_MODE
+        ? {
+            // Pinned, so a spec cannot switch it to a container engine that
+            // is not there; resetSandboxSettings leaves it alone.
+            SANDBOX_MODE: 'host',
+            // There is no Docker bridge to listen on; host-mode sandboxes
+            // reach the proxy on loopback.
+            EGRESS_PROXY_BIND: '127.0.0.1',
+            // Chromium's own sandbox needs user namespaces a Loxaic sandbox
+            // does not grant; the container around this run is the boundary
+            // (apps/server/src/browser/AGENTS.md allows exactly this case).
+            BROWSER_NO_SANDBOX: '1',
+          }
+        : {}),
     },
   });
   spawnedServer = child;

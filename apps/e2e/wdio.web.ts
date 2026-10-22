@@ -23,9 +23,16 @@ export const config: WebdriverIO.Config = {
   capabilities: [
     {
       browserName: 'chrome',
+      // A Chrome and chromedriver already installed (the dev image's, #320),
+      // instead of the copies WebdriverIO downloads.
+      ...(process.env.CHROMEDRIVER_BIN ? { 'wdio:chromedriverOptions': { binary: process.env.CHROMEDRIVER_BIN } } : {}),
       'goog:chromeOptions': {
+        ...(process.env.CHROME_BIN ? { binary: process.env.CHROME_BIN } : {}),
         args: [
           ...(process.env.E2E_HEADED === '1' ? [] : ['--headless=new']),
+          // Inside a Loxaic sandbox: Chrome's own sandbox needs user
+          // namespaces it does not grant, and /dev/shm is 64 MB.
+          ...(process.env.E2E_CHROME_NO_SANDBOX === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : []),
           // Wide enough that the shell renders its desktop layout with the
           // sidebar pinned open; the suite copes with either, but a fixed size
           // keeps screenshots comparable between runs.

@@ -50,6 +50,7 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 - Scenario-driven specs (`agent-bugfix`, `agent-new-project`) run in auto mode.
 - Specs that sign in for admin calls go through `adminApi` (it caches the token); per-call sign-ins hit better-auth's rate limit. Cleanup runs first and throws rather than logging.
 - `E2E_SELF_CONTAINED=1` runs only a subset: admin and GitHub specs fail by construction. Compare with default mode before concluding anything.
+- `E2E_SANDBOX_MODE=host` (inside a Loxaic sandbox, #320) pins `SANDBOX_MODE=host`: skip only a spec about the container engine itself, from its `before` with `requiresContainerEngine(this, why)`; a chat feature that fails there is a bug to fix, not a skip.
 - Screenshots (`shot('name')`) go to gitignored `artifacts/`; capture the state that would look wrong if it regressed. Never commit them.
 - Wait prefs have a 5 s floor: shorten waits with `APPROVAL_TIMEOUT_MS`, never a pref.
 

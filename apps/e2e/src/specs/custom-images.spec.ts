@@ -49,6 +49,7 @@ import {
   signOut,
   startNewAgentRun,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 const native = () => platform() === 'ios' || platform() === 'android';
@@ -126,7 +127,8 @@ describe('custom sandbox images (#253)', function () {
   let other: Credentials;
   let sharedId = '';
 
-  before(async () => {
+  before(async function () {
+    requiresContainerEngine(this, 'custom images need a container engine and the mock registry');
     Object.assign(registry, mockRegistry());
     await provisionAdmin();
     await resetSandboxSettings();
