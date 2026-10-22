@@ -3,12 +3,13 @@
  *
  * The bar used to offer one answer, for one call. It now also offers the
  * standing one, and what it offers is decided by the run that is asking and by
- * who is looking — never by the mode selector, which only says what the next
- * message will use:
+ * who is looking — the run's own mode, which the selector switches since #311,
+ * never the selector itself:
  *
  *   - a builtin: allowed for the rest of the run and for later runs;
- *   - an MCP tool in an auto run: the bar says why auto is asking, "Allow once"
- *     stays one call, and "Allow always" ends the asking;
+ *   - an MCP tool in an auto run: the bar says why auto is asking until the run
+ *     goes to Manual, "Allow once" stays one call, and "Allow always" ends the
+ *     asking;
  *   - someone the conversation is shared with can answer the call, and is
  *     offered no standing grant on the owner's server;
  *   - the MCP tools sheet says where such an allow came from.
@@ -27,9 +28,11 @@ import {
   HTTP_MCP_PROMPT,
   MOCK_TOOL_DONE,
   TOOL_PROMPT,
+  getConversation,
   goToSurface,
   listConversations,
   openMcpServers,
+  sendInNewRun,
   sendMessage,
   signIn,
   signOut,
@@ -150,20 +153,29 @@ describe('agent "Allow always"', () => {
     await shot('agent-allow-always-next-run');
   });
 
-  it('says why an auto run is asking, whatever the mode selector says, and keeps "Allow once" to one call', async function () {
+  it('says why an auto run is asking, drops it once the run goes to Manual, and keeps "Allow once" to one call', async function () {
     this.timeout(4 * 60_000);
-    await startRun('auto', HTTP_MCP_PROMPT);
+    await startNewAgentRun();
+    await tap('agent.mode.auto');
+    const conversationId = await sendInNewRun(creds, HTTP_MCP_PROMPT);
     await waitForVisible('agent.permission.bar');
     await waitForTextIn('agent.permission.alwaysNote', 'get_me from httpmock');
     await shot('agent-auto-mcp-prompt');
 
-    // The selector is the next message's mode. Moving it while the run is
-    // parked used to relabel the buttons of a run it cannot change.
+    // Since #311 the selector switches the run that is going. A Manual run
+    // asks before every call, so there is no reason left to give: the note
+    // goes, the call is still asked, and the owner still has "Allow always".
     await tap('agent.mode.manual');
-    await browser.pause(500);
-    await waitForTextIn('agent.permission.alwaysNote', 'get_me from httpmock');
+    await browser.waitUntil(async () => (await getConversation(creds, conversationId)).permissionMode === 'manual', {
+      timeout: 10_000,
+      timeoutMsg: '[e2e] the run never went to Manual',
+    });
+    await waitForAbsent('agent.permission.alwaysNote');
+    await waitForVisible('agent.permission.bar');
     await waitForVisible('agent.permission.allowAlways');
-    await shot('agent-auto-mcp-prompt-selector-moved');
+    // The run switched: no line saying it stayed in Auto.
+    expect(await isVisible('agent.permission.mode')).toBe(false);
+    await shot('agent-mcp-prompt-switched-to-manual');
 
     await tap('agent.permission.allow');
     await waitForTextIn('chat.messageList', HTTP_MCP_LOGIN);
@@ -201,8 +213,8 @@ describe('agent "Allow always"', () => {
 
   it('still says so after the app is opened again, and "Allow always" ends the asking', async function () {
     this.timeout(5 * 60_000);
-    // A fresh session: the selector is back on Manual, and the bar is built
-    // from the run's snapshot. It must still describe the auto run.
+    // A fresh session: the bar is built from the run's snapshot, and must
+    // still describe the auto run.
     await signIn(creds);
     // The parked run is the owner's newest thread, so the screen opens on it.
     await goToSurface('agent');
