@@ -123,9 +123,12 @@ run_lane() {
     server)
       in_repo
       pg_start && migrate || return $?
+      # BROWSER_NO_SANDBOX: Chromium's own sandbox needs user namespaces this
+      # sandbox does not grant, and the sandbox is the boundary here
+      # (apps/server/src/browser/AGENTS.md allows exactly this case).
       cd apps/server && without_egress env MOCK_INFERENCE=true \
         BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-loxaic-test-secret-not-for-production}" \
-        BROWSER_DIR="$BROWSERS" npx vitest run "$@"
+        BROWSER_DIR="$BROWSERS" BROWSER_NO_SANDBOX=1 npx vitest run "$@"
       ;;
     mobile | desktop)
       in_repo
