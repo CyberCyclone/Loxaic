@@ -351,6 +351,13 @@
       "when": 1792631329446,
       "tag": "0049_conversation_permission_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1792654519409,
+      "tag": "0050_sandbox_allocations",
+      "breakpoints": true
     }
   ]
 }

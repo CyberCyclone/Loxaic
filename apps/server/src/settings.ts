@@ -33,6 +33,25 @@ export type SandboxEngine = "auto" | "docker" | "podman" | "custom";
  */
 export type CustomImagesPolicy = "off" | "shared" | "everyone";
 
+/**
+ * What one user's *running* sandboxes may hold together (#254): their memory
+ * and CPU limits summed, and how many there are. Paused sandboxes hold none of
+ * it. This is the server-wide default; an admin can override any part of it
+ * for one user (`user_sandbox_allocations`, agent/allocation.ts).
+ */
+export interface SandboxAllocation {
+  memoryMb: number;
+  cpus: number;
+  maxRunning: number;
+}
+
+/** What an admin may set an allocation to, the default and a user's own alike. */
+export const ALLOCATION_BOUNDS = {
+  memoryMb: { min: 256, max: 1_048_576 },
+  cpus: { min: 0.25, max: 256 },
+  maxRunning: { min: 1, max: 100 },
+} as const;
+
 export interface SandboxSettings {
   mode: SandboxMode;
   engine: SandboxEngine;
@@ -63,6 +82,8 @@ export interface SandboxSettings {
   /** How long a sandbox may go unused before {@link reapEnabled} destroys it. */
   reapAfterMs: number;
   customImages: CustomImagesPolicy;
+  /** Each user's default allocation; see {@link SandboxAllocation}. */
+  allocation: SandboxAllocation;
 }
 
 export interface SandboxSettingsView extends SandboxSettings {
@@ -76,6 +97,8 @@ export interface SandboxSettingsView extends SandboxSettings {
     reapEnabled: boolean;
     reapAfter: boolean;
     customImages: boolean;
+    /** `allocation.maxRunning`, pinned by SANDBOX_MAX_PER_USER. */
+    maxRunning: boolean;
   };
 }
 
@@ -88,6 +111,8 @@ export type SandboxSettingsPatch = Partial<{
   reapEnabled: boolean;
   reapAfterMs: number;
   customImages: CustomImagesPolicy;
+  /** Merged over the stored allocation: a patch may name one field. */
+  allocation: Partial<SandboxAllocation>;
 }>;
 
 /**
@@ -296,6 +321,10 @@ const DEFAULTS: SandboxSettings = {
   reapEnabled: true,
   reapAfterMs: 30 * DAY_MS,
   customImages: "off",
+  // Five sandboxes of Loxaic's own image (512 MB and one CPU each): the same
+  // room the count-only cap of five gave before allocations existed, so an
+  // upgrade refuses nothing it used to allow.
+  allocation: { memoryMb: 2560, cpus: 5, maxRunning: 5 },
 };
 
 export class SettingsError extends Error {
@@ -418,6 +447,19 @@ function envAllowNetwork(): boolean | null {
   return value === "1" || value === "true" || value === "yes";
 }
 
+/** SANDBOX_MAX_PER_USER, which predates allocations (#254) and now pins
+ * their `maxRunning`. */
+function envMaxRunning(): number | null {
+  const raw = envStr("SANDBOX_MAX_PER_USER");
+  if (raw === undefined) return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    warnOnce("SANDBOX_MAX_PER_USER", `[settings] ignoring SANDBOX_MAX_PER_USER="${raw}" (expected a positive whole number)`);
+    return null;
+  }
+  return value;
+}
+
 /** Durations are pinned in milliseconds rather than the hours/days the GUI
  * shows, so a test harness can ask for a one-second idle stop — the whole
  * reason these pins exist. Deliberately not range-checked the way the API is:
@@ -475,6 +517,7 @@ export function getSandboxSettings(): SandboxSettingsView {
   const reapEnabled = envReapEnabled();
   const reapAfterMs = envPositiveInt("SANDBOX_REAP_AFTER_MS");
   const customImages = envCustomImages();
+  const maxRunning = envMaxRunning();
 
   // Fail *closed* when the settings row couldn't be read: falling through to
   // DEFAULTS.mode ("container") would silently restart agent execution that
@@ -496,6 +539,11 @@ export function getSandboxSettings(): SandboxSettingsView {
     // A failed read resolves to off, like the mode: an unreadable row must
     // not hand out what an admin may have withdrawn.
     customImages: customImages ?? (loadFailed ? "off" : (persisted.customImages ?? DEFAULTS.customImages)),
+    allocation: {
+      memoryMb: persisted.allocation?.memoryMb ?? DEFAULTS.allocation.memoryMb,
+      cpus: persisted.allocation?.cpus ?? DEFAULTS.allocation.cpus,
+      maxRunning: maxRunning ?? persisted.allocation?.maxRunning ?? DEFAULTS.allocation.maxRunning,
+    },
     envOverrides: {
       mode: mode !== null,
       socket: socket !== null,
@@ -504,6 +552,7 @@ export function getSandboxSettings(): SandboxSettingsView {
       reapEnabled: reapEnabled !== null,
       reapAfter: reapAfterMs !== null,
       customImages: customImages !== null,
+      maxRunning: maxRunning !== null,
     },
   };
 }
@@ -822,7 +871,35 @@ function coerce(raw: unknown): Partial<SandboxSettings> {
     out.reapAfterMs = value.reapAfterMs;
   }
   if (isCustomImagesPolicy(value.customImages)) out.customImages = value.customImages;
+  // Field by field, each re-checked against the bounds: a stored value the API
+  // would refuse falls back to the default rather than reaching the cap.
+  if (typeof value.allocation === "object" && value.allocation !== null) {
+    const stored = value.allocation as Record<string, unknown>;
+    const allocation: Partial<SandboxAllocation> = {};
+    for (const key of ["memoryMb", "cpus", "maxRunning"] as const) {
+      if (allocationFieldError(key, stored[key]) === null) allocation[key] = stored[key] as number;
+    }
+    out.allocation = { ...DEFAULTS.allocation, ...allocation };
+  }
   return out;
+}
+
+/**
+ * Why `value` is not an acceptable allocation field, or null when it is.
+ * Shared by the default here and a user's override (agent/allocation.ts), so
+ * the two can never accept different things. Memory and the count are whole
+ * numbers; CPUs may be fractional, like a shared image's limit.
+ */
+export function allocationFieldError(field: keyof SandboxAllocation, value: unknown): string | null {
+  const bounds = ALLOCATION_BOUNDS[field];
+  const whole = field !== "cpus";
+  if (typeof value !== "number" || !Number.isFinite(value) || (whole && !Number.isInteger(value))) {
+    return `${field} must be ${whole ? "a whole number" : "a number"}`;
+  }
+  if (value < bounds.min || value > bounds.max) {
+    return `${field} must be between ${String(bounds.min)} and ${String(bounds.max)}`;
+  }
+  return null;
 }
 
 /**
@@ -1046,6 +1123,26 @@ function validate(input: unknown): SandboxSettingsPatch {
     patch.customImages = raw.customImages;
   }
 
+  if (raw.allocation !== undefined) {
+    if (typeof raw.allocation !== "object" || raw.allocation === null || Array.isArray(raw.allocation)) {
+      throw new SettingsError("allocation must be an object", "invalid");
+    }
+    const given = raw.allocation as Record<string, unknown>;
+    const allocation: Partial<SandboxAllocation> = {};
+    for (const key of Object.keys(given)) {
+      if (key !== "memoryMb" && key !== "cpus" && key !== "maxRunning") {
+        throw new SettingsError(`allocation has no field "${key}"`, "invalid");
+      }
+      const problem = allocationFieldError(key, given[key]);
+      if (problem) throw new SettingsError(problem, "invalid");
+      if (key === "maxRunning" && env.maxRunning) {
+        throw new SettingsError("maxRunning is pinned by the SANDBOX_MAX_PER_USER environment variable", "envOverride");
+      }
+      allocation[key] = given[key] as number;
+    }
+    patch.allocation = allocation;
+  }
+
   if (raw.reapAfterMs !== undefined) {
     patch.reapAfterMs = duration(raw.reapAfterMs, "reapAfterMs", REAP_AFTER_RANGE, env.reapAfter, "SANDBOX_REAP_AFTER_MS");
   }
@@ -1112,6 +1209,7 @@ async function performUpdate(input: unknown): Promise<SandboxSettingsView> {
     ...DEFAULTS,
     ...persisted,
     ...patch,
+    allocation: { ...DEFAULTS.allocation, ...persisted.allocation, ...patch.allocation },
   };
 
   await db

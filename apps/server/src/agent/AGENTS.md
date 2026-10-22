@@ -8,6 +8,7 @@ The agent's server-side pieces: builtin tool execution (`executor.ts`), the per-
 - A row records the network it was created with (`limits.network` via `networkFor(kind)`); anything describing a workspace's network reads the row, not the current setting.
 - `stopAllSandboxes` also sweeps every `running` row in the database; never call it from test cleanup. Use `destroyConversationSandboxes(id)`, and pass `ownerId`/`kind` to `reapAbandonedSandboxes` in tests.
 - An entry in `active` is a claim; tests of sweep behaviour must evict it with `__forgetActiveSandboxForTest`.
+- Every path that makes a sandbox running (create, resume, image switch, `POST /v1/sandboxes`) reserves its real limits with `reserveSandbox` and releases after the row says `running`; never pause a sandbox to make room (#254), and never pause one whose conversation, or a sub-agent working in it, has a run.
 - `createConfigFor` names the conversation owner as the sandbox `ownerId` and egress identity, never the sender, and resolves a workspace's custom image against that owner too.
 
 ## Builtin tools (executor.ts)

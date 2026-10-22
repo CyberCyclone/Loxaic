@@ -21,6 +21,7 @@ const ENV_KEYS = [
   "SANDBOX_REAP_ENABLED",
   "SANDBOX_REAP_AFTER_MS",
   "SANDBOX_CUSTOM_IMAGES",
+  "SANDBOX_MAX_PER_USER",
 ] as const;
 
 /** The no-env, nothing-persisted shape. Spread into the per-test expectations
@@ -33,6 +34,7 @@ const NO_OVERRIDES = {
   reapEnabled: false,
   reapAfter: false,
   customImages: false,
+  maxRunning: false,
 } as const;
 
 /** Restores whatever the ambient environment had, so a developer running
@@ -139,6 +141,19 @@ describe("sandbox settings precedence", () => {
     }
   });
 
+  it("defaults the allocation to five default sandboxes' worth (#254)", () => {
+    expect(getSandboxSettings().allocation).toEqual({ memoryMb: 2560, cpus: 5, maxRunning: 5 });
+  });
+
+  it("keeps the good fields of a stored allocation and defaults the bad ones", async () => {
+    await db.insert(serverSettings).values({
+      key: SANDBOX_KEY,
+      value: { allocation: { memoryMb: 8192, cpus: "lots", maxRunning: 0 } },
+    });
+    await loadServerSettings();
+    expect(getSandboxSettings().allocation).toEqual({ memoryMb: 8192, cpus: 5, maxRunning: 5 });
+  });
+
   it("ignores junk in a persisted row instead of trusting it", async () => {
     await db.insert(serverSettings).values({
       key: SANDBOX_KEY,
@@ -197,6 +212,23 @@ describe("updateSandboxSettings validation", () => {
     await expectRejection({ idleStopMs: 1_000 }, "invalid");
     await expectRejection({ reapAfterMs: 60_000 }, "invalid");
     await expectRejection({ reapAfterMs: 100 * 365 * 24 * 60 * 60 * 1000 }, "invalid");
+  });
+
+  it("rejects an allocation the bounds or types refuse (#254)", async () => {
+    await expectRejection({ allocation: 4096 }, "invalid");
+    await expectRejection({ allocation: { memoryMb: 100 } }, "invalid");
+    await expectRejection({ allocation: { memoryMb: 1024.5 } }, "invalid");
+    await expectRejection({ allocation: { cpus: 0.1 } }, "invalid");
+    await expectRejection({ allocation: { maxRunning: 0 } }, "invalid");
+    await expectRejection({ allocation: { disk: 10 } }, "invalid");
+  });
+
+  it("lets SANDBOX_MAX_PER_USER pin the count and nothing else of the allocation", async () => {
+    process.env.SANDBOX_MAX_PER_USER = "2";
+    const s = getSandboxSettings();
+    expect(s.allocation).toEqual({ memoryMb: 2560, cpus: 5, maxRunning: 2 });
+    expect(s.envOverrides).toEqual({ ...NO_OVERRIDES, maxRunning: true });
+    await expectRejection({ allocation: { maxRunning: 3 } }, "envOverride");
   });
 
   it("rejects a non-boolean reapEnabled", async () => {
@@ -359,7 +391,16 @@ describe("updateSandboxSettings persistence", () => {
       reapEnabled: true,
       reapAfterMs: 30 * 24 * 60 * 60 * 1000,
       customImages: "off",
+      allocation: { memoryMb: 2560, cpus: 5, maxRunning: 5 },
     });
+  });
+
+  it("merges an allocation patch into the stored one, field by field (#254)", async () => {
+    await updateSandboxSettings({ allocation: { memoryMb: 8192 } });
+    const view = await updateSandboxSettings({ allocation: { cpus: 2.5 } });
+    expect(view.allocation).toEqual({ memoryMb: 8192, cpus: 2.5, maxRunning: 5 });
+    const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
+    expect((row?.value as { allocation: unknown }).allocation).toEqual({ memoryMb: 8192, cpus: 2.5, maxRunning: 5 });
   });
 
   it("upserts rather than duplicating the row", async () => {

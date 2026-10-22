@@ -18,6 +18,7 @@ import { adminConversationRoutes, shareRoutes } from "./routes/shares";
 import { statsRoutes } from "./routes/stats";
 import { syncRoutes } from "./routes/sync";
 import { sandboxRoutes } from "./routes/sandbox";
+import { installApiErrorHandler } from "./routes/errors.ts";
 import { chatWsHandler } from "./ws/chat";
 import { sandboxTerminalWs } from "./ws/sandbox";
 import { agentWsHandler } from "./ws/agent";
@@ -184,6 +185,7 @@ app.get("/health", async () => {
 });
 
 // ── Routes ────────────────────────────────────────────────
+installApiErrorHandler(app);
 authRoutes(app);
 conversationRoutes(app);
 statsRoutes(app);

@@ -45,6 +45,19 @@ export interface PermissionCheckNote {
   reason?: string;
 }
 
+/**
+ * Why a tool call failed in a way a person can act on, beyond its output text.
+ * `sandbox_allocation` (#254): the conversation's sandbox could not start or
+ * wake because its owner's running sandboxes fill their allocation, so a
+ * client offers the Sandboxes screen. `reason` is "too_big" when the sandbox
+ * alone exceeds the whole allocation (only an admin can help), otherwise
+ * "count", "memory" or "cpus".
+ */
+export interface ToolNotice {
+  kind: "sandbox_allocation";
+  reason: "too_big" | "count" | "memory" | "cpus";
+}
+
 /** Why a `bash` call ran (or did not) without anyone being asked. Absent on a
  * call a person approved, and from a server that predates it. */
 export interface ToolPermission {
@@ -685,6 +698,7 @@ export type StreamEventKind =
       images?: AttachmentRef[];
       /** web_fetch used the conversation's browser (#281). */
       browser?: true;
+      notice?: ToolNotice;
     }
   /** Kept for app builds that read the live list from it; a current client
    * reads the list from the `todo_write` call (apps/mobile/lib/todos.ts). */
@@ -742,6 +756,7 @@ export interface StreamSnapshotMessage {
     permission?: ToolPermission;
     images?: AttachmentRef[];
     browser?: true;
+    notice?: ToolNotice;
   }[];
   status: "streaming" | "complete" | "error" | "cancelled";
   usage?: TurnUsage;

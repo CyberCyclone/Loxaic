@@ -441,6 +441,21 @@ export const sandboxes = pgTable("sandboxes", {
   stoppedAt: timestamp("stopped_at"),
 });
 
+/**
+ * An admin's override of one user's sandbox allocation (#254): how much
+ * memory and CPU, and how many sandboxes, that user's *running* sandboxes may
+ * hold together. Each column is null for "the server-wide default" (the
+ * sandbox settings row), so an admin can raise one dimension and leave the
+ * others following the default. No row at all means every dimension does.
+ */
+export const userSandboxAllocations = pgTable("user_sandbox_allocations", {
+  userId: text("user_id").primaryKey().references(() => user.id, { onDelete: "cascade" }),
+  memoryMb: integer("memory_mb"),
+  cpus: real("cpus"),
+  maxRunning: integer("max_running"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // ── Routines ──
 export const routines = pgTable("routines", {
   id: uuid("id").primaryKey().defaultRandom(),

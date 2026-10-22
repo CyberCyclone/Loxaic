@@ -27,6 +27,7 @@ import {
   parseTodoList,
   type ThinkingLevel,
   type PermissionCheckNote,
+  type ToolNotice,
   type ToolPermission,
 } from "@loxaic/types";
 import {
@@ -84,6 +85,7 @@ import {
   hasActiveSandbox,
   hasOverflowWrite,
   markOverflowWritten,
+  SandboxLimitError,
 } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
 import { decideBash } from "../../permissions/bash/policy.ts";
@@ -1630,6 +1632,7 @@ export async function runToolLoop(ctx: {
           ...(outcome.images ? { images: outcome.images } : {}),
           ...(outcome.images && outcome.imagesSentToModel ? { images_sent_to_model: true } : {}),
           ...(outcome.browser ? { browser: true } : {}),
+          ...(outcome.notice ? { notice: outcome.notice } : {}),
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
         if (outcome.images && outcome.imagesSentToModel) screenshotTurns.push({ callId: call.id, images: outcome.images });
@@ -2066,6 +2069,8 @@ async function runOneToolCall(
   imagesSentToModel?: boolean;
   /** web_fetch used the conversation's browser (#281). */
   browser?: true;
+  /** A failure a person can act on (#254's full allocation). */
+  notice?: ToolNotice;
 }> {
   const { userId, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
@@ -2235,6 +2240,10 @@ async function runOneToolCall(
       const raw = (err as Error).message;
       const githubRefusal = describeGithubPermissionFailure({ message: raw, need: "contents-read" });
       const output = `Could not start a sandbox: ${githubRefusal ?? raw}`;
+      // A full allocation (#254) is something the person fixes, not the
+      // model: marked, so the card can offer the Sandboxes screen.
+      const notice: ToolNotice | undefined =
+        err instanceof SandboxLimitError ? { kind: "sandbox_allocation", reason: err.reason } : undefined;
       producer.emit({
         kind: "tool.result",
         message_id: assistantMsgId,
@@ -2242,8 +2251,9 @@ async function runOneToolCall(
         tool: toolName,
         output,
         ok: false,
+        ...(notice ? { notice } : {}),
       });
-      return { output, ok: false };
+      return { output, ok: false, ...(notice ? { notice } : {}) };
     }
   }
 

@@ -1,5 +1,17 @@
 import type { FastifyInstance } from "fastify";
-import { count, db, desc, ilike, or, user } from "@loxaic/db";
+import { and, count, db, desc, eq, ilike, inArray, ne, or, user } from "@loxaic/db";
+import { sandboxes, userSandboxAllocations } from "@loxaic/db/schema";
+import {
+  AllocationInputError,
+  allocationFor,
+  clearAllocationOverride,
+  resolveAllocation,
+  rowNeed,
+  setAllocationOverride,
+  type AllocationUsage,
+} from "../agent/allocation.ts";
+import { runningUsage } from "../agent/sandbox-manager.ts";
+import { getSandboxSettings, type SandboxAllocation } from "../settings.ts";
 import { requireAdmin } from "../auth/middleware";
 import { isBanned } from "../auth/ban.ts";
 import { resetUserPassword, UserNotFoundError } from "../auth/password-reset.ts";
@@ -52,11 +64,41 @@ export function adminUserRoutes(app: FastifyInstance) {
         .limit(MAX_USERS),
       db.select({ n: count() }).from(user).where(where),
     ]);
+    const sandbox = await sandboxSummaries(rows.map((r) => r.id));
     // `banned` means what the middleware enforces: an expired ban is lifted.
     return {
-      users: rows.map(({ banExpires, ...r }) => ({ ...r, banned: isBanned({ banned: r.banned, banExpires }) })),
+      users: rows.map(({ banExpires, ...r }) => ({
+        ...r,
+        banned: isBanned({ banned: r.banned, banExpires }),
+        sandbox: sandbox.get(r.id),
+      })),
       total: n,
     };
+  });
+
+  /**
+   * Overrides one user's sandbox allocation (#254). Each field is a value,
+   * null to follow the server-wide default again, or absent to leave alone.
+   * Lowering it pauses nothing: it only refuses their next start.
+   */
+  app.put<{ Params: { id: string } }>("/v1/admin/users/:id/sandbox-allocation", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (!(await userExists(request.params.id))) return reply.code(404).send({ error: "User not found" });
+    try {
+      await setAllocationOverride(request.params.id, request.body);
+    } catch (err) {
+      if (err instanceof AllocationInputError) return reply.code(err.status).send({ error: err.message });
+      throw err;
+    }
+    return sandboxSummary(request.params.id);
+  });
+
+  /** Puts one user back on the server-wide default allocation. */
+  app.delete<{ Params: { id: string } }>("/v1/admin/users/:id/sandbox-allocation", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (!(await userExists(request.params.id))) return reply.code(404).send({ error: "User not found" });
+    await clearAllocationOverride(request.params.id);
+    return sandboxSummary(request.params.id);
   });
 
   /**
@@ -80,4 +122,54 @@ export function adminUserRoutes(app: FastifyInstance) {
       throw err;
     }
   });
+}
+
+interface SandboxSummary {
+  allocation: SandboxAllocation;
+  overridden: Record<keyof SandboxAllocation, boolean>;
+  used: AllocationUsage;
+}
+
+async function userExists(id: string): Promise<boolean> {
+  const rows = await db.select({ id: user.id }).from(user).where(eq(user.id, id)).limit(1);
+  return rows.length > 0;
+}
+
+async function sandboxSummary(userId: string): Promise<SandboxSummary> {
+  const [resolved, used] = await Promise.all([allocationFor(userId), runningUsage(userId)]);
+  return { ...resolved, used };
+}
+
+/**
+ * Every listed user's allocation and what their running sandboxes hold, in
+ * two queries rather than two per user: the list is up to MAX_USERS long.
+ * Resolved the same way `allocationFor` resolves one user's, and summed the
+ * same way the allocation check sums (`rowNeed`), so the list and the
+ * refusal can never disagree.
+ */
+async function sandboxSummaries(userIds: string[]): Promise<Map<string, SandboxSummary>> {
+  const out = new Map<string, SandboxSummary>();
+  if (userIds.length === 0) return out;
+  const settings = getSandboxSettings();
+  const [overrides, running] = await Promise.all([
+    db.select().from(userSandboxAllocations).where(inArray(userSandboxAllocations.userId, userIds)),
+    db
+      .select({ ownerId: sandboxes.ownerId, provider: sandboxes.provider, limits: sandboxes.limits })
+      .from(sandboxes)
+      .where(and(inArray(sandboxes.ownerId, userIds), eq(sandboxes.status, "running"), ne(sandboxes.provider, "executor"))),
+  ]);
+  const byUser = new Map(overrides.map((row) => [row.userId, row]));
+  for (const id of userIds) {
+    const resolved = resolveAllocation(byUser.get(id), settings.allocation, settings.envOverrides.maxRunning);
+    out.set(id, { ...resolved, used: { running: 0, memoryMb: 0, cpus: 0 } });
+  }
+  for (const row of running) {
+    const summary = out.get(row.ownerId);
+    if (!summary) continue;
+    const need = rowNeed(row);
+    summary.used.running++;
+    summary.used.memoryMb += need.memoryMb;
+    summary.used.cpus += need.cpus;
+  }
+  return out;
 }
