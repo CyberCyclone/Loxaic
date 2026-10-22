@@ -22,6 +22,7 @@ import {
   signIn,
   startNewAgentRun,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 describe('sandbox bash parity', () => {
@@ -52,7 +53,8 @@ describe('sandbox bash parity', () => {
     await shot('sandbox-bash-container');
   });
 
-  it('runs the identical flow in host mode after a live switch', async () => {
+  it('runs the identical flow in host mode after a live switch', async function () {
+    requiresContainerEngine(this, 'it switches the sandbox mode, which host mode pins');
     await openSandboxSettings();
     await setSandboxMode('host');
     await shot('sandbox-host-mode-enabled');

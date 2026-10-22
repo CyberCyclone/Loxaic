@@ -31,6 +31,7 @@ import {
   signUp,
   startNewAgentRun,
   waitForRunDone,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 const SLOW_TOOL_PROMPT = 'count slowly in the sandbox';
@@ -43,6 +44,7 @@ describe('stopping an agent run', () => {
   });
 
   it('acknowledges the press while a slow command is being killed, and ends the run', async function () {
+    requiresContainerEngine(this, 'a host-mode kill is immediate, so there is no Stopping to see');
     this.timeout(2 * 60_000);
 
     // The acknowledgement — "Stopping…" and the disabled stop control — lasts

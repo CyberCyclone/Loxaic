@@ -33,6 +33,7 @@ import {
   startNewAgentRun,
   waitForRunDone,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 describe('agent workspace: GitHub repository', () => {
@@ -129,7 +130,8 @@ describe('agent workspace: GitHub repository', () => {
     await shot('github-workspace-contents-refused');
   });
 
-  it('refuses GitHub in the chooser when sandboxes have no network, and says why', async () => {
+  it('refuses GitHub in the chooser when sandboxes have no network, and says why', async function () {
+    requiresContainerEngine(this, 'a host-mode sandbox always has the network');
     await patchSandboxSettings({ allowNetwork: false });
     // The agent screen reads /v1/config when it mounts, so leave and return
     // for the chooser to see the changed setting.

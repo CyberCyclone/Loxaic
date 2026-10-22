@@ -52,6 +52,7 @@ import {
   userIdFor,
   waitForRunDone,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 
@@ -106,6 +107,7 @@ describe('sandbox allocations (#254)', () => {
   });
 
   it('refuses a second sandbox, offers the Sandboxes screen, and Pause makes room', async function () {
+    requiresContainerEngine(this, 'Pause stops a container; a host-mode sandbox has nothing to pause');
     this.timeout(6 * 60_000);
 
     // Chat A takes the one place.

@@ -31,6 +31,7 @@ import {
   signIn,
   startNewAgentRun,
   waitForRunDone,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 const ALLOWED = 'make a checked note';
@@ -139,6 +140,7 @@ describe('switching the agent mode while a run works', () => {
   });
 
   it('runs a waiting command straight away where the sandbox has no network', async function () {
+    requiresContainerEngine(this, 'a host-mode sandbox always has the network');
     this.timeout(3 * 60_000);
     await resetSandboxSettings();
     const conversationId = await askingRun('manual', ASKED);

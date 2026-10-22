@@ -8,14 +8,23 @@ import { adminCreds, apiToken, provisionAdmin, uniqueCreds } from '../helpers/au
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { isVisible, waitForVisible } from '../helpers/selectors.ts';
-import { openSandboxSettings, resetSandboxSettings, setSandboxMode, signIn, signOut, signUp } from '../helpers/app.ts';
+import {
+  openSandboxSettings,
+  requiresContainerEngine,
+  resetSandboxSettings,
+  setSandboxMode,
+  signIn,
+  signOut,
+  signUp,
+} from '../helpers/app.ts';
 
 describe('sandbox settings screen', () => {
   after(async () => {
     await resetSandboxSettings();
   });
 
-  it('admin sees engine availability and can switch modes through the confirm', async () => {
+  it('admin sees engine availability and can switch modes through the confirm', async function () {
+    requiresContainerEngine(this, 'the engine picker and mode switch need a container engine');
     await provisionAdmin();
     await signIn(adminCreds());
     await openSandboxSettings();
