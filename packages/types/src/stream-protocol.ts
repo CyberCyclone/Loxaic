@@ -626,6 +626,15 @@ export type StreamEventKind =
    * a client only ever renders the place.
    */
   | { kind: "run.queued"; position: number }
+  /**
+   * The run's permission mode (#311): written once as the run starts, and
+   * again whenever someone who may act on the run switches it between Manual
+   * and Auto mid-run (`agent.mode` with a `conversation_id`). The next tool
+   * call, and any approval still waiting, is decided in this mode. Like
+   * `subagent.*`, it says nothing about where the run is, so it never clears a
+   * queue position.
+   */
+  | { kind: "run.mode"; mode: PermissionMode }
   | { kind: "iteration"; n: number; max: number }
   /**
    * The run has paused to ask whether to keep going. It has given its
@@ -868,6 +877,9 @@ export interface StreamSnapshot {
   /** The sub-agents this run spawned, folded from its `subagent.*` events.
    * Absent when it spawned none. */
   subagents?: SubAgentLive[];
+  /** The run's permission mode now, folded from `run.mode` (#311). Absent from
+   * an older server, and for a run that never had one (compaction). */
+  mode?: PermissionMode;
 }
 
 /**
@@ -1111,7 +1123,16 @@ export type ClientMessage =
    * ignores it. */
   | { type: "send.status"; client_ref: string }
   | { type: "stream.stop"; stream_id: string }
-  | { type: "agent.mode"; mode: PermissionMode }
+  /**
+   * The mode selector moved. With `conversation_id`, the conversation
+   * remembers it as the mode its next message opens in, and a run going there
+   * (with its sub-agents) switches between Manual and Auto at once, for its
+   * next tool call and any approval still waiting (#311). Planning, in or
+   * out, applies from the next message: its prompt and tools are fixed for
+   * the run. Without one (an older client, or a thread not yet created) it is
+   * only echoed back.
+   */
+  | { type: "agent.mode"; mode: PermissionMode; conversation_id?: string }
   /** `stream_id` names the run being answered. Call ids are the model's own and
    * repeat (`call_0`), and a thread can now have a parent and its sub-agents
    * each waiting on one — so a client that knows the stream says so, and that

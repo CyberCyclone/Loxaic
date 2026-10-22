@@ -65,6 +65,7 @@ The one frontend (Expo + expo-router + gluestack-ui v5 + UniWind) for iOS, Andro
 ### Run state
 
 - Never read a waiting approval's mode from the mode selector — the selector is the next message's mode.
+- The selector follows the thread on screen only through `followSelector` (`lib/modeSelector.ts`); never reset it to a fixed mode on load, reconnect or thread switch.
 
 ### Updates (`expo-updates.ts`)
 

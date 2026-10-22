@@ -794,6 +794,7 @@ export default function AgentScreen() {
         onAllowAlways={subAgents.panel.allowAlways}
         onDeny={subAgents.panel.deny}
         onClose={subAgents.panel.close}
+        selectorMode={mode}
       />
       <QuestionsPanel
         questions={openQuestions?.questions ?? null}

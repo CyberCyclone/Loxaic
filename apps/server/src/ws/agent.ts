@@ -7,7 +7,7 @@ import { resolveCommandSkill } from "../skills/resolve.ts";
 import { recordSkillUse } from "../skills/usage.ts";
 import { createDelivery } from "./delivery.ts";
 import { assertConversationAccess } from "../streams/authz.ts";
-import { answerApproval, answerCheckin, mayActOnRun } from "./run-actions.ts";
+import { answerApproval, answerCheckin, changeRunMode, mayActOnRun } from "./run-actions.ts";
 import { getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
 import { beginSendFor, sendErrorFor, sendOutcomeFor } from "./send-outcomes.ts";
@@ -219,8 +219,10 @@ export function agentWsHandler(app: FastifyInstance) {
           const run = getRun(msg.stream_id);
           if (run && (await mayActOnRun(userId, run.conversationId))) run.abort.abort();
         } else if (msg.type === "agent.mode") {
-          // Modes are carried explicitly on every agent.send; this is just a
-          // UI-preference echo, not durable server state.
+          // Switches the conversation's live run and remembers the pick (see
+          // changeRunMode). Every send still carries its own mode; the echo is
+          // for clients that predate #311, which move their selector on it.
+          await changeRunMode(userId, msg.conversation_id, msg.mode);
           safeSend({ type: "agent.mode_changed", mode: msg.mode });
         } else if (msg.type === "agent.approve" || msg.type === "agent.deny") {
           // See answerApproval: run-scoped, and a named stream is the only run

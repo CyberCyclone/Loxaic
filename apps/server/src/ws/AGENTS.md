@@ -7,7 +7,7 @@ WebSocket handlers: chat/agent sockets, stream delivery (`delivery.ts`), send ou
 - Every command re-authorizes (`assertConversationAccess`); a revoke takes effect on the next command, not instantly.
 - Anything that outlives the command that created it re-authorizes per delivery: a watch, each run it announces, live `conversation.run` notices, `conversation.rewound`, and a `send.status` replay before it re-taps a run.
 - After an authz await, re-read the registry before sending — run state may have changed meanwhile.
-- Stop and approve authorize on the conversation (`mayActOnRun`, `actingRole` for sub-agents), never on the run's starter; `findRunsByApprovalCallId` only locates. Refusals are silent no-ops.
+- Stop, approve and a mode switch (`changeRunMode`) authorize on the conversation (`mayActOnRun`, `actingRole` for sub-agents), never on the run's starter; `findRunsByApprovalCallId` only locates. Refusals are silent no-ops.
 - `agent.approve`/`deny` with a `stream_id` act only on that run; a named run without the approval is a no-op and must not fall back to the call-id lookup — model call ids repeat across runs.
 - Type-check every element of socket-supplied attachment arrays (`validateSendAttachments`); socket input is a claim, and `RegExp.test` coerces arrays.
 

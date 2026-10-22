@@ -102,7 +102,7 @@ import { countShownScreenshots, screenshotMessage, screenshotTurnsOf, SCREENSHOT
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
-import { clearRunApproval, clearRunCheckin, clearRunQueuePosition, getRun, setRunApproval, setRunCheckin, setRunQueuePosition, unregisterRun } from "../registry.ts";
+import { clearRunApproval, clearRunCheckin, clearRunQueuePosition, getRun, onRunModeChange, setRunApproval, setRunCheckin, setRunQueuePosition, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
@@ -558,6 +558,11 @@ export async function runToolLoop(ctx: {
   producer: StreamProducer;
 }): Promise<void> {
   const { streamId, convId, userId, model, mode, abort, producer } = ctx;
+  // The mode each tool call is decided in: `mode` until someone switches the
+  // run between Manual and Auto (#311, `setRunMode`). `mode` itself stays the
+  // one the run was built for — its system prompt, its tools and the planning
+  // nudge — since Planning never changes mid-run (`liveModeAfter`).
+  const liveMode = (): PermissionMode => getRun(streamId)?.mode ?? mode;
   // Whose workspace the tools run in, and whose MCP choices apply.
   const workspaceConvId = ctx.role?.parentConvId ?? convId;
   const checkpointTurn: CheckpointTurn = ctx.checkpointTurn ?? { conversationId: workspaceConvId, turnMessageId: ctx.userMsgId };
@@ -576,6 +581,13 @@ export async function runToolLoop(ctx: {
   let slot: RunSlot | null = null;
 
   try {
+    // The run's mode, in its log for every device following it, and again on
+    // each switch. Not for chat, which has no selector and always asks.
+    if (ctx.surface === "agent") {
+      const handle = getRun(streamId);
+      if (handle) handle.emitMode = (next) => { producer.emit({ kind: "run.mode", mode: next }); };
+      producer.emit({ kind: "run.mode", mode: liveMode() });
+    }
     // One read for both: the iteration ceiling and the builtin allowlist live
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
     // again on the next line.
@@ -674,9 +686,11 @@ export async function runToolLoop(ctx: {
     if (!ctx.role) recordRequestShape(convId, { model, system: systemPrompt, tools, thinking: thinkingBody });
     // Recorded on the conversation for a run nobody sends: a compaction after
     // a restart has no request shape to copy the level from. Best-effort.
+    // And the mode, which the thread opens in after a reload (#311). Not on
+    // a sub-agent's row, which nobody sends into.
     await db
       .update(conversations)
-      .set({ thinkingLevel })
+      .set({ thinkingLevel, ...(ctx.surface === "agent" && !ctx.role ? { permissionMode: liveMode() } : {}) })
       .where(eq(conversations.id, convId))
       .catch((err: unknown) => { console.warn(`recording the thinking level of ${convId} failed: ${(err as Error).message}`); });
     // Appended to as the run goes; rebuilt only by a compaction inside it.
@@ -1526,7 +1540,7 @@ export async function runToolLoop(ctx: {
               convId,
               streamId,
               userId,
-              mode,
+              mode: liveMode(),
               surface: ctx.surface,
               assistantMsgId,
               producer,
@@ -1556,7 +1570,7 @@ export async function runToolLoop(ctx: {
               convId,
               workspaceConvId,
               userId,
-              mode,
+              mode: liveMode,
               toolset,
               producer,
               assistantMsgId,
@@ -2011,7 +2025,9 @@ async function runOneToolCall(
      * sub-agent its parent's. */
     workspaceConvId: string;
     userId: string;
-    mode: PermissionMode;
+    /** The run's mode now: read for each decision, since a person can switch
+     * it between Manual and Auto while the run works (#311). */
+    mode: () => PermissionMode;
     toolset: Toolset;
     producer: StreamProducer;
     assistantMsgId: string;
@@ -2060,7 +2076,7 @@ async function runOneToolCall(
   /** web_fetch used the conversation's browser (#281). */
   browser?: true;
 }> {
-  const { userId, mode, toolset, producer, assistantMsgId } = ctx;
+  const { userId, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
   const args = safeParseArgs(call.function.arguments);
 
@@ -2083,26 +2099,17 @@ async function runOneToolCall(
   // (permissions/bash/policy.ts), checked like a command for a file write
   // outside the workspace in auto mode where nothing contains it, and by the
   // toolset's own rule for everything else.
-  const gate = await permissionGate(ctx, resolved, call, args);
-  if (gate.kind === "refused") {
-    producer.emit({
-      kind: "tool.result",
-      message_id: assistantMsgId,
-      call_id: call.id,
-      tool: toolName,
-      output: gate.output,
-      ok: false,
-      ...(gate.permission ? { permission: gate.permission } : {}),
-    });
-    return { output: gate.output, ok: false, ...(gate.permission ? { permission: gate.permission } : {}) };
-  }
-  // Why it ran unasked, shown beside the call; absent when a person approved.
-  const permission = gate.kind === "run" ? gate.permission : undefined;
-
+  //
+  // Decided again whenever the run's mode changes while it asks (#311): a
+  // person who switches to Auto at the prompt means this call too, so it goes
+  // to the permission check (or runs, where the sandbox contains it), and a
+  // switch back to Manual asks without the check's note.
+  let gate = await permissionGate(ctx, resolved, call, args);
   let always = false;
   let answeredBy: string | null = null;
-  if (gate.kind === "ask") {
+  while (gate.kind === "ask") {
     const deadline = ctx.approvalDeadline();
+    const askedIn = ctx.mode();
     producer.emit({
       kind: "approval.request",
       call_id: call.id,
@@ -2111,7 +2118,7 @@ async function runOneToolCall(
       // What the buttons will do, as facts about this run (#266): its mode,
       // and the one person whose "Allow always" is recorded. A client's mode
       // selector says neither — it is the next message's mode.
-      mode,
+      mode: askedIn,
       granter_user_id: userId,
       // For `bash`, the rules "Allow always" records — the server's proposal,
       // never the client's — and why the permission check sent it here.
@@ -2127,13 +2134,17 @@ async function runOneToolCall(
     // exactly as long as the user takes to click. Re-taken at the front of the
     // queue afterwards, so approving does not cost the user their place.
     const answer = await ctx.slot.yieldWhile(() =>
-      waitForApproval(ctx.streamId, call.id, ctx.signal, deadline.ms),
+      waitForApproval(ctx.streamId, call.id, ctx.signal, deadline.ms, askedIn),
     );
-    const outcome = answer.outcome;
+    if (answer.outcome === "regate") {
+      // Back on the slot, which the permission check runs under.
+      gate = await permissionGate(ctx, resolved, call, args);
+      continue;
+    }
     always = answer.always;
     answeredBy = answer.answeredBy;
-    if (outcome !== "approved") {
-      const output = approvalRefusalText(outcome);
+    if (answer.outcome !== "approved") {
+      const output = approvalRefusalText(answer.outcome);
       producer.emit({
         kind: "tool.result",
         message_id: assistantMsgId,
@@ -2144,7 +2155,22 @@ async function runOneToolCall(
       });
       return { output, ok: false };
     }
+    break;
   }
+  if (gate.kind === "refused") {
+    producer.emit({
+      kind: "tool.result",
+      message_id: assistantMsgId,
+      call_id: call.id,
+      tool: toolName,
+      output: gate.output,
+      ok: false,
+      ...(gate.permission ? { permission: gate.permission } : {}),
+    });
+    return { output: gate.output, ok: false, ...(gate.permission ? { permission: gate.permission } : {}) };
+  }
+  // Why it ran unasked, shown beside the call; absent when a person approved.
+  const permission = gate.kind === "run" ? gate.permission : undefined;
 
   // "Allow always" (#266), recorded only for the person the tools belong to.
   // Anyone who can edit the conversation may answer an approval, and the
@@ -2348,8 +2374,9 @@ async function permissionGate(
 ): Promise<Gate> {
   if (resolved.source.kind === "builtin" && resolved.name === "bash") {
     const command = typeof args.command === "string" ? args.command : "";
-    const isolation = ctx.mode === "auto" ? await ctx.isolation() : { isolated: false, roots: [] };
-    const decision = decideBash({ command, mode: ctx.mode, rules: ctx.commandRules, isolated: isolation.isolated });
+    const mode = ctx.mode();
+    const isolation = mode === "auto" ? await ctx.isolation() : { isolated: false, roots: [] };
+    const decision = decideBash({ command, mode, rules: ctx.commandRules, isolated: isolation.isolated });
     switch (decision.kind) {
       case "deny":
         return { kind: "refused", output: decision.reason, permission: { by: "denied", rule: decision.rule } };
@@ -2364,7 +2391,7 @@ async function permissionGate(
     }
   }
   if (
-    ctx.mode === "auto" &&
+    ctx.mode() === "auto" &&
     resolved.source.kind === "builtin" &&
     (resolved.name === "fs_write" || resolved.name === "fs_edit")
   ) {
@@ -2375,7 +2402,7 @@ async function permissionGate(
       return checkOrAsk(ctx, call, `${verb} ${path}`, [], isolation.roots[0] ?? null);
     }
   }
-  return ctx.toolset.requiresApproval(resolved, ctx.mode) ? { kind: "ask", rules: [] } : { kind: "run" };
+  return ctx.toolset.requiresApproval(resolved, ctx.mode()) ? { kind: "ask", rules: [] } : { kind: "run" };
 }
 
 /**
@@ -2464,7 +2491,7 @@ async function checkOrAsk(
  * conclude the user had denied the same call twice, five minutes apart, when
  * they had never been shown a prompt at all.
  */
-type ApprovalOutcome = "approved" | "denied" | "timeout" | "aborted" | "gone";
+type ApprovalOutcome = "approved" | "denied" | "timeout" | "aborted" | "gone" | "regate";
 
 /** How an approval wait ended, and — for an approval — whether the person
  * also asked for the tool to stop asking, and who they were. */
@@ -2493,7 +2520,7 @@ interface ApprovalAnswer {
  * prompt. The branch with the weakest evidence must not carry the strongest
  * recommendation.
  */
-function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "approved">): string {
+function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "approved" | "regate">): string {
   switch (outcome) {
     case "denied":
       return "User denied this tool call.";
@@ -2597,12 +2624,18 @@ function waitForStepsDecision(streamId: string, signal: AbortSignal, timeoutMs: 
  * three of the four cannot support. Registered after the `aborted` re-check
  * rather than before, so an abort that fired while this was being set up
  * cannot be missed.
+ *
+ * `regate` is nobody's answer: the run's mode changed while it waited (#311),
+ * and the caller decides the call again. `askedIn` is the mode the question
+ * went out in, compared once the listener is on, so a switch landing between
+ * the question and this wait is not missed either.
  */
 function waitForApproval(
   streamId: string,
   callId: string,
   signal: AbortSignal,
   timeoutMs: number,
+  askedIn: PermissionMode,
 ): Promise<ApprovalAnswer> {
   return new Promise<ApprovalAnswer>((resolve) => {
     if (signal.aborted) {
@@ -2623,11 +2656,13 @@ function waitForApproval(
       done = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
+      stopWatchingMode();
       clearRunApproval(run, callId);
       resolve({ outcome, always: outcome === "approved" && by?.always === true, answeredBy: by?.userId ?? null });
     };
     const onAbort = () => { settle("aborted"); };
     const timer = setTimeout(() => { settle("timeout"); }, timeoutMs);
+    const stopWatchingMode = onRunModeChange(run, () => { settle("regate"); });
     // Only this function knows the difference between a person saying no and
     // nobody answering at all; the two WebSocket handlers just pass on what
     // was answered and by whom.
@@ -2635,6 +2670,7 @@ function waitForApproval(
     // (#282), so nothing may park a run on a person without saying so.
     setRunApproval(run, callId, (approved, by) => { settle(approved ? "approved" : "denied", by); });
     signal.addEventListener("abort", onAbort, { once: true });
+    if ((run.mode ?? askedIn) !== askedIn) settle("regate");
   });
 }
 

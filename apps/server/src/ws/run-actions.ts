@@ -1,5 +1,18 @@
+import { db, eq } from "@loxaic/db";
+import { conversations } from "@loxaic/db/schema";
+import type { PermissionMode } from "@loxaic/types";
 import { actingRole, atLeast, resolveAccess } from "../streams/authz.ts";
-import { clearRunApproval, findRunsByApprovalCallId, getRun, takeRunCheckin, isStepsDecision, type RunHandle } from "../streams/registry.ts";
+import {
+  clearRunApproval,
+  findRunsByApprovalCallId,
+  getRun,
+  getRunByConversation,
+  listChildRuns,
+  setRunMode,
+  takeRunCheckin,
+  isStepsDecision,
+  type RunHandle,
+} from "../streams/registry.ts";
 
 /**
  * Whether this user may stop a run or answer its approvals.
@@ -100,4 +113,42 @@ export async function answerCheckin(
   const resolve = takeRunCheckin(run);
   if (!resolve) return;
   resolve(decision, userId);
+}
+
+/** Whether a mode off a socket is one of the three words. */
+function isPermissionMode(value: unknown): value is PermissionMode {
+  return value === "planning" || value === "manual" || value === "auto";
+}
+
+/**
+ * Someone moved the mode selector on a conversation (#311). Whoever may act
+ * on its run (`mayActOnRun`, as Stop and approvals) switches the run going
+ * there now, its sub-agents with it, and the conversation remembers the pick
+ * as the mode it opens in.
+ *
+ * The run moves only between Manual and Auto (`liveModeAfter`): Planning, in
+ * or out, waits for the next message. A switch has every approval the runs
+ * are waiting on decided again in the new mode (engine.ts, `regate`), and
+ * each run's log says so, which is how every device following it hears.
+ *
+ * A silent no-op for anyone else, and for a conversation that does not exist
+ * — the same "no existence oracle" rule as `stream.stop`.
+ */
+export async function changeRunMode(userId: string, conversationId: unknown, mode: unknown): Promise<void> {
+  if (typeof conversationId !== "string" || !isPermissionMode(mode)) return;
+  if (!(await mayActOnRun(userId, conversationId))) return;
+  // Read after the await: the run may have started or ended meanwhile.
+  const run = getRunByConversation(conversationId);
+  if (run) {
+    setRunMode(run, mode);
+    for (const child of listChildRuns(conversationId)) setRunMode(child, mode);
+  }
+  // Best-effort: a pick that is not remembered still switched the run.
+  await db
+    .update(conversations)
+    .set({ permissionMode: mode })
+    .where(eq(conversations.id, conversationId))
+    .catch((err: unknown) => {
+      console.warn(`recording the mode of ${conversationId} failed: ${(err as Error).message}`);
+    });
 }

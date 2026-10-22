@@ -116,6 +116,7 @@ export function AgentStream({
           deadline={pendingApproval.deadline}
           source={approvalSource}
           mode={pendingApproval.mode}
+          selectorMode={mode}
           granterUserId={pendingApproval.granterUserId}
           rules={pendingApproval.rules}
           check={pendingApproval.check}

@@ -192,6 +192,8 @@ export async function startAgentRun(input: {
     abort: new AbortController(),
     approvals: new Map(),
     model,
+    // Live from here: a switch while the run queues or works reaches it (#311).
+    mode,
   };
   claimConversation(claim);
   try {
@@ -270,6 +272,8 @@ export async function retryAgentRun(input: {
     abort: new AbortController(),
     approvals: new Map(),
     model,
+    // Live from here: a switch while the run queues or works reaches it (#311).
+    mode,
   };
   claimConversation(claim);
   try {

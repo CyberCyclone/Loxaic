@@ -14,6 +14,7 @@ import { useServerReachable } from '@/lib/connection';
 import type { SubAgentView } from '@/lib/subAgents';
 import type { ChildTranscript } from '@/lib/subAgentTranscript';
 import type { Conversation } from '@/lib/types';
+import type { PermissionMode } from '@loxaic/api-client';
 import { SubAgentStats } from './SubAgentStats';
 
 interface SubAgentPanelProps {
@@ -29,6 +30,9 @@ interface SubAgentPanelProps {
   onAllowAlways?: () => void;
   onDeny: () => void;
   onClose: () => void;
+  /** The thread's mode selector, where there is one, so the bar can say
+   * when the asking run is in another mode. */
+  selectorMode?: PermissionMode;
 }
 
 /**
@@ -48,7 +52,7 @@ interface SubAgentPanelProps {
  * There is no composer: nobody talks to a sub-agent but the agent that started
  * it. What a person can do here is watch, stop it, and answer what it asks.
  */
-export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAllow, onAllowAlways, onDeny, onClose }: SubAgentPanelProps) {
+export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAllow, onAllowAlways, onDeny, onClose, selectorMode }: SubAgentPanelProps) {
   const reachable = useServerReachable();
   // The message list takes a conversation; a child is one, with no title or
   // model of its own worth showing beyond what the header already says.
@@ -113,6 +117,7 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
               args={approval.args}
               deadline={approval.deadline}
               mode={approval.mode}
+              selectorMode={selectorMode}
               granterUserId={approval.granterUserId}
               rules={approval.rules}
               check={approval.check}

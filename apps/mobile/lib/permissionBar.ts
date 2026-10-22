@@ -1,4 +1,5 @@
 import type { PermissionCheckNote, PermissionMode, ToolPermission } from '@loxaic/api-client';
+import { MODE_LABELS } from './modeSelector';
 
 /** MCP tools arrive namespaced as `server__tool`; builtins never contain `__`. */
 export function splitMcpTool(name: string): { server: string; tool: string } | null {
@@ -21,6 +22,19 @@ export interface PermissionBarView {
   /** Why auto mode's permission check sent this to a person. Shown whatever
    * else is offered. */
   checkNote: string | null;
+  /** The asking run's mode, said when the selector says another (#311). */
+  modeNote: string | null;
+}
+
+/**
+ * The line naming the asking run's mode, when the selector says another
+ * (#311): a pick of Planning waits for the next message, and an older server
+ * switches no run at all. The run's mode is the approval's own, never the
+ * selector's; null when either is unknown or they agree.
+ */
+export function runModeNote(runMode: PermissionMode | undefined, selectorMode: PermissionMode | undefined): string | null {
+  if (!runMode || !selectorMode || runMode === selectorMode) return null;
+  return `This run is in ${MODE_LABELS[runMode]} mode. ${MODE_LABELS[selectorMode]} applies from your next message.`;
 }
 
 /** The sentence for a permission check that asked instead of answering. */
@@ -70,9 +84,12 @@ export function permissionBarView(
     check?: PermissionCheckNote;
   },
   viewerUserId: string | null | undefined,
+  /** The selector, only to say when the run's mode is not what it shows. */
+  selectorMode?: PermissionMode,
 ): PermissionBarView {
   const mcp = splitMcpTool(approval.tool);
   const checkNote = permissionCheckNote(approval.check);
+  const modeNote = runModeNote(approval.mode, selectorMode);
   const isGranter = approval.granterUserId != null && approval.granterUserId === viewerUserId;
   if (approval.tool === 'bash') {
     const rules = approval.rules ?? [];
@@ -84,6 +101,7 @@ export function permissionBarView(
       note: null,
       alwaysLabel: canAllowAlways ? `Always allow ${rules.map((r) => `\`${r}\``).join(' and ')}` : null,
       checkNote,
+      modeNote,
     };
   }
   if (mcp && approval.mode === 'auto' && isGranter) {
@@ -96,9 +114,10 @@ export function permissionBarView(
         `from ${mcp.server} run without asking from now on, in every conversation and mode.`,
       alwaysLabel: null,
       checkNote,
+      modeNote,
     };
   }
-  return { mcp, canAllowAlways: isGranter, primary: 'once', note: null, alwaysLabel: null, checkNote };
+  return { mcp, canAllowAlways: isGranter, primary: 'once', note: null, alwaysLabel: null, checkNote, modeNote };
 }
 
 /**

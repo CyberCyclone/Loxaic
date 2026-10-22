@@ -29,6 +29,8 @@ interface PermissionBarProps {
    * records, both from the approval itself — see `permissionBarView`. */
   mode?: PermissionMode;
   granterUserId?: string;
+  /** The selector, so the bar can say when the run is in another mode. */
+  selectorMode?: PermissionMode;
   /** For `bash`: the command rules "Allow always" records, and why auto
    * mode's permission check asked — both from the approval itself. */
   rules?: string[];
@@ -55,6 +57,7 @@ export function PermissionBar({
   deadline,
   mode,
   granterUserId,
+  selectorMode,
   rules,
   check,
   onAllow,
@@ -64,7 +67,7 @@ export function PermissionBar({
   testIDBase = 'agent.permission',
 }: PermissionBarProps) {
   const { user } = useSession();
-  const view = permissionBarView({ tool, mode, granterUserId, rules, check }, user?.id);
+  const view = permissionBarView({ tool, mode, granterUserId, rules, check }, user?.id, selectorMode);
   const { mcp } = view;
   const offerAlways = onAllowAlways !== undefined && view.canAllowAlways;
   const alwaysFirst = offerAlways && view.primary === 'always';
@@ -103,6 +106,11 @@ export function PermissionBar({
           <Text size="sm" className="font-mono text-muted-foreground">{summarizeArgs(tool, args)}</Text>
         </Text>
       )}
+      {view.modeNote ? (
+        <Text testID={`${testIDBase}.mode`} size="2xs" className="text-muted-foreground">
+          {view.modeNote}
+        </Text>
+      ) : null}
       {view.checkNote ? (
         <Text testID={`${testIDBase}.checkNote`} size="2xs" className="text-muted-foreground">
           {view.checkNote}

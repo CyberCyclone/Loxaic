@@ -350,6 +350,9 @@ export async function runSubagent(
     approvals: new Map(),
     model: call.model,
     parentConversationId: parent.convId,
+    // The parent's mode as it is now; a later switch on the parent reaches
+    // this child too (ws/run-actions.ts, `changeRunMode`).
+    mode: parent.mode,
   });
   starting.delete(streamId);
   announceNewRun(childId, streamId);
@@ -535,6 +538,15 @@ export function mirrorProgress(
         report({ state: "awaiting_approval", pending_approval: { stream_id: childStreamId, ...request } });
         break;
       }
+      case "run.mode":
+        // A switch between Manual and Auto has the waiting call decided again
+        // (#311): the question is withdrawn, and either asked afresh in the
+        // new mode or answered without anyone.
+        if (pendingCallId !== null) {
+          pendingCallId = null;
+          report({ state: "running", pending_approval: null });
+        }
+        break;
       case "tool.result":
         // However the wait ended — allowed, refused, timed out, stopped — its
         // call now has a result, and the question is no longer open. It is

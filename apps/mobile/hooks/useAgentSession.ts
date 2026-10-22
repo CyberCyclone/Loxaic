@@ -57,6 +57,7 @@ import { ConversationWatches } from '@/lib/conversationWatch';
 import { rowBadgesFor, useRunNotices } from './useRunNotices';
 import { isSubAgentEvent } from '@/lib/subAgents';
 import { useSubAgentState } from './useSubAgentState';
+import { followSelector, modeChangeNotice, type SelectorSource } from '@/lib/modeSelector';
 
 export type { WorkspaceChoice } from '@/lib/types';
 
@@ -116,6 +117,9 @@ export function useAgentSession(
   // tell that apart from someone opening another thread, which moves
   // `activeId` from pending to a server id just the same.
   const [promotion, setPromotion] = useState<Promotion | null>(null);
+  // The selector: the next message's mode, and the one a run going on screen
+  // is switched to. Manual only until a thread says otherwise — see the
+  // effect that follows the thread on screen, below.
   const [mode, setModeState] = useState<PermissionMode>('manual');
   // Each conversation's run — what it is doing and what it is asking — kept
   // for every conversation, not only the one on screen (lib/agentRunState.ts).
@@ -348,6 +352,15 @@ export function useAgentSession(
       });
   }, [recordPaging, watchConversation, loadSubAgents]);
 
+  /** A thread's last mode (#311), as its run or a pick here last set it. */
+  const recordThreadMode = useCallback((convId: string, next: PermissionMode) => {
+    setRuns((prev) =>
+      prev.some((r) => r.id === convId && r.permissionMode !== next)
+        ? prev.map((r) => (r.id === convId ? { ...r, permissionMode: next } : r))
+        : prev,
+    );
+  }, []);
+
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: updater(r.msgs) } : r)));
   }, []);
@@ -391,6 +404,7 @@ export function useAgentSession(
           msgs: [],
           role: c.role ?? 'owner',
           workspace: c.workspace ?? null,
+          permissionMode: c.permissionMode ?? null,
         }));
         setRuns((prev) => {
           const existing = new Set(prev.map((r) => r.id));
@@ -531,6 +545,14 @@ export function useAgentSession(
         updateRunMsgs(convId, (msgs) =>
           applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now, now: arrivedAt }),
         );
+        // A switch made elsewhere while this socket was away is the thread's
+        // mode now, as the server recorded it. Only a switch: the run's mode
+        // alone is not the thread's when Planning was picked meanwhile.
+        const heardMode = runLevelOf(runLevelsRef.current, convId).runMode;
+        const snapshotMode = event.snapshot.mode;
+        if (event.status === 'active' && snapshotMode && heardMode && heardMode !== snapshotMode) {
+          recordThreadMode(convId, snapshotMode);
+        }
         applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
         const stageSnapshot = event.snapshot.context_stage;
         if (stageSnapshot) {
@@ -612,6 +634,7 @@ export function useAgentSession(
         });
 
         const inner = event.event;
+        if (inner.kind === 'run.mode') recordThreadMode(convId, inner.mode);
         if (inner.kind === 'context.stage') {
           const { kind: _kind, ...status } = inner;
           setStageCardByConv((prev) => ({ ...prev, [convId]: foldStageCard(prev[convId] ?? null, event.stream_id, status, Date.now()) }));
@@ -775,19 +798,40 @@ export function useAgentSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, recordThreadMode]);
+
+  // The selector follows the thread on screen (#311): its live run's mode,
+  // else its last one, on opening it, on a load and on a reconnect; and the
+  // run's mode whenever that changes, from any device. See followSelector.
+  const activeRunMode = runLevelOf(runLevels, activeId).runMode;
+  const activeStoredMode = runs.find((r) => r.id === activeId)?.permissionMode ?? null;
+  const followedRef = useRef<SelectorSource | null>(null);
+  useEffect(() => {
+    const next: SelectorSource = { convId: activeId, runMode: activeRunMode, storedMode: activeStoredMode };
+    const prev = followedRef.current;
+    followedRef.current = next;
+    setModeState((selector) => followSelector(selector, prev, next));
+  }, [activeId, activeRunMode, activeStoredMode]);
 
   /** The selector moves only if the server heard it: a chip that switched
    * on screen while the frame went nowhere left the run in the old mode with
-   * the selector saying otherwise. */
+   * the selector saying otherwise. On a thread the server knows, the pick is
+   * that thread's, and switches a run going there between Manual and Auto. */
   const handleModeChange = useCallback((next: PermissionMode): boolean => {
-    if (isOffline() || !wsRef.current || !setAgentMode(wsRef.current, next)) {
+    const convId = activeIdRef.current;
+    const serverConvId = convId && isServerConvId(convId) ? convId : undefined;
+    if (isOffline() || !wsRef.current || !setAgentMode(wsRef.current, next, serverConvId)) {
       showToast(disconnectedCopy(connectionState()).notSent, 4000);
       return false;
     }
     setModeState(next);
+    if (serverConvId) {
+      recordThreadMode(serverConvId, next);
+      const notice = modeChangeNotice(runLevelOf(runLevelsRef.current, serverConvId).runMode, next);
+      if (notice) showToast(notice, 5000);
+    }
     return true;
-  }, [showToast]);
+  }, [showToast, recordThreadMode]);
 
   /**
    * `modeOverride` sends in a mode other than the selector's, and moves the
