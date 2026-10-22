@@ -43,12 +43,12 @@ pass "Chrome and chromedriver are build $chrome_build, and Chrome renders headle
 xvfb-run -a true || fail "xvfb-run"
 pass "Xvfb runs"
 
-installed="$(sdkmanager --list_installed 2>/dev/null)"
+installed="$(sdkmanager --list_installed 2>&1)" || fail "sdkmanager --list_installed: $installed"
 for pkg in "platform-tools" "emulator" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1" \
   "system-images;android-35;google_apis;x86_64"; do
   grep -qF "$pkg" <<<"$installed" || fail "Android SDK lacks $pkg"
 done
-avds="$(avdmanager list avd 2>/dev/null)"
+avds="$(avdmanager list avd 2>&1)" || fail "avdmanager list avd: $avds"
 grep -q 'Name: loxaic' <<<"$avds" || fail "no loxaic AVD"
 java -version >/dev/null 2>&1 || fail "no JDK"
 pass "the Android SDK, the loxaic AVD and a JDK are here"

@@ -18,11 +18,13 @@ USER root
 # two agree. To move it, take a Stable version from
 # https://googlechromelabs.github.io/chrome-for-testing/.
 ARG CHROME_VERSION=156.0.8078.47
-# The Android command-line tools: the `_latest` build number and its SHA-1,
-# from https://dl.google.com/android/repository/repository2-3.xml (the only
-# checksum Google lists for it).
-ARG ANDROID_CMDLINE_TOOLS=16111833
-ARG ANDROID_CMDLINE_TOOLS_SHA1=e025545c62a8e64c7559119566a569fb1dec5f60
+# The Android command-line tools: a build number and its SHA-1, from
+# https://dl.google.com/android/repository/repository2-3.xml (the only checksum
+# Google lists for it). 21.0, not newer: from 22.0 `sdkmanager` is a shim that
+# downloads Google's "Android CLI" on first use, which fails in a sandbox with
+# no network and would fetch it again in every sandbox that has one.
+ARG ANDROID_CMDLINE_TOOLS=15641748
+ARG ANDROID_CMDLINE_TOOLS_SHA1=63523a02a975a81102238566f2a16c057d52301e
 # What a React Native 0.86 release build asks for (react-native's
 # gradle/libs.versions.toml): compileSdk, buildTools and the NDK. Anything else
 # Gradle wants it fetches itself into ANDROID_HOME, which loxaic owns.
