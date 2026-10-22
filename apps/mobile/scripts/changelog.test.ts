@@ -59,6 +59,15 @@ describe('parseCommit', () => {
     expect(parseCommit(commit('Fix the thing (#12) (#300)', body)).tickets).toEqual([12, 13]);
   });
 
+  it("reads a revert's quoted subject by the same rule, so the reverted PR is not a ticket", () => {
+    expect(parseCommit(commit('Revert "Add foo (#310) (#311)" (#320)'))).toMatchObject({
+      title: 'Revert "Add foo (#310) (#311)"',
+      tickets: [310],
+      pr: 320,
+    });
+    expect(parseCommit(commit('Revert "Tidy (#5)" (#6)')).tickets).toEqual([]);
+  });
+
   it('does not count a bare #N in prose as a ticket', () => {
     expect(parseCommit(commit('Tidy (#5)', 'Like we did in #4.')).tickets).toEqual([]);
   });
@@ -118,6 +127,12 @@ describe('githubRepoUrl', () => {
   it('gives null for anything that is not GitHub', () => {
     expect(githubRepoUrl('https://gitlab.com/a/b.git')).toBeNull();
     expect(githubRepoUrl('/srv/git/loxaic.git')).toBeNull();
+  });
+
+  it('gives null for a remote that only mentions github.com somewhere in it', () => {
+    expect(githubRepoUrl('https://git.example.org/mirrors/github.com/acme/app.git')).toBeNull();
+    expect(githubRepoUrl('https://notgithub.com/acme/app')).toBeNull();
+    expect(githubRepoUrl('git@git.example.org:github.com/acme/app.git')).toBeNull();
   });
 });
 
@@ -205,6 +220,33 @@ describe('writeChangelog against a real repository', () => {
 
     writeFileSync(out, '{"available":true,"repoUrl":null,"releases":[],"unreleased":[]}\n');
     expect(writeChangelog({ cwd: notARepo, outFile: out })).toBe('kept');
+    expect(read(out).available).toBe(true);
+  });
+
+  it('cuts releases off a merged side branch from a log of their own', () => {
+    const cwd = temp();
+    git(cwd, 'init', '-q', '-b', 'dev');
+    commitIn(cwd, 'Base (#1)');
+    git(cwd, 'checkout', '-q', '-b', 'side');
+    commitIn(cwd, 'On the side (#2)');
+    git(cwd, 'tag', '-a', 'v0.0.1-beta.1', '-m', 'v0.0.1-beta.1');
+    git(cwd, 'checkout', '-q', 'dev');
+    commitIn(cwd, 'Main line (#3)');
+    git(cwd, 'merge', '-q', '--no-ff', '-m', "Merge branch 'side'", 'side');
+    commitIn(cwd, 'After (#4)');
+    const out = path.join(temp(), 'changelog.json');
+    writeChangelog({ cwd, outFile: out });
+    const c = read(out);
+    expect(c.releases.map((r) => [r.tag, r.entries.map((e) => e.title)])).toEqual([['v0.0.1-beta.1', ['On the side', 'Base']]]);
+    expect(c.unreleased.map((e) => e.title)).toEqual(['After', 'Main line']);
+  });
+
+  it('keeps the existing file for a repository with no commits yet', () => {
+    const cwd = temp();
+    git(cwd, 'init', '-q', '-b', 'dev');
+    const out = path.join(temp(), 'changelog.json');
+    writeFileSync(out, '{"available":true,"repoUrl":null,"releases":[],"unreleased":[]}\n');
+    expect(writeChangelog({ cwd, outFile: out })).toBe('kept');
     expect(read(out).available).toBe(true);
   });
 

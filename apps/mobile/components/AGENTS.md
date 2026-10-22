@@ -13,6 +13,7 @@ UI components, including the vendored gluestack primitives in `ui/`. These rules
 ## Modals and sheets
 
 - Any modal that can grow past a handful of rows needs both `max-h-[85%]` on `ModalContent` and `scrollEnabled` on `<ModalBody>` — the vendored `ModalBody` hardcodes `scrollEnabled={false}` (a caller prop wins). Check both halves whenever you add a row.
+- A modal whose rows are a long, growing list (`ChangelogModal`) uses a virtualised list with `flexShrink: 1` in place of `ModalBody`, under the same `max-h-[85%]`; full screen on a phone, `h-full w-full` replaces the cap.
 - Never stack modals. Swap one for another as siblings rendered by the screen (`ModelModal` beside `RoutineModal` or the plan panel); on iOS open the second `SHEET_EXIT_MS` after the first starts closing. Never put a dialog over a sheet (`sheetGone`).
 - Size an Actionsheet with an inner view from `useWindowDimensions()` and safe-area insets — a height class on `ActionsheetContent` is erased on native and `snapPoints` is read once at load. `McpToolsSheet` gives its list a height up front on native for the same reason.
 - `SettingsModal` renders once, in `AppShell`; screens open it with `useShell().openSettings()` and never render their own.

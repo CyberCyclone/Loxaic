@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Linking, SectionList } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -23,6 +23,7 @@ import {
   loadChangelog,
   ticketUrl,
   type ChangeEntry,
+  type Changelog,
 } from '@/lib/changelog';
 
 /**
@@ -32,9 +33,11 @@ import {
  * first (AppShell swaps them): modals never stack.
  */
 export function ChangelogModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  // Once: the file is part of the bundle and never changes under it. Not keyed
-  // on `open`, which would show the empty state while the modal animates out.
-  const changelog = useMemo(() => loadChangelog(), []);
+  // Read on the first opening, not when AppShell mounts this for every user,
+  // and kept after it: the file never changes under a running bundle, and the
+  // modal still needs it while it animates out. `undefined` is "not read yet".
+  const [changelog, setChangelog] = useState<Changelog | null | undefined>(undefined);
+  if (open && changelog === undefined) setChangelog(loadChangelog());
   const sections = useMemo<Section[]>(() => {
     if (!changelog) return [];
     const newest = changelog.releases.at(0);

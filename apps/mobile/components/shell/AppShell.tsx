@@ -12,6 +12,7 @@ import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ChangelogModal } from '@/components/settings/ChangelogModal';
 import { startMonitor } from '@/lib/connectionMonitor';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
+import { SHEET_EXIT_MS } from '@/lib/sheetExit';
 import type { SurfaceId } from '@/lib/types';
 
 interface ShellState {
@@ -20,10 +21,6 @@ interface ShellState {
   openSidebar: () => void;
   openSettings: () => void;
 }
-
-// How long a closing modal takes to leave on iOS, which refuses to present a
-// second one while the first is still on screen.
-const SHEET_EXIT_MS = 300;
 
 const ShellContext = createContext<ShellState | null>(null);
 

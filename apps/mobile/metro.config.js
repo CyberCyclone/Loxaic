@@ -25,12 +25,14 @@ config.resolver.nodeModulesPaths = [
 // The changelog Settings shows, from git history, written before anything is
 // bundled: every bundle (web export, OTA update, Electron's build:web, a dev
 // session) goes through this file, and lib/changelog.ts requires the result.
-// A failure here must never stop a bundle, only leave it without a changelog.
+// History that cannot be read leaves the bundle without a changelog, never
+// stops it. Only a file that cannot be written throws, and it is reported and
+// left as it was: a kept file still bundles, and with none at all Metro's
+// error names the file.
 try {
   writeChangelog();
 } catch (err) {
-  console.warn(`[changelog] not written: ${err instanceof Error ? err.message : String(err)}`);
-  require('fs').writeFileSync(OUT_FILE, `${JSON.stringify({ available: false })}\n`);
+  console.warn(`[changelog] could not write ${OUT_FILE}: ${err instanceof Error ? err.message : String(err)}`);
 }
 
 // withUniwindConfig must be the outermost wrapper.

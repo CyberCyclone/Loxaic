@@ -79,13 +79,17 @@ const MERGE_PR = /^Merge pull request #(\d+) from \S+/;
 // `Merge branch 'dev'`), from before PRs were squashed: it says nothing a user
 // would read, and what it merged is listed on its own.
 const BRANCH_MERGE = /^Merge (?!pull request #\d+ from )/;
+// `Revert "Add foo (#310) (#311)"`: GitHub quotes the reverted subject whole.
+const REVERT = /^Revert "(.*)"$/;
 const CLOSING = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
 
 /**
  * One commit as a changelog entry. A squash merge's subject ends in the PR
  * number, after the issue it closes when there is one: `Title (#310) (#311)`.
  * So the last trailing `(#N)` is the PR and any before it are tickets, as is
- * a `(#N)` inside the subject (`Stage 7 (#22): server wiring`). A closing keyword in the body (`Fixes #12`) names a ticket too; a bare `#12`
+ * a `(#N)` inside the subject (`Stage 7 (#22): server wiring`). A revert's
+ * quoted subject is read by the same rule, so the reverted PR is not called a
+ * ticket. A closing keyword in the body (`Fixes #12`) names a ticket too; a bare `#12`
  * in prose does not, since squash bodies mention other work freely.
  *
  * @param {{ sha: string, subject: string, body: string }} commit
@@ -109,7 +113,12 @@ function parseCommit({ sha, subject, body }) {
       tickets.push(...numbers);
       title = title.slice(0, refs.index).trim();
     }
-    for (const m of title.matchAll(INLINE_REF)) tickets.push(Number(m[1]));
+    const revert = REVERT.exec(title);
+    if (revert) {
+      tickets.push(...parseCommit({ sha, subject: revert[1] ?? '', body: '' }).tickets);
+    } else {
+      for (const m of title.matchAll(INLINE_REF)) tickets.push(Number(m[1]));
+    }
   }
 
   for (const m of body.matchAll(CLOSING)) tickets.push(Number(m[1]));
@@ -158,7 +167,9 @@ function buildChangelog({ repoUrl, releases, unreleased }) {
  * @returns {string | null}
  */
 function githubRepoUrl(remote) {
-  const m = /github\.com[:/]+([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(remote.trim());
+  // Anchored on the host: a mirror at `git.example.org/mirrors/github.com/a/b`
+  // or a host like `notgithub.com` is not GitHub.
+  const m = /^(?:(?:https?|ssh|git):\/\/)?(?:[^@/\s]+@)?github\.com[:/]+([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(remote.trim());
   return m ? `https://github.com/${m[1]}/${m[2]}` : null;
 }
 
@@ -187,30 +198,63 @@ function git(cwd, args) {
 
 /**
  * Reads the changelog out of the repository at `cwd`, or returns null when the
- * history is not there to read: no git (a Docker build), not a repository, or
- * a shallow clone (an EAS build server, a default CI checkout), whose ranges
- * would silently stop at the clone's depth.
+ * history is not there to read: no git (a Docker build), not a repository, a
+ * repository with no commits yet, or a shallow clone (an EAS build server, a
+ * default CI checkout), whose ranges would silently stop at the clone's depth.
+ * Any git call failing counts the same, so the caller's keep-the-existing-file
+ * rule holds whichever one it was.
  *
  * @param {string} cwd
  */
 function readChangelog(cwd) {
   try {
-    if (git(cwd, ['rev-parse', '--is-shallow-repository']).trim() !== 'false') return null;
+    return readHistory(cwd);
   } catch {
     return null;
   }
+}
+
+/** @param {string} cwd */
+function readHistory(cwd) {
+  if (git(cwd, ['rev-parse', '--is-shallow-repository']).trim() !== 'false') return null;
 
   const log = (range) =>
     parseLog(git(cwd, ['log', '--first-parent', `--format=%H${FIELD}%an${FIELD}%s${FIELD}%b${RECORD}`, range]));
 
-  const tags = git(cwd, ['for-each-ref', '--merged=HEAD', '--format=%(refname:short)%09%(creatordate:short)', 'refs/tags'])
+  // One `git log` for the whole first-parent line, cut at each tag's commit:
+  // this runs every time Metro loads its config, and a process per release
+  // would grow with every release. A tag off that line (on a merged side
+  // branch) falls back to a log of its own range.
+  const line = log('HEAD');
+  const position = new Map(line.map((c, i) => [c.sha, i]));
+
+  /** @type {Map<string, string>} tag → the commit it points at */
+  const commitOf = new Map();
+  const tags = git(cwd, [
+    'for-each-ref',
+    '--merged=HEAD',
+    '--format=%(refname:short)%09%(creatordate:short)%09%(objectname)%09%(*objectname)',
+    'refs/tags',
+  ])
     .split('\n')
     .filter((l) => l !== '')
     .map((l) => {
-      const [tag = '', date = ''] = l.split('\t');
+      const [tag = '', date = '', object = '', peeled = ''] = l.split('\t');
+      // An annotated tag's own object is the tag; `*objectname` is its commit.
+      commitOf.set(tag, peeled || object);
       return { tag, date };
     });
   const plan = planReleases(tags);
+
+  /** Commits after `since` (a tag, or null for the start) up to `until` (a tag, or HEAD). */
+  const range = (since, until) => {
+    const from = until === 'HEAD' ? 0 : position.get(commitOf.get(until) ?? '');
+    const to = since === null ? line.length : position.get(commitOf.get(since) ?? '');
+    if (from === undefined || to === undefined) {
+      return log(since === null ? until : `${since}..${until}`);
+    }
+    return line.slice(from, Math.max(from, to));
+  };
 
   let repoUrl = null;
   try {
@@ -219,10 +263,11 @@ function readChangelog(cwd) {
     // No origin: entries show without links.
   }
 
+  const newest = plan.at(0);
   return buildChangelog({
     repoUrl,
-    releases: plan.map((r) => ({ tag: r.tag, date: r.date, commits: log(r.since ? `${r.since}..${r.tag}` : r.tag) })),
-    unreleased: log(plan[0] ? `${plan[0].tag}..HEAD` : 'HEAD'),
+    releases: plan.map((r) => ({ tag: r.tag, date: r.date, commits: range(r.since, r.tag) })),
+    unreleased: newest ? range(newest.tag, 'HEAD') : line,
   });
 }
 
@@ -230,7 +275,8 @@ function readChangelog(cwd) {
  * Writes the changelog for the repository at `cwd` to `outFile`. When the
  * history cannot be read, an existing file is kept (a Docker build copies the
  * one the checkout last bundled with), and with none the app is told there is
- * no changelog in this build rather than shown an empty one.
+ * no changelog in this build rather than shown an empty one. Only a failure to
+ * write the file throws.
  *
  * @param {{ cwd?: string, outFile?: string }} [options]
  * @returns {'written' | 'unchanged' | 'kept' | 'unavailable'}

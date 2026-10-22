@@ -21,10 +21,7 @@ import type { McpSwitches } from '@/hooks/useMcpSwitches';
 import { McpServerList } from './McpServerList';
 import { plusMenuPage, type PlusMenuPage } from '@/lib/plusMenuPage';
 import { levelChangeRereads, NO_THINKING_REASON, selectedThinkingOption, thinkingOptions } from '@/lib/thinking';
-
-/** Long enough for the sheet's exit animation to finish before another modal
- * is presented (the plan sheet and the no-room modal found the same). */
-const SHEET_EXIT_MS = 300;
+import { SHEET_EXIT_MS } from '@/lib/sheetExit';
 
 /** The thinking level, for the selected model. */
 export interface ComposerThinking {

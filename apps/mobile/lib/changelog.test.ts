@@ -20,6 +20,19 @@ describe('parseChangelog', () => {
     expect(parseChangelog({ available: true, releases: [] })).toBeNull();
   });
 
+  it('calls a file with a malformed entry or release no changelog, so the modal never reads one', () => {
+    const entry = { sha: 'a'.repeat(40), title: 'T', tickets: [1], pr: 2 };
+    const file = (releases: unknown[], unreleased: unknown[] = []) => ({ available: true, repoUrl: REPO, releases, unreleased });
+    expect(parseChangelog(file([{ tag: 'v1.0.0', date: 'd', entries: [entry] }]))).not.toBeNull();
+    expect(parseChangelog(file([{ tag: 'v1.0.0', date: 'd' }]))).toBeNull();
+    expect(parseChangelog(file([{ tag: 'v1.0.0', date: 'd', entries: [{ ...entry, tickets: undefined }] }]))).toBeNull();
+    expect(parseChangelog(file([{ tag: 'v1.0.0', date: 'd', entries: [{ ...entry, tickets: ['1'] }] }]))).toBeNull();
+    expect(parseChangelog(file([], [{ ...entry, sha: undefined }]))).toBeNull();
+    expect(parseChangelog(file([], [{ ...entry, sha: 'not a sha' }]))).toBeNull();
+    expect(parseChangelog(file([], [{ ...entry, pr: 'x' }]))).toBeNull();
+    expect(parseChangelog(file([null]))).toBeNull();
+  });
+
   it('drops a repository address that is not https, so nothing links to it', () => {
     expect(parseChangelog({ available: true, repoUrl: 'javascript:alert(1)', releases: [], unreleased: [] })?.repoUrl).toBeNull();
   });
