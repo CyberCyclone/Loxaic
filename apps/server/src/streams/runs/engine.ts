@@ -1129,6 +1129,7 @@ export async function runToolLoop(ctx: {
       // slot, until it planned or reached the step check-in.
       const forceTool = requireTool;
       requireTool = false;
+      let restoreStartedAt: number | null = null;
       try {
         // markBackendErrors is what separates the backend's words from ours:
         // only what the stream itself throws is stored as the reason, since
@@ -1147,9 +1148,22 @@ export async function runToolLoop(ctx: {
                 : {}),
             thinking: thinkingBody,
             reportProgress,
+            conversationId: convId,
           }),
         )) {
-          if (event.type === "delta") {
+          if (event.type === "cache") {
+            restoreStartedAt ??= Date.now();
+            producer.emit({
+              kind: "prompt.cache",
+              message_id: assistantMsgId,
+              step: event.cache.step,
+              tokens: event.cache.tokens,
+              bytes_total: event.cache.bytesTotal,
+              bytes_done: event.cache.bytesDone,
+              estimated: event.cache.estimated,
+              started_at: restoreStartedAt,
+            });
+          } else if (event.type === "delta") {
             text += event.content;
             producer.emit({ kind: "text.delta", message_id: assistantMsgId, text: event.content });
           } else if (event.type === "thinking") {

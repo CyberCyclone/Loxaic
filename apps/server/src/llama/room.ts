@@ -1,7 +1,7 @@
 import { listServableModels, type LocalModelRow } from "./catalog.ts";
 import { labelFor } from "./fit.ts";
 import { availableMemory, footprintBytes, loadedFootprints, refreshMemory, type LoadedFootprint } from "./memory.ts";
-import { loadModel, modelLoadFailureReason, routerEndpoint, routerModelStatuses, unloadModel, waitForModelStatus } from "./router.ts";
+import { getCacheIdentity, loadModel, modelLoadFailureReason, routerEndpoint, routerModelStatuses, unloadModel, waitForModelStatus } from "./router.ts";
 import { loadFailureMessage } from "./load-failure.ts";
 import { getLocalModelsSettings } from "./settings.ts";
 
@@ -202,6 +202,17 @@ function abortable<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
 const UNLOAD_WAIT_MS = 30_000;
 const MAX_EVICTIONS = 16;
 
+/** Save what `id`'s slots hold (slot-store.ts) — the unload keeps nothing the
+ * cache was computed with — and remember why it went. Imported lazily, as
+ * router.ts is: the store reaches the run engine for its warm-up. */
+async function saveBeforeUnload(id: string, reason: "unload" | "evicted"): Promise<void> {
+  const store = await import("./slot-store.ts");
+  const identity = getCacheIdentity(id);
+  if (identity) await store.saveModel(id, identity);
+  store.recordReload(id, reason);
+  store.forgetClaims(id);
+}
+
 async function servableRow(id: string): Promise<LocalModelRow | null> {
   return (await listServableModels()).find((r) => r.id === id) ?? null;
 }
@@ -231,6 +242,7 @@ async function ensureRoomLocked(row: LocalModelRow, signal?: AbortSignal): Promi
     // One at a time: the next decision is made on memory measured after it.
     const victim = plan.ids[0];
     console.log(`[llama] unloading ${victim} to make room for ${row.id}`);
+    await saveBeforeUnload(victim, "evicted");
     await unloadModel(victim);
     await waitForModelStatus(victim, "unloaded", UNLOAD_WAIT_MS);
   }
@@ -491,6 +503,7 @@ export async function requestUnload(id: string, pinned: boolean): Promise<void> 
     if ((inFlight.get(id) ?? 0) > 0) throw new UnloadRefusedError("It is answering someone right now. Unload it once the reply ends.");
     if (status !== "loaded") return;
     console.log(`[llama] unloading ${id} (asked by an admin)`);
+    await saveBeforeUnload(id, "unload");
     await unloadModel(id);
     await waitForModelStatus(id, "unloaded", UNLOAD_WAIT_MS);
   });
@@ -564,6 +577,8 @@ export function discardLostModel(id: string, device: string | null = null): Prom
     if (!routerEndpoint()) return;
     await withRoomLock(async () => {
       console.warn(`[llama] the ${which} was reset under ${id}; unloading it so the next request loads it afresh`);
+      // Nothing is saved: whatever the lost device held is not to be trusted.
+      (await import("./slot-store.ts")).recordReload(id, "device_lost");
       await unloadModel(id);
       // Only `loaded` is still holding the lost device. A process that died
       // with it (a loss at load time, a crash) reads `failed` or `unloaded`,

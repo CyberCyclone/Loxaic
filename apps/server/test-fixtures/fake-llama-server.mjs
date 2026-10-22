@@ -9,6 +9,8 @@
 //   GET  /models[?reload=1]   the preset's sections and their load status
 //   POST /models/load|unload
 //   GET  /props?model=        slots and n_ctx from the model's section
+//   GET  /slots?model=        each slot's token count, task and prompt text
+//   POST /slots/:id?action=save|restore   a slot to or from `slot-save-path`
 //   POST /v1/chat/completions a short streamed reply, autoloading the model
 //
 // Everything but /health requires `Authorization: Bearer $LLAMA_API_KEY`.
@@ -23,7 +25,8 @@
 // from the router, so the router writes what it holds to
 // LOXAIC_FAKE_VRAM_STATE for the listing to read. `--models-max N` (N > 0)
 // unloads the least recently used model past N, as the real router does.
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { createServer } from "node:http";
 
 const args = process.argv.slice(2);
@@ -145,6 +148,9 @@ const PRESET_KEYS = new Set([
   // Where a model's memory goes (placement.ts), confirmed against b11342 on
   // Metal and on Pheonix's V620s.
   "log-verbosity", "lazy-mode",
+  // Saved slots (slot-store.ts), confirmed against b11457 on Pheonix: a `[*]`
+  // key, which the router hands every child.
+  "slot-save-path",
 ]);
 
 if (args.includes("--help")) {
@@ -237,6 +243,51 @@ const lostDevice = new Set();
 /** Models whose first load has already lost its device ("LostAtLoad"). */
 const lostAtLoad = new Set();
 
+/**
+ * Each loaded model's slots, as llama.cpp keeps them: `msgs` is the request's
+ * messages (each as JSON), `tokens` what the slot holds, `generated` whether
+ * it ends in a reply as the model wrote it (reasoning and all), `restored`
+ * whether it came back from a file. Like the hybrid models on Pheonix, a slot
+ * ending in a generated reply is reused up to its prompt only while it has
+ * its in-memory checkpoints — never after a restore, which carries none — so
+ * only a warmed save (one ending in the replayed reply) helps a reload.
+ * id -> Array<{ msgs, promptTokens, tokens, generated, restored, task, text } | null>
+ */
+const slotState = new Map();
+let taskCount = 0;
+
+function slotsOf(id) {
+  let slots = slotState.get(id);
+  if (!slots) {
+    slots = Array.from({ length: Number(merged(id).parallel ?? 1) }, () => null);
+    slotState.set(id, slots);
+  }
+  return slots;
+}
+
+function isPrefix(a, b) {
+  return a.length <= b.length && a.every((m, i) => m === b[i]);
+}
+
+/** The slot a request lands in, and what it reuses: the slot holding a prefix
+ * of it, else an empty one, else the first. */
+function takeSlot(id, msgs) {
+  const slots = slotsOf(id);
+  for (let i = 0; i < slots.length; i++) {
+    const s = slots[i];
+    if (!s || !isPrefix(s.msgs, msgs)) continue;
+    const cached = !s.generated ? s.tokens : s.restored ? 0 : s.promptTokens;
+    return { index: i, cached };
+  }
+  const empty = slots.findIndex((s) => s === null);
+  return { index: empty >= 0 ? empty : 0, cached: 0 };
+}
+
+/** Prompt text, as llama.cpp renders a slot's prompt back in `/slots`. */
+function promptText(messages) {
+  return messages.map((m) => `<|${m.role}|>${said(m)}`).join("\n");
+}
+
 function unload(id) {
   if (status.get(id) !== "loaded") return;
   // `LOXAIC_FAKE_UNLOAD_STUCK` names a file whose presence makes every unload
@@ -251,6 +302,7 @@ function unload(id) {
   status.set(id, "unloaded");
   lostDevice.delete(id);
   loadedArgs.delete(id);
+  slotState.delete(id);
   // As the real router, which the placement tracker reads.
   process.stderr.write(`0.00.000.300 I srv        unload: stopping model instance name=${id}\n`);
   logEvent({ event: "unload", model: id });
@@ -394,9 +446,11 @@ function reload() {
     if (!now) {
       status.delete(id);
       loadedArgs.delete(id);
+      slotState.delete(id);
     } else if (was && JSON.stringify({ ...next.globals, ...now }) !== was) {
       status.set(id, "unloaded");
       loadedArgs.delete(id);
+      slotState.delete(id);
       process.stderr.write(`0.00.000.300 I srv        unload: stopping model instance name=${id}\n`);
       logEvent({ event: "unload", model: id, reason: "reload" });
     }
@@ -476,6 +530,79 @@ const server = createServer(async (req, res) => {
     const unified = s["kv-unified"] === "true" || s.parallel === undefined;
     return json(res, 200, { total_slots: slots, default_generation_settings: { n_ctx: unified ? ctx : Math.floor(ctx / slots) } });
   }
+  if (url.pathname === "/slots" && req.method === "GET") {
+    const id = url.searchParams.get("model");
+    if (!id) return json(res, 400, { error: { message: "model name is missing from the request" } });
+    if (status.get(id) !== "loaded") return json(res, 400, { error: { message: "model is not loaded" } });
+    const ctx = Number(merged(id)["ctx-size"] ?? 4096);
+    // As b11457: a slot that has run a task reports it, its count and its
+    // prompt; one that only had a file restored into it reports neither.
+    return json(res, 200, slotsOf(id).map((s, i) => ({
+      id: i,
+      n_ctx: ctx,
+      is_processing: false,
+      ...(s && s.task !== null ? { id_task: s.task, n_prompt_tokens: s.tokens, prompt: s.text } : {}),
+    })));
+  }
+  const slotAction = /^\/slots\/(\d+)$/.exec(url.pathname);
+  if (slotAction && req.method === "POST") {
+    const body = await readBody(req);
+    const id = body.model;
+    if (status.get(id) !== "loaded") return json(res, 400, { error: { message: `model name=${String(id)} is not running` } });
+    const dir = merged(id)["slot-save-path"];
+    if (!dir) return json(res, 501, { error: { code: 501, message: "This server does not support slots action. Start it with `--slot-save-path`", type: "not_supported_error" } });
+    const slots = slotsOf(id);
+    const index = Number(slotAction[1]);
+    if (index >= slots.length) return json(res, 400, { error: { code: 400, message: "Invalid slot ID", type: "invalid_request_error" } });
+    const filename = String(body.filename ?? "");
+    if (!/^[A-Za-z0-9._-]+$/.test(filename)) return json(res, 400, { error: { code: 400, message: "Invalid filename", type: "invalid_request_error" } });
+    const file = path.join(dir, filename);
+    const action = url.searchParams.get("action");
+    // `LOXAIC_FAKE_SLOT_FAIL=save|restore` makes that action fail as llama.cpp's
+    // does, for a test of what a failed save or restore leaves behind.
+    if (action === process.env.LOXAIC_FAKE_SLOT_FAIL) {
+      return json(res, action === "save" ? 500 : 400, { error: { message: action === "save" ? "Unable to save slot" : "Unable to restore slot: No available space in KV cache or invalid slot save file" } });
+    }
+    // How long a restore reads for, and so how long its save "took" (the
+    // server estimates a restore's progress from the save's time).
+    const restoreMs = Number(process.env.LOXAIC_FAKE_RESTORE_MS ?? 0);
+    if (action === "save") {
+      const s = slots[index];
+      const state = s ? { msgs: s.msgs, promptTokens: s.promptTokens, tokens: s.tokens, generated: s.generated } : null;
+      // A real save is megabytes per thousand tokens; padded so a restore has
+      // something to read for its progress. Written with the umask, as
+      // llama.cpp's `fopen` does.
+      const text = JSON.stringify({ state, pad: "x".repeat((s?.tokens ?? 0) * 64) });
+      writeFileSync(file, text);
+      logEvent({ event: "slot-save", model: id, slot: index, tokens: s?.tokens ?? 0, file: filename });
+      return json(res, 200, { id_slot: index, filename, n_saved: s?.tokens ?? 0, n_written: Buffer.byteLength(text), timings: { save_ms: Math.max(restoreMs, 1) } });
+    }
+    if (action === "restore") {
+      let text;
+      try {
+        // Read a tenth at a time across LOXAIC_FAKE_RESTORE_MS, so the file's
+        // read position moves as a real restore's does.
+        const size = statSync(file).size;
+        const fd = openSync(file, "r");
+        const buf = Buffer.alloc(size);
+        for (let i = 0; i < 10; i++) {
+          const from = Math.floor((size * i) / 10);
+          const to = Math.floor((size * (i + 1)) / 10);
+          readSync(fd, buf, from, to - from, from);
+          if (restoreMs > 0) await new Promise((r) => setTimeout(r, restoreMs / 10));
+        }
+        closeSync(fd);
+        text = buf.toString("utf8");
+      } catch {
+        return json(res, 400, { error: { message: "Unable to restore slot: No available space in KV cache or invalid slot save file" } });
+      }
+      const { state } = JSON.parse(text);
+      slots[index] = state ? { ...state, restored: true, task: null, text: "" } : null;
+      logEvent({ event: "slot-restore", model: id, slot: index, tokens: state?.tokens ?? 0, file: filename });
+      return json(res, 200, { id_slot: index, filename, n_restored: state?.tokens ?? 0, n_read: Buffer.byteLength(text), timings: { restore_ms: restoreMs } });
+    }
+    return json(res, 400, { error: { message: "Invalid action" } });
+  }
   if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
     const body = await readBody(req);
     const ok = load(body.model);
@@ -483,11 +610,17 @@ const server = createServer(async (req, res) => {
     // The real router's words, which name nothing: the reason is in the log.
     if (ok === "failed") return json(res, 500, { error: { code: 500, message: `model name=${body.model} failed to load` } });
     if (!ok) return json(res, 400, { error: { code: 400, message: `model '${body.model}' not found` } });
+    // Which slot it runs in and what that slot gives back, as llama.cpp's
+    // `cache_n` (see slotState); the slot takes this request once it ends.
+    const msgs = (body.messages ?? []).map((m) => JSON.stringify(m));
+    const { index: slotIndex, cached } = takeSlot(body.model, msgs);
+    const cacheN = Math.min(cached, Math.max(promptSize(body) - 1, 0));
     // What the thinking level became on the wire, so a test can tell the level
     // picked in the composer reached the backend, in llama.cpp's own fields.
     logEvent({
       event: "chat",
       model: body.model,
+      cache_n: cacheN,
       reasoning_effort: body.reasoning_effort ?? null,
       chat_template_kwargs: body.chat_template_kwargs ?? null,
       // What the request reported costing, and how it ended, so a test can see
@@ -596,18 +729,30 @@ const server = createServer(async (req, res) => {
     // "overflow the context" 90%. Read from what the model was loaded with, so
     // it follows the model's context stage.
     const promptTokens = promptSize(body);
+    // The slot now holds this request: a warm-up's ends in the replayed reply,
+    // everything else's in the reply as generated.
+    const warmUp = body.max_tokens === 1;
+    slotsOf(body.model)[slotIndex] = {
+      msgs,
+      promptTokens,
+      tokens: warmUp ? promptTokens : promptTokens + 3 - 1,
+      generated: !warmUp,
+      restored: false,
+      task: taskCount++,
+      text: promptText(body.messages ?? []),
+    };
     // A model loaded with an MTP head reports what it drafted, as llama.cpp
     // does on its last chunk: 30 drafted, 20 accepted (66%).
     const speculating = merged(body.model)["spec-type"] === "draft-mtp";
     const timings = speculating
       ? {
-          prompt_n: promptTokens, prompt_ms: 50.5, prompt_per_token_ms: 5.05, prompt_per_second: 198.02,
+          prompt_n: promptTokens - cacheN, prompt_ms: 50.5, prompt_per_token_ms: 5.05, prompt_per_second: 198.02,
           predicted_n: 3, predicted_ms: 30.25, predicted_per_token_ms: 10.08, predicted_per_second: 99.17,
-          cache_n: 0, draft_n: 30, draft_n_accepted: 20,
+          cache_n: cacheN, draft_n: 30, draft_n_accepted: 20,
         }
-      : undefined;
+      : { prompt_n: promptTokens - cacheN, cache_n: cacheN };
     res.write(
-      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 3, total_tokens: promptTokens + 3 }, ...(timings ? { timings } : {}) })}\n\n`,
+      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 3, total_tokens: promptTokens + 3 }, timings })}\n\n`,
     );
     res.end("data: [DONE]\n\n");
     return;

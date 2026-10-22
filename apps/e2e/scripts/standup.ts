@@ -544,6 +544,9 @@ async function ensureServer(): Promise<void> {
       // A load that takes a moment, as a real one does, so a context-stage
       // switch can be watched reloading (context-stages.spec.ts).
       LOXAIC_FAKE_LOAD_MS: '4000',
+      // A saved KV cache read back over three seconds, so the "Loading cached
+      // context" pill can be watched (prompt-cache.spec.ts).
+      LOXAIC_FAKE_RESTORE_MS: '3000',
       // The wait between one person's context switches (30 s in production,
       // see llama/context-stage-switch.ts) would turn every spec that moves a
       // model's stage twice as the same user into a refusal. The cooldown has

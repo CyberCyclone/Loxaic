@@ -54,6 +54,13 @@ The managed llama.cpp router: runtime install, preset file, HF downloads, GGUF p
 
 - Non-admin cooldown `CONTEXT_STAGE_COOLDOWN_MS`; admins, `whenFull` and new-conversation step-downs are exempt (`checkStageRequest`). Only the same person's request replaces a pending switch; Cancel: starter, admin, or the conversation's editor (`pendingSwitch`).
 
+## Saved KV caches (`slot-cache.ts`, `slot-store.ts`)
+
+- `slot-save-path` is Loxaic's (`slotSaveDir()`, managed mode only): keep it in `RESERVED`. The directory is chmod 0700 and every file 0600 after llama.cpp writes it.
+- Save only before an unload whose `cacheIdentity` is unchanged; a new key is identity unless added to `CACHE_NEUTRAL_KEYS`. Never save on a crash or device loss, never restore across an identity change.
+- Warm a slot (`warmer`, history ending in the reply) before saving it: hybrid models cannot reuse a restored slot the next turn does not extend exactly.
+- Restore lazily, in the conversation's own turn (`StreamOptions.conversationId`), into an empty slot; use an entry once. Keep only counts from `/slots`; its prompt text is read to tell slots apart and dropped.
+
 ## Runtime versions (`runtime.ts`, `releases.ts`)
 
 - Every source installs through `installSource`. Never install an official build without GitHub's asset `digest` (`releaseBuild` refuses). Hold a custom build to the admin's SHA-256 when given; always record what it hashed to.

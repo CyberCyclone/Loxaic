@@ -20,6 +20,7 @@ import {
   nextStage,
   othersWarning,
   stepDownTarget,
+  STAGE_CACHE_REBUILT,
 } from '@/lib/contextStages';
 
 /**
@@ -59,11 +60,11 @@ function Loading({ error }: { error: string | null }) {
   );
 }
 
-function Point({ children, tone = 'default' }: { children: string; tone?: 'default' | 'warn' }) {
+function Point({ children, tone = 'default', testID }: { children: string; tone?: 'default' | 'warn'; testID?: string }) {
   return (
     <HStack space="xs" className="items-start">
       <Text size="xs" className={tone === 'warn' ? 'text-warning' : 'text-muted-foreground'}>•</Text>
-      <Text size="xs" className={`shrink ${tone === 'warn' ? 'text-warning' : 'text-muted-foreground'}`}>{children}</Text>
+      <Text testID={testID} size="xs" className={`shrink ${tone === 'warn' ? 'text-warning' : 'text-muted-foreground'}`}>{children}</Text>
     </HStack>
   );
 }
@@ -123,6 +124,7 @@ function Approaching({ stages }: { stages: ContextStagesState }) {
               {extra && <Point>{`Needs ${extra}.`}</Point>}
               {target && wontFit && <Point tone="warn">{describeFit(target.fit)}</Point>}
               <Point>{`Reloads the model${reread ? ` and re-reads this conversation once (${reread})` : ' and re-reads this conversation once'}.`}</Point>
+              <Point testID="context.stageModal.cacheRebuilt">{STAGE_CACHE_REBUILT}</Point>
               <Point>YaRN can slightly lower quality on short prompts, for everyone, until someone switches back.</Point>
               <Point>Every reply gets slower as the context grows.</Point>
             </VStack>
@@ -197,6 +199,7 @@ function StepDown({ stages }: { stages: ContextStagesState }) {
             </Text>
             <Point>{targetIsStandard ? 'Full quality on short prompts, and less memory.' : 'Less memory, with room for this conversation.'}</Point>
             <Point>{`Reloads the model${reread ? ` and re-reads this conversation once (${reread})` : ''}.`}</Point>
+            <Point testID="context.stageModal.stepDown.cacheRebuilt">{STAGE_CACHE_REBUILT}</Point>
           </VStack>
           {!info ? <Loading error={stages.infoError} /> : <OthersBlock stages={stages} />}
         </VStack>

@@ -15,6 +15,11 @@ import { CONTEXT_STAGE_PROMPT_AT, type ModelContextStage } from '@loxaic/types';
  * compaction default, so "fits this stage" and "would compact here" agree. */
 export const STAGE_FIT_SHARE = 0.85;
 
+/** What every stage change costs beyond its own conversation: the cached keys
+ * were computed for the old context, so none of them survive the switch. */
+export const STAGE_CACHE_REBUILT =
+  'The prompt cache is rebuilt: every conversation on this model re-reads in full on its next turn.';
+
 /** `262144` → "256K", `1048576` → "1M", `786432` → "768K". */
 export function formatWindow(tokens: number | null | undefined): string {
   if (tokens == null) return 'unknown';

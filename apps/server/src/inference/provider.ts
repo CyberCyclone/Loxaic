@@ -11,6 +11,7 @@ import { listServableModels } from "../llama/catalog.ts";
 import { afterDiscard, discardFailed, discardLostModel, ensureRoom, trackRequest } from "../llama/room.ts";
 import { describeLoadFailure, isLoadFailure } from "../llama/load-failure.ts";
 import { describeDeviceLoss, isDeviceLost } from "../llama/device-lost.ts";
+import { restoreConversation, type CacheProgress } from "../llama/slot-store.ts";
 import { gpuJobLimit } from "../llama/gpu-job-limit.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
 import { backendErrorFields, ContextOverflowError, isContextOverflow, type BackendErrorFields } from "./context-overflow.ts";
@@ -150,6 +151,9 @@ export type StreamEvent =
   /** The backend's own prompt-evaluation progress — only ever sent when
    * `reportProgress` asked for it, and only before the first output. */
   | { type: "progress"; progress: PromptProgress }
+  /** A saved KV cache going back in before the request (llama/slot-store.ts):
+   * only for a host model, and only with `conversationId`. */
+  | { type: "cache"; cache: CacheProgress }
   | { type: "done"; result: CompletionResult };
 
 export interface StreamOptions {
@@ -193,6 +197,13 @@ export interface StreamOptions {
    * llama.cpp, which renders the level into the system prompt.
    */
   thinking?: Record<string, unknown>;
+  /**
+   * The conversation this request continues. With it, a host model first gets
+   * back the conversation's KV cache if one was saved across a reload
+   * (llama/slot-store.ts). Left out by the stage warm-up, which is what makes
+   * one, and by anything that is not a conversation's next turn.
+   */
+  conversationId?: string;
 }
 
 /**
@@ -247,6 +258,11 @@ export async function* streamCompletion(
     // would reach the dead process the discard is removing.
     await afterDiscard(upstreamModel, options.signal);
     await ensureRoom(upstreamModel, options.signal);
+    if (options.conversationId) {
+      for await (const cache of restoreConversation(upstreamModel, options.conversationId, options.signal)) {
+        yield { type: "cache", cache };
+      }
+    }
     yield* liveStream(provider, routerModelName(upstreamModel), messages, options);
   } catch (err) {
     // The GPU was reset under the model: its process will never answer again,

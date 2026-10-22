@@ -1141,6 +1141,13 @@ export async function getContextStage(model: string, conversationId?: string | n
   return (await authedFetch(`/v1/models/context-stage?${q.toString()}`)).json() as Promise<ContextStageInfo>;
 }
 
+/** What a conversation's next turn on `model` will find of its KV cache —
+ * for the banner above the composer when a reload took it. */
+export async function getPromptCache(conversationId: string, model: string): Promise<PromptCacheView> {
+  const q = new URLSearchParams({ model });
+  return (await authedFetch(`/v1/conversations/${encodeURIComponent(conversationId)}/prompt-cache?${q.toString()}`)).json() as Promise<PromptCacheView>;
+}
+
 export interface RequestContextStageResult {
   started: "stage" | "compaction" | "detached";
   stream_id?: string;
@@ -2701,6 +2708,10 @@ export type {
   ContextStageStep,
   ContextStageReason,
   ModelContextStage,
+  PromptCacheStatus,
+  PromptCacheStep,
+  PromptCacheView,
+  PromptCacheLossReason,
   TimeoutBasis,
   LoopSensitivity,
   CompactionStats,
@@ -2721,7 +2732,7 @@ export type {
   PermissionCheckNote,
   ToolPermission,
 } from "@loxaic/types";
-import type { MySkills, PaletteSkill, ServerMessage, SkillInput, StepsDecision, SubAgentLive, UserSkill } from "@loxaic/types";
+import type { MySkills, PaletteSkill, PromptCacheView, ServerMessage, SkillInput, StepsDecision, SubAgentLive, UserSkill } from "@loxaic/types";
 export {
   commandQuery, parseCommand, isValidSkillName, SKILL_NAME_MAX,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,

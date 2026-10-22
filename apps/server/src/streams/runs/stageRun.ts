@@ -78,6 +78,7 @@ export function warmer(convId: string, model: string) {
         onProgress(event.progress);
       }
     }
+    if (!signal.aborted) (await import("../../llama/slot-store.ts")).recordWarmed(model, convId);
     // One line per re-read, so a pill that sat at one figure can be told apart
     // from a backend that stopped reporting.
     console.log(

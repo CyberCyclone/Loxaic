@@ -134,6 +134,7 @@ export class StreamBroker {
     let pendingApproval: StreamSnapshot["pending_approval"];
     let pendingCheckin: StreamSnapshot["pending_checkin"];
     let promptStats: StreamSnapshot["prompt_stats"];
+    let promptCache: StreamSnapshot["prompt_cache"];
     let subagents: SubAgentLive[] = [];
     let mode: StreamSnapshot["mode"];
 
@@ -196,11 +197,20 @@ export class StreamBroker {
         case "text.delta":
           ensure(event.message_id).text += event.text;
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
+          if (promptCache?.message_id === event.message_id) promptCache = undefined;
           break;
         case "thinking.delta":
           ensure(event.message_id).thinking += event.text;
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
+          if (promptCache?.message_id === event.message_id) promptCache = undefined;
           break;
+        case "prompt.cache": {
+          // Like prompt.stats: the pill lasts until its reply's first output.
+          const { kind: _kind, ...status } = event;
+          void _kind;
+          promptCache = status;
+          break;
+        }
         case "prompt.stats": {
           // Kept only until its message's first output (any delta, tool call or
           // end clears it): it describes a prefill still under way, and is
@@ -218,6 +228,7 @@ export class StreamBroker {
           break;
         case "message.end": {
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
+          if (promptCache?.message_id === event.message_id) promptCache = undefined;
           const m = ensure(event.message_id);
           m.status = event.status;
           if (event.usage) m.usage = event.usage;
@@ -281,6 +292,7 @@ export class StreamBroker {
         }
         case "tool.call":
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
+          if (promptCache?.message_id === event.message_id) promptCache = undefined;
           ensure(event.message_id).tool_calls.push({
             call_id: event.call_id,
             tool: event.tool,
@@ -337,6 +349,7 @@ export class StreamBroker {
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),
       ...(pendingCheckin ? { pending_checkin: pendingCheckin } : {}),
       ...(promptStats ? { prompt_stats: promptStats } : {}),
+      ...(promptCache ? { prompt_cache: promptCache } : {}),
       ...(subagents.length ? { subagents } : {}),
       ...(mode ? { mode } : {}),
     };

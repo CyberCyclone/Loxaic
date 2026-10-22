@@ -154,6 +154,7 @@ export default function RoutineChatScreen() {
     runStatus,
     loadingModel,
     promptStats,
+    promptCache,
     queuePosition,
     responseStartedAt,
     pendingApproval,
@@ -457,6 +458,7 @@ export default function RoutineChatScreen() {
                 responseStartedAt={responseStartedAt}
                 loadingModel={loadingModel}
                 promptStats={promptStats}
+                promptCache={promptCache}
                 queuePosition={queuePosition}
                 model={model ? modelName : undefined}
                 history={history}

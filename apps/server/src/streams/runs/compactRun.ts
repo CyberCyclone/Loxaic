@@ -639,6 +639,7 @@ async function generateSummary(input: {
     });
     let text = "";
     let doneResult: CompletionResult | null = null;
+    let restoreStartedAt: number | null = null;
     // The same split the engine makes: only what the stream throws is stored
     // as the reason.
     for await (const event of markBackendErrors(
@@ -648,9 +649,24 @@ async function generateSummary(input: {
         ...(toolChoice ? { toolChoice } : {}),
         ...(thinking ? { thinking } : {}),
         reportProgress,
+        // A request that reuses the conversation's prefix gets back a cache
+        // saved across a reload, as the conversation's next turn would.
+        ...(request.reusesPrefix ? { conversationId: convId } : {}),
       }),
     )) {
-      if (event.type === "delta") {
+      if (event.type === "cache") {
+        restoreStartedAt ??= Date.now();
+        producer.emit({
+          kind: "prompt.cache",
+          message_id: summaryMsgId,
+          step: event.cache.step,
+          tokens: event.cache.tokens,
+          bytes_total: event.cache.bytesTotal,
+          bytes_done: event.cache.bytesDone,
+          estimated: event.cache.estimated,
+          started_at: restoreStartedAt,
+        });
+      } else if (event.type === "delta") {
         text += event.content;
         if (live) producer.emit({ kind: "text.delta", message_id: summaryMsgId, text: event.content });
       } else if (event.type === "progress") {

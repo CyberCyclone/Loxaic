@@ -41,6 +41,7 @@ import { adminProviderRoutes } from "./routes/admin-providers";
 import { adminUserRoutes } from "./routes/admin-users";
 import { adminLocalModelRoutes } from "./routes/admin-local-models.ts";
 import { contextStageRoutes } from "./routes/context-stage.ts";
+import { promptCacheRoutes } from "./routes/prompt-cache.ts";
 import { migrateLegacyInferenceUrl } from "./inference/legacy-migration.ts";
 import { bootLocalRuntime, runtimeView, stopLocalRuntime } from "./llama/router.ts";
 import { closeAllBrowsers } from "./browser/manager.ts";
@@ -206,6 +207,7 @@ adminProviderRoutes(app);
 adminUserRoutes(app);
 adminLocalModelRoutes(app);
 contextStageRoutes(app);
+promptCacheRoutes(app);
 fileRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────

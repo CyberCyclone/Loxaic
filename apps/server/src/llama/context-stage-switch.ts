@@ -204,7 +204,7 @@ export async function applyStageChange(opts: {
     console.log(
       `[llama] ${row.id}: context stage ${String(before)} → ${String(now)} (${opts.reason}${opts.byUserId ? `, by ${opts.byUserId}` : ", automatic"})`,
     );
-    await syncPreset();
+    await syncPreset({ reason: "context_stage" });
     await invalidateModelList();
 
     if (routerEndpoint()) {
@@ -270,7 +270,7 @@ export async function applyStageChange(opts: {
  * section and the listing agree again. */
 async function putBack(modelId: string, stage: number): Promise<void> {
   await updateLocalModelRow(modelId, { activeStage: stage });
-  await syncPreset();
+  await syncPreset({ reason: "context_stage" });
   await invalidateModelList();
 }
 
