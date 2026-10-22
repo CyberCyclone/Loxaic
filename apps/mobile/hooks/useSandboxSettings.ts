@@ -5,6 +5,7 @@ import {
   type SandboxSettings,
   type SandboxSettingsPatch,
 } from '@loxaic/api-client';
+import { describeRequestError } from '@/lib/connection';
 import { useToastHelper } from './useToastHelper';
 
 /** Admin-only sandbox settings (mode/engine/network) with optimistic writes,
@@ -51,8 +52,7 @@ export function useSandboxSettings(token: string | null) {
         return next;
       } catch (err) {
         setSettings(previous);
-        const message = err instanceof Error ? err.message : 'Failed to update sandbox settings';
-        showToast(message, 4000);
+        showToast(describeRequestError(err, "Couldn't save the sandbox settings."), 4000);
         throw err;
       }
     },

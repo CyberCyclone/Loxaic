@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { adminListUsers, adminResetUserPassword, type AdminUser, type UserSandboxAllocation } from '@loxaic/api-client';
+import {
+  adminListUsers,
+  adminResetUserPassword,
+  getSandboxSettings,
+  type AdminUser,
+  type UserSandboxAllocation,
+} from '@loxaic/api-client';
 import { VStack } from '@/components/ui/vstack';
 import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
@@ -13,7 +19,7 @@ import { useToastHelper } from '@/hooks/useToastHelper';
 import { describeRequestError, useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import { UserAllocationModal } from '@/components/admin/UserAllocationModal';
-import { allocationSummary } from '@/lib/sandboxAllocation';
+import { allocationSummary, anyOverridden } from '@/lib/sandboxAllocation';
 
 /**
  * Accounts on this server, and resetting a forgotten password — the only way
@@ -40,6 +46,15 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
   const [confirming, setConfirming] = useState<AdminUser | null>(null);
   const [result, setResult] = useState<{ email: string; temporaryPassword: string } | null>(null);
   const [allocating, setAllocating] = useState<(AdminUser & { sandbox: UserSandboxAllocation }) | null>(null);
+  // SANDBOX_MAX_PER_USER pins the running count for everyone, overrides
+  // included, so the allocation dialog locks that field. Unknown until read:
+  // the server refuses a pinned count either way.
+  const [maxRunningPinned, setMaxRunningPinned] = useState(false);
+  useEffect(() => {
+    getSandboxSettings()
+      .then((s) => { setMaxRunningPinned(s.envOverrides.maxRunning === true); })
+      .catch(() => undefined);
+  }, []);
   // Typing is debounced — each search is two scans of the user table on the
   // server — and only the newest answer may land, or a slow early one
   // overwrites the list for what was typed after it.
@@ -203,9 +218,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
                 >
                   <ButtonText testID={`admin.user.${item.id}.allocation.label`} className="text-2xs font-normal">
                     {`Sandboxes: ${allocationSummary(item.sandbox.allocation, item.sandbox.used)}${
-                      item.sandbox.overridden.memoryMb || item.sandbox.overridden.cpus || item.sandbox.overridden.maxRunning
-                        ? ' (set for them)'
-                        : ''
+                      anyOverridden(item.sandbox.overridden) ? ' (set for them)' : ''
                     }`}
                   </ButtonText>
                 </Button>
@@ -233,6 +246,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
 
       <UserAllocationModal
         user={allocating}
+        maxRunningPinned={maxRunningPinned}
         onClose={() => { setAllocating(null); }}
         onSaved={() => { void load(query); }}
       />

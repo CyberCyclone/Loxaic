@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { getMySandboxAllocation, pauseSandbox, type MySandboxAllocation } from '@loxaic/api-client';
 import { describeRequestError, useServerReachable } from '@/lib/connection';
 import { createReadGate } from '@/lib/readGate';
+import { pollsIn } from '@/lib/sandboxAllocation';
 import { useToastHelper } from './useToastHelper';
 
 /** Often enough that Pause comes back soon after a run ends. */
@@ -22,8 +24,18 @@ export function useSandboxAllocation(token: string | null) {
   const gate = useRef(createReadGate()).current;
   const { showToast } = useToastHelper();
 
+  const [foreground, setForeground] = useState(() => pollsIn(AppState.currentState));
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => { setForeground(pollsIn(state)); });
+    return () => { sub.remove(); };
+  }, []);
+
   const refresh = useCallback(async () => {
-    if (!token) return;
+    if (!token) {
+      // Nothing to ask with (a sign-out while the screen is open): no spinner.
+      setLoading(false);
+      return;
+    }
     const read = gate.beginRead();
     try {
       const next = await getMySandboxAllocation();
@@ -39,15 +51,17 @@ export function useSandboxAllocation(token: string | null) {
     }
   }, [token, gate]);
 
-  // Again whenever the server comes back, and on a timer while it is there.
+  // Again whenever the server comes back or the app returns to the front, and
+  // on a timer while both hold. Each tick is three queries on the server, so
+  // a backgrounded app or a hidden tab does not poll.
   useEffect(() => {
-    if (!reachable) return;
+    if (!reachable || !foreground) return;
     void refresh();
     const timer = setInterval(() => {
       if (!gate.busy()) void refresh();
     }, POLL_MS);
     return () => { clearInterval(timer); };
-  }, [reachable, refresh, gate]);
+  }, [reachable, foreground, refresh, gate]);
 
   const pause = useCallback(
     async (sandboxId: string) => {
@@ -55,6 +69,9 @@ export function useSandboxAllocation(token: string | null) {
       gate.write();
       try {
         await pauseSandbox(sandboxId);
+        // Again once it is done: a poll that began during the request may
+        // have read the sandbox as still running.
+        gate.write();
       } catch (err) {
         showToast(describeRequestError(err, "Couldn't pause that sandbox."), 4000);
       } finally {

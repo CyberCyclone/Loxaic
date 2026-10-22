@@ -5,11 +5,16 @@ import {
   allocationNoticeText,
   allocationSource,
   allocationSummary,
+  anyOverridden,
+  changedParts,
   draftFrom,
+  followSaved,
+  inspectorLinkPlan,
   formatCpus,
   formatMemory,
   orderSandboxes,
   parseAllocationDraft,
+  pollsIn,
   roomForAnother,
   rowAction,
   rowSize,
@@ -149,5 +154,92 @@ describe('allocationNoticeText', () => {
     expect(allocationNoticeText('count')).toContain('Pause a sandbox');
     expect(allocationNoticeText('memory')).toContain('Pause a sandbox');
     expect(allocationNoticeText('too_big')).toContain('Only an administrator');
+  });
+});
+
+describe('anyOverridden', () => {
+  it('is true when an admin set any one part, and false when none', () => {
+    const none = { memoryMb: false, cpus: false, maxRunning: false };
+    expect(anyOverridden(none)).toBe(false);
+    expect(anyOverridden({ ...none, memoryMb: true })).toBe(true);
+    expect(anyOverridden({ ...none, cpus: true })).toBe(true);
+    expect(anyOverridden({ ...none, maxRunning: true })).toBe(true);
+  });
+});
+
+describe('a pinned running count', () => {
+  it('is neither checked nor sent, whatever the field shows', () => {
+    // SANDBOX_MAX_PER_USER=200: above what an admin could type.
+    const parsed = parseAllocationDraft({ memoryGb: '4', cpus: '2', maxRunning: '200' }, { maxRunningPinned: true });
+    expect(parsed).toEqual({ ok: true, value: { memoryMb: 4096, cpus: 2 } });
+  });
+
+  it('is still checked when nothing pins it', () => {
+    expect(parseAllocationDraft({ memoryGb: '4', cpus: '2', maxRunning: '200' }).ok).toBe(false);
+  });
+});
+
+describe('changedParts', () => {
+  const opened = { memoryGb: '', cpus: '2', maxRunning: '' };
+
+  it('sends only the fields typed since the dialog opened', () => {
+    const draft = { memoryGb: '', cpus: '4', maxRunning: '' };
+    const parsed = parseAllocationDraft(draft);
+    if (!parsed.ok) throw new Error('parse');
+    // Memory and running are untouched: another admin's override of either survives.
+    expect(changedParts(opened, draft, parsed.value)).toEqual({ cpus: 4 });
+  });
+
+  it('sends a cleared field as null, to put it back on the default', () => {
+    const draft = { memoryGb: '', cpus: '', maxRunning: '' };
+    const parsed = parseAllocationDraft(draft);
+    if (!parsed.ok) throw new Error('parse');
+    expect(changedParts(opened, draft, parsed.value)).toEqual({ cpus: null });
+  });
+
+  it('sends nothing when nothing changed, spaces aside', () => {
+    const draft = { memoryGb: ' ', cpus: '2 ', maxRunning: '' };
+    const parsed = parseAllocationDraft(draft);
+    if (!parsed.ok) throw new Error('parse');
+    expect(changedParts(opened, draft, parsed.value)).toEqual({});
+  });
+
+  it('never sends a pinned count, even if its field changed', () => {
+    const draft = { memoryGb: '', cpus: '2', maxRunning: '9' };
+    const parsed = parseAllocationDraft(draft, { maxRunningPinned: true });
+    if (!parsed.ok) throw new Error('parse');
+    expect(changedParts(opened, draft, parsed.value)).toEqual({});
+  });
+});
+
+describe('followSaved', () => {
+  const was = { memoryGb: '2.5', cpus: '5', maxRunning: '5' };
+  const now = { memoryGb: '4', cpus: '5', maxRunning: '5' };
+
+  it('follows a new saved value when nothing was typed', () => {
+    expect(followSaved(was, was, now)).toEqual({ draft: now, baseline: now });
+  });
+
+  it('keeps what is being typed when the saved value changes under it', () => {
+    const typing = { ...was, cpus: '8' };
+    expect(followSaved(typing, was, now)).toEqual({ draft: typing, baseline: now });
+  });
+});
+
+describe('inspectorLinkPlan', () => {
+  it('closes the sheet first on a phone, and opens the screen once it has gone', () => {
+    expect(inspectorLinkPlan(false, 300)).toEqual({ close: true, delayMs: 300 });
+  });
+
+  it('leaves the side panel open, and opens the screen at once', () => {
+    expect(inspectorLinkPlan(true, 300)).toEqual({ close: false, delayMs: 0 });
+  });
+});
+
+describe('pollsIn', () => {
+  it('polls only in the foreground', () => {
+    expect(pollsIn('active')).toBe(true);
+    expect(pollsIn('background')).toBe(false);
+    expect(pollsIn('inactive')).toBe(false);
   });
 });

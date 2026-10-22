@@ -3,7 +3,7 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Button, ButtonText } from '@/components/ui/button';
 import { AllocationFields } from '@/components/sandbox/AllocationFields';
-import { draftFrom, parseAllocationDraft, type AllocationDraft } from '@/lib/sandboxAllocation';
+import { draftFrom, followSaved, parseAllocationDraft, type AllocationDraft } from '@/lib/sandboxAllocation';
 import type { SandboxAllocation } from '@loxaic/api-client';
 
 /**
@@ -23,28 +23,32 @@ export function AllocationSettings({
   onSave: (patch: Partial<SandboxAllocation>) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<AllocationDraft>(() => draftFrom(allocation));
+  // The saved values the admin last saw, which tells typing from not.
+  const [baseline, setBaseline] = useState<AllocationDraft>(() => draftFrom(allocation));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   // Follows the saved value (another admin's change, or this save's answer)
-  // whenever nothing is being typed over it.
+  // unless the admin has typed over it.
   const saved = draftFrom(allocation);
   const dirty = draft.memoryGb !== saved.memoryGb || draft.cpus !== saved.cpus || draft.maxRunning !== saved.maxRunning;
   const savedKey = `${saved.memoryGb}|${saved.cpus}|${saved.maxRunning}`;
   useEffect(() => {
-    if (!saving) setDraft(draftFrom(allocation));
+    const next = followSaved(draft, baseline, saved);
+    setDraft(next.draft);
+    setBaseline(next.baseline);
     // Keyed on the saved values, not the object, which is new on every poll.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedKey]);
 
   const save = async () => {
-    const parsed = parseAllocationDraft(draft);
+    const parsed = parseAllocationDraft(draft, { maxRunningPinned });
     if (!parsed.ok) {
       setError(parsed.error);
       return;
     }
     const { memoryMb, cpus, maxRunning } = parsed.value;
-    if (memoryMb == null || cpus == null || (maxRunning == null && !maxRunningPinned)) {
+    if (memoryMb == null || cpus == null || (!maxRunningPinned && maxRunning == null)) {
       setError('Fill in every field: this is what everyone gets by default.');
       return;
     }
@@ -52,8 +56,13 @@ export function AllocationSettings({
     setSaving(true);
     try {
       await onSave({ memoryMb, cpus, ...(maxRunningPinned || maxRunning == null ? {} : { maxRunning }) });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't save the allocation.");
+      // As the server stores it: "3.0" typed is "3" saved, which must not
+      // read as an unsaved change.
+      const stored = draftFrom({ memoryMb, cpus, maxRunning: maxRunning ?? allocation.maxRunning });
+      setDraft(stored);
+      setBaseline(stored);
+    } catch {
+      // Already reported: the settings hook toasts every failed save.
     } finally {
       setSaving(false);
     }

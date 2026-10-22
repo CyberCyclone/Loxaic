@@ -16,10 +16,14 @@ import { AllocationFields } from '@/components/sandbox/AllocationFields';
 import { describeRequestError, useServerReachable } from '@/lib/connection';
 import {
   allocationSummary,
+  anyOverridden,
+  changedParts,
   draftFrom,
   parseAllocationDraft,
   type AllocationDraft,
 } from '@/lib/sandboxAllocation';
+
+const EMPTY: AllocationDraft = { memoryGb: '', cpus: '', maxRunning: '' };
 
 /**
  * One user's sandbox allocation (#254), from Admin → Users: an empty field
@@ -28,16 +32,21 @@ import {
  */
 export function UserAllocationModal({
   user,
+  maxRunningPinned,
   onClose,
   onSaved,
 }: {
   /** The user, as listed with their allocation; null when closed. */
   user: (AdminUser & { sandbox: UserSandboxAllocation }) | null;
+  /** SANDBOX_MAX_PER_USER sets the count for everyone. */
+  maxRunningPinned: boolean;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const reachable = useServerReachable();
-  const [draft, setDraft] = useState<AllocationDraft>({ memoryGb: '', cpus: '', maxRunning: '' });
+  const [draft, setDraft] = useState<AllocationDraft>(EMPTY);
+  // The fields as the dialog opened: only what changed from them is sent.
+  const [opened, setOpened] = useState<AllocationDraft>(EMPTY);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -46,13 +55,13 @@ export function UserAllocationModal({
   useEffect(() => {
     if (!user) return;
     const { allocation, overridden } = user.sandbox;
-    setDraft(
-      draftFrom({
-        ...(overridden.memoryMb ? { memoryMb: allocation.memoryMb } : {}),
-        ...(overridden.cpus ? { cpus: allocation.cpus } : {}),
-        ...(overridden.maxRunning ? { maxRunning: allocation.maxRunning } : {}),
-      }),
-    );
+    const initial = draftFrom({
+      ...(overridden.memoryMb ? { memoryMb: allocation.memoryMb } : {}),
+      ...(overridden.cpus ? { cpus: allocation.cpus } : {}),
+      ...(overridden.maxRunning ? { maxRunning: allocation.maxRunning } : {}),
+    });
+    setDraft(initial);
+    setOpened(initial);
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
@@ -66,7 +75,11 @@ export function UserAllocationModal({
   const placeholders: Partial<AllocationDraft> = {
     memoryGb: overridden.memoryMb ? 'Default' : `Default: ${current.memoryGb}`,
     cpus: overridden.cpus ? 'Default' : `Default: ${current.cpus}`,
-    maxRunning: overridden.maxRunning ? 'Default' : `Default: ${current.maxRunning}`,
+    maxRunning: maxRunningPinned
+      ? `Set by the server: ${current.maxRunning}`
+      : overridden.maxRunning
+        ? 'Default'
+        : `Default: ${current.maxRunning}`,
   };
 
   const run = async (write: () => Promise<unknown>) => {
@@ -84,12 +97,17 @@ export function UserAllocationModal({
   };
 
   const save = () => {
-    const parsed = parseAllocationDraft(draft);
+    const parsed = parseAllocationDraft(draft, { maxRunningPinned });
     if (!parsed.ok) {
       setError(parsed.error);
       return;
     }
-    void run(() => adminSetUserSandboxAllocation(user.id, parsed.value));
+    const patch = changedParts(opened, draft, parsed.value);
+    if (Object.keys(patch).length === 0) {
+      onClose();
+      return;
+    }
+    void run(() => adminSetUserSandboxAllocation(user.id, patch));
   };
 
   return (
@@ -115,8 +133,13 @@ export function UserAllocationModal({
               }}
               testIDPrefix="admin.allocation"
               placeholders={placeholders}
-              locked={{ memoryGb: saving, cpus: saving, maxRunning: saving }}
+              locked={{ memoryGb: saving, cpus: saving, maxRunning: saving || maxRunningPinned }}
             />
+            {maxRunningPinned && (
+              <Text size="2xs" className="text-muted-foreground">
+                Running at once is set by the SANDBOX_MAX_PER_USER environment variable, for everyone.
+              </Text>
+            )}
             <Text size="2xs" className="text-muted-foreground">
               Leave a field empty to follow the default. Lowering it pauses nothing; it only refuses their next start.
             </Text>
@@ -137,7 +160,7 @@ export function UserAllocationModal({
               testID="admin.allocation.reset"
               size="sm"
               variant="outline"
-              isDisabled={!reachable || saving || !(overridden.memoryMb || overridden.cpus || overridden.maxRunning)}
+              isDisabled={!reachable || saving || !anyOverridden(overridden)}
               onPress={() => { void run(() => adminClearUserSandboxAllocation(user.id)); }}
             >
               <ButtonText>Use the default</ButtonText>

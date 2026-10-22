@@ -15,8 +15,10 @@
 import { adminCreds, apiToken, provisionAdmin, provisionUser, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import {
+  byTestId,
   closeKeyboard,
   expectNeverPresent,
+  platform,
   scrollTo,
   scrollToMiddle,
   tap,
@@ -34,6 +36,7 @@ import {
   goToSurface,
   listSandboxes,
   myAllocation,
+  openInspector,
   openSandboxes,
   openSandboxSettings,
   pauseAllMySandboxes,
@@ -80,6 +83,8 @@ describe('sandbox allocations (#254)', () => {
   let adminId = '';
   const member = uniqueCreds();
   let memberId = '';
+  /** Chat A from the first case: an agent chat with a sandbox. */
+  let chatWithSandbox = '';
 
   before(async () => {
     await provisionAdmin();
@@ -108,6 +113,7 @@ describe('sandbox allocations (#254)', () => {
     await startNewAgentRun();
     await tap('agent.mode.manual');
     const chatA = await sendInNewRun(adminCreds(), BASH_PROMPT);
+    chatWithSandbox = chatA;
     await waitForVisible('agent.permission.bar');
     await tap('agent.permission.allow');
     await waitForToolResult(MOCK_BASH_OUTPUT);
@@ -166,6 +172,19 @@ describe('sandbox allocations (#254)', () => {
     expect((await listSandboxes(token, chatB))[0]?.status).toBe('running');
   });
 
+  it("opens the Sandboxes screen from the Inspector, leaving no sheet over it on a phone", async () => {
+    await goToSurface('agent');
+    await selectThread(chatWithSandbox, 'agent');
+    await openInspector();
+    await scrollTo('agent.inspector.workspace.sandboxes');
+    await tap('agent.inspector.workspace.sandboxes');
+    await waitForVisible('sandboxes.bar.running');
+    // On a phone the Inspector is a sheet drawn over every screen; on web and
+    // Electron it is the agent screen's side panel, left behind with it.
+    if (platform() === 'ios' || platform() === 'android') await waitForAbsent('agent.inspector.panel');
+    await shot('sandbox-allocation-from-inspector');
+  });
+
   it('lets an admin set the default allocation, and refuses one out of bounds', async () => {
     await openSandboxSettings();
     await scrollTo('sandbox.allocation.memoryGb');
@@ -185,6 +204,25 @@ describe('sandbox allocations (#254)', () => {
     });
     await waitForAbsent('sandbox.allocation.error');
     await shot('sandbox-allocation-admin-default');
+    await resetSandboxSettings();
+  });
+
+  it('reads a saved default as saved, however it was typed', async () => {
+    await openSandboxSettings();
+    await scrollTo('sandbox.allocation.memoryGb');
+    await typeInto('sandbox.allocation.memoryGb', '3.0');
+    await closeKeyboard();
+    await scrollTo('sandbox.allocation.save');
+    await tap('sandbox.allocation.save');
+    await browser.waitUntil(async () => (await defaultAllocation()).memoryMb === 3072, {
+      timeout: 15_000,
+      timeoutMsg: '[e2e] the default allocation was not saved',
+    });
+    // Saved as 3 GB, which is what was typed: nothing is left to save.
+    await browser.waitUntil(async () => !(await byTestId('sandbox.allocation.save').isEnabled()), {
+      timeout: 10_000,
+      timeoutMsg: '[e2e] Save stayed on after the allocation was saved',
+    });
     await resetSandboxSettings();
   });
 
@@ -213,6 +251,24 @@ describe('sandbox allocations (#254)', () => {
     await waitForFreshText(`admin.user.${memberId}.allocation.label`, '2.5 GB · 5 CPUs');
     const resolved = await myAllocation(member);
     expect(resolved.allocation).toEqual({ memoryMb: 2560, cpus: 5, maxRunning: 5 });
+  });
+
+  it("saves only the fields an admin changed, so another admin's save meanwhile stays", async () => {
+    await goToSurface('admin');
+    await tap('admin.tab.users');
+    await typeInto('admin.users.search', member.email);
+    await closeKeyboard();
+    await tap(`admin.user.${memberId}.allocation`);
+    await waitForVisible('admin.allocation.save');
+    // Another admin sets their memory while this dialog is open.
+    await setUserAllocation(memberId, { memoryMb: 16_384 });
+    await typeInto('admin.allocation.cpus', '8');
+    await closeKeyboard();
+    await tap('admin.allocation.save');
+    await waitForAbsent('admin.allocation.save');
+    const resolved = await myAllocation(member);
+    expect(resolved.allocation).toEqual({ memoryMb: 16_384, cpus: 8, maxRunning: 5 });
+    await setUserAllocation(memberId, null);
   });
 
   it('shows someone who is not an admin their own allocation, and no admin controls', async () => {

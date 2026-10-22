@@ -82,9 +82,14 @@ export function roomForAnother(allocation: SandboxAllocation, used: SandboxUsage
   );
 }
 
+/** Whether an admin has set any part of this allocation for the person. */
+export function anyOverridden(overridden: Record<keyof SandboxAllocation, boolean>): boolean {
+  return overridden.memoryMb || overridden.cpus || overridden.maxRunning;
+}
+
 /** Where a person's allocation comes from, in a line. */
 export function allocationSource(overridden: Record<keyof SandboxAllocation, boolean>): string {
-  return overridden.memoryMb || overridden.cpus || overridden.maxRunning
+  return anyOverridden(overridden)
     ? 'An administrator set this allocation for you.'
     : 'This is the default allocation for everyone on this server.';
 }
@@ -142,8 +147,14 @@ export type ParsedAllocation =
  * Reads the admin's fields into an allocation patch. Each field is a number
  * within the server's bounds, or empty (→ `null`). Memory is typed in GB and
  * sent in whole MB, as the server stores it.
+ *
+ * A count pinned by SANDBOX_MAX_PER_USER is neither read nor sent: the field
+ * shows the pin, which may lie outside the bounds an admin could type.
  */
-export function parseAllocationDraft(draft: AllocationDraft): ParsedAllocation {
+export function parseAllocationDraft(
+  draft: AllocationDraft,
+  opts: { maxRunningPinned?: boolean } = {},
+): ParsedAllocation {
   const value: Partial<Record<keyof SandboxAllocation, number | null>> = {};
   const memory = draft.memoryGb.trim();
   if (memory === '') value.memoryMb = null;
@@ -166,6 +177,7 @@ export function parseAllocationDraft(draft: AllocationDraft): ParsedAllocation {
     value.cpus = n;
   }
   const running = draft.maxRunning.trim();
+  if (opts.maxRunningPinned) return { ok: true, value };
   if (running === '') value.maxRunning = null;
   else {
     const n = Number(running);
@@ -189,6 +201,63 @@ export function draftFrom(allocation: Partial<SandboxAllocation>): AllocationDra
     cpus: allocation.cpus === undefined ? '' : String(allocation.cpus),
     maxRunning: allocation.maxRunning === undefined ? '' : String(allocation.maxRunning),
   };
+}
+
+const DRAFT_FIELDS: Record<keyof AllocationDraft, keyof SandboxAllocation> = {
+  memoryGb: 'memoryMb',
+  cpus: 'cpus',
+  maxRunning: 'maxRunning',
+};
+
+export function sameDraft(a: AllocationDraft, b: AllocationDraft): boolean {
+  return a.memoryGb.trim() === b.memoryGb.trim() && a.cpus.trim() === b.cpus.trim() && a.maxRunning.trim() === b.maxRunning.trim();
+}
+
+/**
+ * Only the parts of a parsed patch whose field the admin changed since the
+ * form opened. The server merges an override field by field, so sending an
+ * untouched field (as null, or as the value it had) would undo another
+ * admin's save of that field in the meantime.
+ */
+export function changedParts(
+  opened: AllocationDraft,
+  draft: AllocationDraft,
+  value: Partial<Record<keyof SandboxAllocation, number | null>>,
+): Partial<Record<keyof SandboxAllocation, number | null>> {
+  const out: Partial<Record<keyof SandboxAllocation, number | null>> = {};
+  for (const field of Object.keys(DRAFT_FIELDS) as (keyof AllocationDraft)[]) {
+    const key = DRAFT_FIELDS[field];
+    if (opened[field].trim() !== draft[field].trim() && key in value) out[key] = value[key];
+  }
+  return out;
+}
+
+/**
+ * The default-allocation form's fields when the saved allocation changes
+ * (another admin's save, or this one's answer). They follow it unless the
+ * admin has typed over what they last saw; `baseline` is that.
+ */
+export function followSaved(
+  draft: AllocationDraft,
+  baseline: AllocationDraft,
+  saved: AllocationDraft,
+): { draft: AllocationDraft; baseline: AllocationDraft } {
+  return { draft: sameDraft(draft, baseline) ? saved : draft, baseline: saved };
+}
+
+/**
+ * How the Inspector's link to the Sandboxes screen leaves it. On a phone the
+ * Inspector is a sheet drawn over everything, so it closes first, and the
+ * screen opens once the sheet has gone; the side panel stays.
+ */
+export function inspectorLinkPlan(wide: boolean, sheetExitMs: number): { close: boolean; delayMs: number } {
+  return wide ? { close: false, delayMs: 0 } : { close: true, delayMs: sheetExitMs };
+}
+
+/** The screen polls only while the app is in front: a backgrounded app, or a
+ * hidden browser tab (react-native-web reports it the same way), does not. */
+export function pollsIn(appState: string): boolean {
+  return appState === 'active';
 }
 
 /** One line summing up a user's allocation for the admin list. */
