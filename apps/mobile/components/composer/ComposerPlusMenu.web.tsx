@@ -53,7 +53,14 @@ const rectOf = (el: unknown): Rect | null =>
  * same file can be picked twice in a row. The click happens inside the press
  * itself, so the browser still counts it as the user's gesture.
  */
-export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null, thinking = null, disabled = false }: ComposerPlusMenuProps) {
+export function ComposerPlusMenu({
+  onFilesSelected,
+  mcp,
+  contextSettings = null,
+  thinking = null,
+  disabled = false,
+  onOpenChange,
+}: ComposerPlusMenuProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<PressableRef>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -62,6 +69,8 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [menu, setMenu] = useState<MenuPlacement | null>(null);
   const [sub, setSub] = useState<(SubmenuPlacement & { kind: SubKind }) | null>(null);
+  const menuOpen = menu !== null;
+  useEffect(() => { onOpenChange?.(menuOpen); }, [menuOpen, onOpenChange]);
 
   const cancelClose = () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);

@@ -231,6 +231,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         tools.push({
           tool: b.tool,
           summary: toolSummary(b.tool, args),
+          args,
           result: '',
           callId,
           ...withPlan(b.tool, args, row.id),
@@ -268,6 +269,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
           // The stale-list reminder the server appends is for the model, not
           // the person: it says nothing about the tool (@loxaic/types).
           tc.result = stripTodoReminder(b.output);
+          tc.hasResult = true;
           tc.diff = diffLinesFor(b.diff);
           // Carried through so a failed call still reads as failed after a
           // reload. Undefined on rows written before the block gained the
@@ -317,8 +319,11 @@ export function snapshotMessageToMessage(
         ? sm.tool_calls.map((tc) => ({
             tool: tc.tool,
             summary: toolSummary(tc.tool, tc.args),
+            args: tc.args,
             // Stripped on every path a tool result arrives by (history, snapshot, live).
             result: stripTodoReminder(tc.output ?? ''),
+            // The broker sets `output` when the result arrives, and only then.
+            ...(tc.output === undefined ? {} : { hasResult: true as const }),
             diff: diffLinesFor(tc.diff),
             callId: tc.call_id,
             ok: tc.ok,
@@ -485,6 +490,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
                 {
                   tool: event.tool,
                   summary: toolSummary(event.tool, event.args),
+                  args: event.args,
                   result: '',
                   callId: event.call_id,
                   ...withPlan(event.tool, event.args, event.message_id),
@@ -504,6 +510,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
                   ...t,
                   // Stripped on every path a tool result arrives by (history, snapshot, live).
                   result: stripTodoReminder(event.output),
+                  hasResult: true as const,
                   diff: diffLinesFor(event.diff),
                   ok: event.ok,
                   ...(event.permission ? { permission: event.permission } : {}),

@@ -20,6 +20,9 @@ interface ShellState {
   overlaySidebar: boolean;
   openSidebar: () => void;
   openSettings: () => void;
+  /** Settings or the changelog is open, or the changelog is about to take
+   * Settings' place: what a screen's self-opening overlay waits for. */
+  overlayOpen: boolean;
 }
 
 const ShellContext = createContext<ShellState | null>(null);
@@ -38,6 +41,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
+  const [changelogQueued, setChangelogQueued] = useState(false);
   const changelogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // One connection monitor for the signed-in app, whichever screen is open —
@@ -68,8 +72,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setSidebarOpen(true);
       },
       openSettings: () => { setSettingsOpen(true); },
+      overlayOpen: settingsOpen || changelogOpen || changelogQueued,
     }),
-    [overlaySidebar],
+    [overlaySidebar, settingsOpen, changelogOpen, changelogQueued],
   );
 
   // Settings closes first and the changelog opens in its place: modals never
@@ -81,8 +86,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       setChangelogOpen(true);
       return;
     }
+    setChangelogQueued(true);
     changelogTimer.current = setTimeout(() => {
       changelogTimer.current = null;
+      setChangelogQueued(false);
       setChangelogOpen(true);
     }, SHEET_EXIT_MS);
   }, []);

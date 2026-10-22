@@ -106,7 +106,7 @@ async function waitForDialogText(text: string, timeout = 30_000): Promise<void> 
     () =>
       browser.execute(
         (selector: string, t: string) => document.querySelector(selector)?.textContent.includes(t) ?? false,
-        testIdSelector('chat.approval.dialog'),
+        testIdSelector('chat.approval.panel'),
         text,
       ),
     { timeout, interval: 250, timeoutMsg: `expected an approval dialog showing "${text}"` },
@@ -127,8 +127,8 @@ describe('answering an approval after coming back to the app', () => {
 
     await goToSurface('chat');
     await sendMessage(PROMPT);
-    await waitForVisible('chat.approval.dialog', 60_000);
-    await waitForTextIn('chat.approval.dialog', 'first.txt');
+    await waitForVisible('chat.approval.panel', 60_000);
+    await waitForTextIn('chat.approval.panel', 'first.txt');
 
     // An ordinary return, with Allow clicked before the new socket opens: the
     // answer cannot be sent, so the dialog stays and says why. The reconnect
@@ -137,7 +137,7 @@ describe('answering an approval after coming back to the app', () => {
     const quick = await leaveAndReturn({ click: ALLOW, holdOpenMs: 150, watchMs: 1_500 });
     if (quick.bannerSeen) throw new Error('an ordinary return flashed the offline banner');
     await waitForTextIn('shell.toast', 'Reconnecting to your server');
-    await waitForTextIn('chat.approval.dialog', 'first.txt');
+    await waitForTextIn('chat.approval.panel', 'first.txt');
     await shot('approval-reconnect-not-sent');
 
     // Reconnected: the same button answers, and the run carries on to ask
@@ -163,7 +163,7 @@ describe('answering an approval after coming back to the app', () => {
     await waitForGone('chat.approval.reconnecting', 5_000);
     if (await isDisabled(ALLOW)) throw new Error('Allow stayed disabled after the socket opened');
     await tap(ALLOW);
-    await waitForGone('chat.approval.dialog');
+    await waitForGone('chat.approval.panel');
     await browser.waitUntil(
       () =>
         browser.execute(() => {

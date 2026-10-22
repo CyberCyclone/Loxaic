@@ -1,25 +1,17 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Keyboard, Platform } from 'react-native';
-import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Button, ButtonText } from '@/components/ui/button';
-import { DeadlineCountdown } from '@/components/chat/DeadlineCountdown';
-import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
-import { useServerReachable } from '@/lib/connection';
+import { ApprovalActions, offersAllowAlways } from '@/components/agent/ApprovalActions';
+import { ApprovalNotes, ApprovalRequestLine } from '@/components/agent/ApprovalNotes';
+import { ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
 import type { WaitDeadline } from '@/lib/pendingWaits';
 import { permissionBarView } from '@/lib/permissionBar';
 import { useSession } from '@/lib/session';
+import { toolSummary } from '@/lib/streamMessages';
+import { revealHidden } from '@/lib/toolDetails';
 import type { PermissionCheckNote, PermissionMode } from '@loxaic/api-client';
-
-function summarizeArgs(tool: string, args: Record<string, unknown>): string {
-  if (typeof args.path === 'string') return args.path;
-  if (typeof args.command === 'string') return args.command;
-  if (typeof args.url === 'string') return args.url;
-  if (typeof args.pattern === 'string') return args.pattern;
-  const json = JSON.stringify(args);
-  return json === '{}' ? tool : json.slice(0, 120);
-}
 
 interface PermissionBarProps {
   tool: string;
@@ -49,6 +41,9 @@ interface PermissionBarProps {
   /** `agent.permission` unless a second bar can be on screen with it — the
    * one inside a sub-agent's panel. */
   testIDBase?: string;
+  /** Offer the Details sheet (#267). Not where the bar is itself a sheet's
+   * footer — sheets never stack; the call's card above it expands instead. */
+  detailsSheet?: boolean;
 }
 
 export function PermissionBar({
@@ -65,12 +60,16 @@ export function PermissionBar({
   onDeny,
   source,
   testIDBase = 'agent.permission',
+  detailsSheet = true,
 }: PermissionBarProps) {
   const { user } = useSession();
   const view = permissionBarView({ tool, mode, granterUserId, rules, check }, user?.id, selectorMode);
-  const { mcp } = view;
-  const offerAlways = onAllowAlways !== undefined && view.canAllowAlways;
-  const alwaysFirst = offerAlways && view.primary === 'always';
+  const offerAlways = offersAllowAlways(view, onAllowAlways);
+  // The bar is keyed by the question, so this starts closed for each new one.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  // One line of what the call does, two at most; the whole of it is a tap
+  // away in the Details sheet (#267). Hidden characters shown, as there.
+  const summary = revealHidden(toolSummary(tool, args));
   // On a phone the keyboard leaves about a hundred points between the header
   // and the composer, and the bar's buttons were cut off below it: a run
   // parked on a question nobody could reach the answer to. The prompt is what
@@ -79,8 +78,10 @@ export function PermissionBar({
   useEffect(() => {
     if (Platform.OS !== 'web') Keyboard.dismiss();
   }, []);
-  // See ToolApprovalDialog: an answer needs an open socket (#231).
-  const disconnected = !useServerReachable();
+  const answer = (fn: () => void) => () => {
+    setDetailsOpen(false);
+    fn();
+  };
   return (
     <VStack
       testID={`${testIDBase}.bar`}
@@ -92,65 +93,59 @@ export function PermissionBar({
           Sub-agent · {source}
         </Text>
       ) : null}
-      {mcp ? (
-        <Text size="sm" className="text-foreground">
-          MCP server <Text size="sm" className="font-mono text-warning">{mcp.server}</Text> wants to run{' '}
-          <Text size="sm" className="font-mono text-warning">{mcp.tool}</Text>
-          {' — '}
-          <Text size="sm" className="font-mono text-muted-foreground">{summarizeArgs(tool, args)}</Text>
-        </Text>
-      ) : (
-        <Text size="sm" className="text-foreground">
-          {source ? 'It wants' : 'Agent wants'} to run <Text size="sm" className="font-mono text-warning">{tool}</Text>
-          {' — '}
-          <Text size="sm" className="font-mono text-muted-foreground">{summarizeArgs(tool, args)}</Text>
-        </Text>
-      )}
-      {view.modeNote ? (
-        <Text testID={`${testIDBase}.mode`} size="2xs" className="text-muted-foreground">
-          {view.modeNote}
-        </Text>
+      <ApprovalRequestLine
+        testID={`${testIDBase}.summary`}
+        tool={tool}
+        view={view}
+        source={source}
+        summary={summary === '{}' ? undefined : summary}
+      />
+      <ApprovalNotes view={view} offerAlways={offerAlways} deadline={deadline} testIDBase={testIDBase} />
+      <ApprovalActions
+        view={view}
+        onAllow={onAllow}
+        onAllowAlways={onAllowAlways}
+        onDeny={onDeny}
+        ids={{
+          deny: `${testIDBase}.deny`,
+          allow: `${testIDBase}.allow`,
+          allowAlways: `${testIDBase}.allowAlways`,
+          rule: `${testIDBase}.rule`,
+        }}
+        leading={
+          detailsSheet ? (
+            // Reading, not answering: stays enabled offline.
+            <Button
+              testID={`${testIDBase}.details`}
+              variant="link"
+              size="sm"
+              className="mr-auto"
+              onPress={() => { setDetailsOpen(true); }}
+            >
+              <ButtonText>Details</ButtonText>
+            </Button>
+          ) : null
+        }
+      />
+      {detailsSheet ? (
+        <ToolApprovalSheet
+          open={detailsOpen}
+          onClose={() => { setDetailsOpen(false); }}
+          testIDBase={`${testIDBase}.sheet`}
+          tool={tool}
+          args={args}
+          source={source}
+          deadline={deadline}
+          mode={mode}
+          selectorMode={selectorMode}
+          granterUserId={granterUserId}
+          rules={rules}
+          check={check}
+          onAllow={answer(onAllow)}
+          onAllowAlways={onAllowAlways ? answer(onAllowAlways) : undefined}
+          onDeny={answer(onDeny)}
+        />
       ) : null}
-      {view.checkNote ? (
-        <Text testID={`${testIDBase}.checkNote`} size="2xs" className="text-muted-foreground">
-          {view.checkNote}
-        </Text>
-      ) : null}
-      {offerAlways && view.note ? (
-        <Text testID={`${testIDBase}.alwaysNote`} size="2xs" className="text-muted-foreground">
-          {view.note}
-        </Text>
-      ) : null}
-      <DeadlineCountdown kind="approval" deadline={deadline} testID={`${testIDBase}.deadline`} />
-      <DisconnectedNote testID={`${testIDBase}.reconnecting`} />
-      <HStack space="sm" className="justify-end">
-        <Button testID={`${testIDBase}.deny`} variant="outline" size="sm" onPress={onDeny} isDisabled={disconnected}>
-          <ButtonText>Deny</ButtonText>
-        </Button>
-        {/* The same two answers in every mode, under the same ids: only which
-            one is filled changes. The filled one is last, nearest the thumb. */}
-        {alwaysFirst ? (
-          <Button testID={`${testIDBase}.allow`} variant="outline" size="sm" onPress={onAllow} isDisabled={disconnected}>
-            <ButtonText>Allow once</ButtonText>
-          </Button>
-        ) : null}
-        {offerAlways ? (
-          <Button
-            testID={`${testIDBase}.allowAlways`}
-            variant={alwaysFirst ? 'default' : 'outline'}
-            size="sm"
-            onPress={onAllowAlways}
-            isDisabled={disconnected}
-          >
-            <ButtonText testID={`${testIDBase}.rule`}>{view.alwaysLabel ?? 'Allow always'}</ButtonText>
-          </Button>
-        ) : null}
-        {alwaysFirst ? null : (
-          <Button testID={`${testIDBase}.allow`} size="sm" onPress={onAllow} isDisabled={disconnected}>
-            <ButtonText>Allow once</ButtonText>
-          </Button>
-        )}
-      </HStack>
     </VStack>
   );
 }

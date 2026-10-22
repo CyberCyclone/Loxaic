@@ -87,13 +87,13 @@ describe('queued after an approval', () => {
     await goToSurface('chat');
     await sendMessage(WORDLESS_WRITE);
     // Chat asks before a write. The run has handed its slot back.
-    await waitForVisible('chat.approval.dialog', 30_000);
-    await waitForTextIn('chat.approval.dialog', 'fs_write');
+    await waitForVisible('chat.approval.panel', 30_000);
+    await waitForTextIn('chat.approval.panel', 'fs_write');
 
     const holder = await holdTheSlot(creds);
     try {
       await tap('chat.approval.allowOnce');
-      await waitForAbsent('chat.approval.dialog');
+      await waitForAbsent('chat.approval.panel');
 
       // Back in line behind the holder, with only the tool card to show for
       // the reply: the indicator speaks for it.

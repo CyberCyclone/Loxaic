@@ -516,9 +516,9 @@ describe('sub-agents', () => {
 
     // This screen did not start the run: it learns of the sub-agent, and of
     // what it is waiting on, from the snapshot it gets on opening the chat.
-    await waitForVisible('chat.approval.dialog', 30_000);
+    await waitForVisible('chat.approval.panel', 30_000);
     await waitForFreshText('chat.approval.source', MOCK_SUBAGENT_NAME);
-    await waitForTextIn('chat.approval.dialog', 'fs_write');
+    await waitForTextIn('chat.approval.panel', 'fs_write');
     await shot('subagent-approval-routine');
     await tap('chat.approval.reject');
     // A control inside it, not the dialog: on Android a closed modal's root

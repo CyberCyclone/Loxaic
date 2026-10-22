@@ -479,3 +479,79 @@ describe('a web_fetch screenshot reaches the card on every path (#281)', () => {
     expect(m.tools?.[0].browser).toBeUndefined();
   });
 });
+
+describe('a tool call keeps its arguments in full on every path (#267)', () => {
+  const args = { command: `touch a.txt && ${'echo more; '.repeat(30)}`, timeout: 30 };
+
+  it('from the live call', () => {
+    const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '' }];
+    const [m] = applyEventToMsgs(msgs, { kind: 'tool.call', message_id: 'a1', call_id: 'c1', tool: 'bash', args });
+    expect(m.tools?.[0].args).toEqual(args);
+  });
+
+  it('from history', () => {
+    const msgs = reconstructMessages([row({ id: 'a1', content: [{ kind: 'tool_call', call_id: 'c1', tool: 'bash', args }] })]);
+    expect(msgs.find((m) => m.id === 'a1')?.tools?.[0].args).toEqual(args);
+  });
+
+  it('from a snapshot', () => {
+    const [m] = applySnapshotToMsgs([], {
+      messages: [
+        {
+          message_id: 'a1',
+          author_type: 'assistant',
+          parent_id: null,
+          text: '',
+          thinking: '',
+          tool_calls: [{ call_id: 'c1', tool: 'bash', args }],
+          status: 'streaming',
+        },
+      ],
+    } as unknown as StreamSnapshot);
+    expect(m.tools?.[0].args).toEqual(args);
+  });
+});
+
+describe('a call knows when its result came back, empty or not (#267)', () => {
+  it('from the live result, and not before it', () => {
+    const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '' }];
+    const [called] = applyEventToMsgs(msgs, { kind: 'tool.call', message_id: 'a1', call_id: 'c1', tool: 'bash', args: { command: 'touch a' } });
+    expect(called.tools?.[0].hasResult).toBeUndefined();
+    const [done] = applyEventToMsgs([called], { kind: 'tool.result', message_id: 'a1', call_id: 'c1', tool: 'bash', output: '', ok: true });
+    expect(done.tools?.[0].hasResult).toBe(true);
+  });
+
+  it('from history, on a row older than `ok` whose command printed nothing', () => {
+    const msgs = reconstructMessages([
+      row({ id: 'a1', content: [{ kind: 'tool_call', call_id: 'c1', tool: 'bash', args: { command: 'touch a' } }] }),
+      row({ id: 't1', authorType: 'tool', lamport: 2, content: [{ kind: 'tool_result', call_id: 'c1', output: '' }] }),
+    ]);
+    const tool = msgs.find((m) => m.id === 'a1')?.tools?.[0];
+    expect(tool?.ok).toBeUndefined();
+    expect(tool?.hasResult).toBe(true);
+  });
+
+  it('from history, not for a call whose result was never written', () => {
+    const msgs = reconstructMessages([row({ id: 'a1', content: [{ kind: 'tool_call', call_id: 'c1', tool: 'bash', args: {} }] })]);
+    expect(msgs[0]?.tools?.[0].hasResult).toBeUndefined();
+  });
+
+  it('from a snapshot: with an output, and not while the call waits', () => {
+    const snap = (output?: string) =>
+      ({
+        messages: [
+          {
+            message_id: 'a1',
+            author_type: 'assistant',
+            parent_id: null,
+            text: '',
+            thinking: '',
+            tool_calls: [{ call_id: 'c1', tool: 'bash', args: {}, ...(output === undefined ? {} : { output }) }],
+            status: 'streaming',
+          },
+        ],
+      }) as unknown as StreamSnapshot;
+    expect(applySnapshotToMsgs([], snap(''))[0]?.tools?.[0].hasResult).toBe(true);
+    expect(applySnapshotToMsgs([], snap())[0]?.tools?.[0].hasResult).toBeUndefined();
+  });
+});

@@ -71,6 +71,8 @@ interface ComposerProps {
   } | null;
   /** The thinking level, in the `+` menu. Null leaves the row out. */
   thinking?: ComposerThinking | null;
+  /** Told when the `+` menu opens and closes. */
+  onMenuOpenChange?: (open: boolean) => void;
 }
 
 export function Composer({
@@ -89,6 +91,7 @@ export function Composer({
   mcp = null,
   contextStage = null,
   thinking = null,
+  onMenuOpenChange,
 }: ComposerProps) {
   const [text, setText] = useState('');
   // For a restored image's preview, which the server serves by ref.
@@ -292,6 +295,7 @@ export function Composer({
             }
             thinking={thinking}
             disabled={!connected}
+            onOpenChange={onMenuOpenChange}
           />
           {contextStage?.chip && (
             <Pressable

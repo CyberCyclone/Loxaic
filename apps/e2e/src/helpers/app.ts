@@ -521,6 +521,31 @@ export async function getToolResults(
   );
 }
 
+/**
+ * The tool calls a conversation has stored, with their arguments. A call is
+ * saved with its turn, before it runs — so this names a call that is still
+ * waiting for approval, whose id a card's testID carries and a spec cannot
+ * know in advance.
+ */
+export async function getToolCalls(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<{ call_id: string; tool: string; args: Record<string, unknown> }[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] getting tool calls failed (${String(res.status)})`);
+  const body = (await res.json()) as {
+    messages: { content: { kind: string; call_id?: string; tool?: string; args?: Record<string, unknown> }[] }[];
+  };
+  return body.messages.flatMap((m) =>
+    m.content
+      .filter((b) => b.kind === 'tool_call')
+      .map((b) => ({ call_id: b.call_id ?? '', tool: b.tool ?? '', args: b.args ?? {} })),
+  );
+}
+
 // ── Sub-agents ────────────────────────────────────────────
 
 /** One sub-agent call in one assistant message: a child whose two requests
@@ -1325,11 +1350,23 @@ export async function closeContextPopover(): Promise<void> {
 }
 
 /**
- * A native tap on the dimmed screen near the top, by position. An overlay's
- * backdrop is not an element XCUITest exposes, and near the top because sheets
- * and popovers rise from the bottom and can pass the middle.
+ * A tap on the dimmed screen near the top, by position. An overlay's backdrop
+ * is not an element XCUITest exposes, and near the top because sheets and
+ * popovers rise from the bottom and can pass the middle. On web and Electron
+ * a mouse click at the same spot of the viewport — measured from the page,
+ * since Electron's chromedriver has no window commands.
  */
-async function tapOverlayBackdrop(): Promise<void> {
+export async function tapOverlayBackdrop(): Promise<void> {
+  if (platform() === 'web' || platform() === 'electron') {
+    const { width, height } = await browser.execute(() => ({ width: window.innerWidth, height: window.innerHeight }));
+    await browser
+      .action('pointer', { parameters: { pointerType: 'mouse' } })
+      .move({ x: Math.round(width / 2), y: Math.round(height * 0.15) })
+      .down()
+      .up()
+      .perform();
+    return;
+  }
   const { width, height } = await browser.getWindowSize();
   await browser
     .action('pointer', { parameters: { pointerType: 'touch' } })
