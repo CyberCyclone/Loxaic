@@ -1,4 +1,4 @@
-import type { AttachmentRef, CompactionStats, ContextBreakdown, ToolPermission } from "./stream-protocol";
+import type { AttachmentRef, CompactionStats, ContextBreakdown, ToolNotice, ToolPermission } from "./stream-protocol";
 import type { ModelThinking } from "./thinking";
 
 export type Result<T, E = Error> =
@@ -221,6 +221,8 @@ export type ContentBlock =
       /** web_fetch loaded the page in the conversation's own browser (#281),
        * not the plain fetch. Written only when true. */
       browser?: true;
+      /** See `ToolNotice`; written only for a failure a person can act on. */
+      notice?: ToolNotice;
     }
   | { kind: "attachment"; ref: string; mime: string; name?: string }
   /** Rides alongside a summary message's text block so a cold REST load can

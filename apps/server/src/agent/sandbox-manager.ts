@@ -9,7 +9,19 @@ import { dropConversationCopies } from "./checkpoints.ts";
 import { getConnection } from "../github/connection.ts";
 import { withEgress } from "../egress/env.ts";
 import { listSandboxContainers, sandboxImage } from "../sandbox/container-provider.ts";
-import { getSandboxRetention, getSandboxSettings } from "../settings.ts";
+import { getSandboxRetention, getSandboxSettings, type SandboxAllocation } from "../settings.ts";
+import {
+  allocationDecision,
+  allocationFor,
+  addNeed,
+  allocationMessage,
+  DEFAULT_NEED,
+  rowNeed,
+  usageOf,
+  type AllocationReason,
+  type AllocationUsage,
+  type SandboxNeed,
+} from "./allocation.ts";
 
 /**
  * How often the reapers run.
@@ -128,27 +140,20 @@ export async function attachRunningSandbox(row: {
   status?: string;
   ownerId?: string;
   conversationId?: string | null;
+  /** What it holds when running, which waking it reserves (#254). Required,
+   * so a caller cannot under-count a large image by leaving it off. */
+  limits: unknown;
 }): Promise<SandboxHandle | null> {
   const provider = await getProviderByKind(row.provider as SandboxKind);
   const handle = await provider.attach(row.containerId).catch(() => null);
   if (!handle) return null;
   // Waking a paused sandbox is the transition the per-user cap guards — it is
   // what makes one *running* again — so the cap applies here exactly as it
-  // does in createEntry. A row with no owner in hand cannot be counted, and
-  // executor sandboxes hold nothing this server pays for.
-  const capOwner = row.status === "stopped" && row.provider !== "executor" ? row.ownerId : undefined;
-  if (capOwner !== undefined) await assertUnderUserLimit(capOwner);
-  let resumed: boolean;
-  try {
-    resumed = await resume(handle);
-  } finally {
-    if (capOwner !== undefined) releaseSandboxSlot(capOwner);
-  }
-  if (!resumed) {
+  // does in createEntry. A row with no owner in hand cannot be counted.
+  if (!(await wake(handle, row))) {
     await markDestroyed(row.id);
     return null;
   }
-  await markRunning(row.id);
   // Under the idle timer like any other live sandbox. `stopIdleSandboxes`
   // walks only this process's `active` map, so a sandbox woken through the
   // terminal or the files API and never registered here would run for the
@@ -238,58 +243,74 @@ async function resolveEntry(
 }
 
 /**
- * How many *running* sandboxes one user may hold at once.
+ * The refusal when a sandbox would not fit the owner's allocation (#254).
  *
- * Running, not existing, and that stayed true when stopping became a pause:
- * the resources this cap protects — memory, CPU, pids — are per running
- * container, and a paused one holds none of them. A user with twenty paused
- * conversations is spending disk, which is the abandoned reaper's department,
- * not this one's. Counting paused sandboxes here would instead mean a user
- * being refused a new one until they went and deleted old conversations.
- *
- * Env-backed with a default rather than a `server_settings` field: it is a
- * capacity guard rather than a security posture (the isolation itself is not
- * negotiable), and the sandbox settings row is deliberately about mode,
- * engine, and network. Read at call time, like every other sandbox env var.
+ * Carries the numbers as well as the sentence: the routes answer 429 with
+ * them, and the engine marks the tool result so a client can offer the
+ * Sandboxes screen rather than only quoting the message.
  */
-const DEFAULT_MAX_SANDBOXES_PER_USER = 5;
-
-function maxSandboxesPerUser(): number {
-  const raw = Number(process.env.SANDBOX_MAX_PER_USER);
-  return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_MAX_SANDBOXES_PER_USER;
-}
-
 export class SandboxLimitError extends Error {
-  constructor(limit: number) {
-    super(
-      `You already have ${String(limit)} sandboxes running, which is the per-user limit. ` +
-        `Close a conversation that is using one, or wait for an idle sandbox to be reaped.`,
-    );
+  readonly code = "sandbox_allocation";
+  readonly reason: AllocationReason;
+  readonly used: AllocationUsage;
+  readonly need: SandboxNeed;
+  readonly allocation: SandboxAllocation;
+  constructor(reason: AllocationReason, used: AllocationUsage, need: SandboxNeed, allocation: SandboxAllocation) {
+    super(allocationMessage(reason, used, need, allocation));
     this.name = "SandboxLimitError";
+    this.reason = reason;
+    this.used = used;
+    this.need = need;
+    this.allocation = allocation;
   }
 }
 
 /**
- * Sandboxes this process is *about to* create, per user, counted alongside the
- * rows. The check is check-then-create with no transaction, and `pending`
- * de-duplicates per conversation only — so a user at 4 who fires tool calls in
- * three conversations at once had all three pass the check before any row
- * existed and landed at 7. A reservation taken before `provider.create` and
- * released after the insert (or on failure) closes that within a process.
+ * Sandboxes this process is *about to* make running, per user, counted
+ * alongside the rows. The check is check-then-create with no transaction, and
+ * `pending` de-duplicates per conversation only — so a user with room for one
+ * more who fires tool calls in three conversations at once had all three pass
+ * the check before any row existed. A reservation taken before the start and
+ * released once the row says `running` (or the start failed) closes that
+ * within a process. It holds the sandbox's memory and CPU, not just a slot,
+ * so two starts cannot both fit into the last 512 MB.
  */
-const inFlight = new Map<string, number>();
+const reserved = new Map<string, Set<SandboxNeed>>();
 
-export function releaseSandboxSlot(userId: string): void {
-  const n = (inFlight.get(userId) ?? 0) - 1;
-  if (n <= 0) inFlight.delete(userId);
-  else inFlight.set(userId, n);
+function reservedUsage(userId: string): AllocationUsage {
+  const usage: AllocationUsage = { running: 0, memoryMb: 0, cpus: 0 };
+  for (const need of reserved.get(userId) ?? []) addNeed(usage, need);
+  return usage;
+}
+
+/** Each user's reservations are decided one at a time: between reading the
+ * rows and adding its own reservation, a check must not interleave with
+ * another of the same user's. */
+const reserving = new Map<string, Promise<unknown>>();
+
+/**
+ * What a user's running sandboxes hold, from their rows. Executor sandboxes
+ * are a directory on the user's own machine and hold none of the server's
+ * resources, so they neither count nor are subject to the allocation.
+ */
+export async function runningUsage(userId: string, exceptRowId?: string): Promise<AllocationUsage> {
+  const rows = await runningRowsFor(userId);
+  return usageOf(rows.filter((row) => row.id !== exceptRowId));
+}
+
+function sum(a: AllocationUsage, b: AllocationUsage): AllocationUsage {
+  return { running: a.running + b.running, memoryMb: a.memoryMb + b.memoryMb, cpus: a.cpus + b.cpus };
 }
 
 /**
- * Refuses when the user is at their cap; otherwise reserves a slot the caller
- * must release with `releaseSandboxSlot` once the row exists (or creation
- * fails). Exported because `POST /v1/sandboxes` is a second creation path and
- * a cap that only one of two paths honours is not a cap.
+ * Refuses when a sandbox needing `need` would not fit the user's allocation;
+ * otherwise reserves its room and returns the release, which the caller must
+ * call once the row exists (or the start failed). Exported because
+ * `POST /v1/sandboxes` is a second creation path, and an allocation only one
+ * of two paths honours is not an allocation.
+ *
+ * `exceptRowId` leaves out a running sandbox the new one replaces (an image
+ * switch), which stops once the new one is up.
  *
  * Before refusing, the counted rows are reconciled against reality. A row can
  * say `running` when its container is long gone — a Docker daemon restart
@@ -297,28 +318,79 @@ export function releaseSandboxSlot(userId: string): void {
  * the boot sweep stops containers *no row claims* (the other direction), the
  * idle reaper walks the in-process map (empty after a restart), and
  * `createEntry` reconciles exactly one conversation's row. Counting them meant
- * "wait for an idle sandbox to be reaped" — a wait that would never end.
+ * telling a user to pause something that no longer exists.
  */
-export async function assertUnderUserLimit(userId: string): Promise<void> {
-  const limit = maxSandboxesPerUser();
-  const reserved = inFlight.get(userId) ?? 0;
-  let rows = await runningRowsFor(userId);
-  if (rows.length + reserved >= limit) {
-    await markDeadRowsDestroyed(rows);
-    rows = await runningRowsFor(userId);
+export function reserveSandbox(userId: string, need: SandboxNeed, exceptRowId?: string): Promise<() => void> {
+  const run = (reserving.get(userId) ?? Promise.resolve()).then(() => reserveNow(userId, need, exceptRowId));
+  const tail = run.catch(() => undefined);
+  reserving.set(userId, tail);
+  void tail.then(() => {
+    if (reserving.get(userId) === tail) reserving.delete(userId);
+  });
+  return run;
+}
+
+async function reserveNow(userId: string, need: SandboxNeed, exceptRowId?: string): Promise<() => void> {
+  const { allocation } = await allocationFor(userId);
+  // The reservations are read *before* the rows. A start that finishes during
+  // the row read releases its reservation once its row says `running`; read
+  // after, it could be in neither count. Read before, it is in at least one
+  // (or both, which only errs towards refusing).
+  const measure = async () => {
+    const held = reservedUsage(userId);
+    return sum(await runningUsage(userId, exceptRowId), held);
+  };
+  let used = await measure();
+  let decision = allocationDecision(used, need, allocation);
+  if (!decision.ok && decision.reason !== "too_big") {
+    await markDeadRowsDestroyed(await runningRowsFor(userId));
+    used = await measure();
+    decision = allocationDecision(used, need, allocation);
   }
-  if (rows.length + reserved >= limit) throw new SandboxLimitError(limit);
-  inFlight.set(userId, reserved + 1);
+  if (!decision.ok) throw new SandboxLimitError(decision.reason, used, need, allocation);
+  // Its own object, so releasing one reservation never releases another of
+  // the same size.
+  const mine: SandboxNeed = { ...need };
+  const set = reserved.get(userId) ?? new Set<SandboxNeed>();
+  set.add(mine);
+  reserved.set(userId, set);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    set.delete(mine);
+    if (set.size === 0 && reserved.get(userId) === set) reserved.delete(userId);
+  };
+}
+
+/** What a sandbox about to be made from `config` will hold while it runs —
+ * the same numbers `sandboxRowValues` records for it. */
+export function configNeed(kind: SandboxKind, config: CreateSandboxConfig): SandboxNeed {
+  if (kind !== "container") return { memoryMb: 0, cpus: 0 };
+  return {
+    memoryMb: config.limits?.memory !== undefined ? Math.round(config.limits.memory / (1024 * 1024)) : DEFAULT_NEED.memoryMb,
+    cpus: config.limits?.cpu !== undefined ? config.limits.cpu / 1e9 : DEFAULT_NEED.cpus,
+  };
 }
 
 async function runningRowsFor(userId: string) {
-  // Executor sandboxes are a directory on the user's own machine and hold
-  // none of the server resources this cap protects, so they neither count
-  // against it nor are subject to it (see createEntry).
+  return runningRowsForUsers([userId]);
+}
+
+/** The running rows an allocation counts, for several users in one query
+ * (the admin's user list). */
+export async function runningRowsForUsers(userIds: string[]) {
+  if (userIds.length === 0) return [];
   return db
-    .select({ id: sandboxes.id, containerId: sandboxes.containerId, provider: sandboxes.provider })
+    .select({
+      id: sandboxes.id,
+      ownerId: sandboxes.ownerId,
+      containerId: sandboxes.containerId,
+      provider: sandboxes.provider,
+      limits: sandboxes.limits,
+    })
     .from(sandboxes)
-    .where(and(eq(sandboxes.ownerId, userId), eq(sandboxes.status, "running"), ne(sandboxes.provider, "executor")));
+    .where(and(inArray(sandboxes.ownerId, userIds), eq(sandboxes.status, "running"), ne(sandboxes.provider, "executor")));
 }
 
 /**
@@ -414,17 +486,8 @@ async function createEntry(
     // is what makes one *running* again — so it is checked here as well as on
     // creation. Without this the cap was defeatable by cycling: pause N
     // sandboxes, create N more, then resume the first N.
-    const wakes = existing.status === "stopped" && provider.kind !== "executor";
-    if (wakes) await assertUnderUserLimit(ownerId);
-    let resumed: boolean;
-    try {
-      resumed = await resume(handle);
-    } finally {
-      if (wakes) releaseSandboxSlot(ownerId);
-    }
-    if (resumed) {
+    if (await wake(handle, existing)) {
       const entry: Entry = { rowId: existing.id, provider: provider.kind, ref: existing.containerId, lastUsedAt: Date.now() };
-      await markRunning(existing.id);
       active.set(conversationId, entry);
       return entry;
     }
@@ -451,16 +514,43 @@ async function createEntry(
   // Not for executor sandboxes: those run on the user's own machine and
   // cost this server nothing to hold open.
   if (provider.kind === "executor") {
-    return createEntryReserved(provider, ownerId, conversationId, workspace);
+    return createEntryReserved(provider, ownerId, conversationId, await createConfigFor(ownerId, conversationId, workspace, provider.kind));
   }
   // Counted against the owner, whose row this becomes — the same id the
-  // resume path above reserves against, so the two agree.
-  await assertUnderUserLimit(ownerId);
+  // resume path above reserves against, so the two agree. Reserved before the
+  // config is built (the GitHub connection, the image's policy checks), so a
+  // refused start does none of that work, and a refusal is what it reports.
+  let need = await workspaceNeed(workspace, provider.kind);
+  let release = await reserveSandbox(ownerId, need);
   try {
-    return await createEntryReserved(provider, ownerId, conversationId, workspace);
+    const config = await createConfigFor(ownerId, conversationId, workspace, provider.kind);
+    // The image's limits can change between the two reads; what is reserved
+    // has to be what the container gets.
+    const actual = configNeed(provider.kind, config);
+    if (actual.memoryMb !== need.memoryMb || actual.cpus !== need.cpus) {
+      release();
+      need = actual;
+      release = await reserveSandbox(ownerId, need);
+    }
+    return await createEntryReserved(provider, ownerId, conversationId, config);
   } finally {
-    releaseSandboxSlot(ownerId);
+    release();
   }
+}
+
+/**
+ * What a sandbox for this workspace will hold, from its image's row alone:
+ * the reservation's estimate before createConfigFor's checks run. Anything
+ * the estimate cannot read falls back to the default, and the config step
+ * reports the real problem.
+ */
+async function workspaceNeed(workspace: Workspace, kind: SandboxKind): Promise<SandboxNeed> {
+  if (kind !== "container") return { memoryMb: 0, cpus: 0 };
+  if (workspace.kind === "local" || !workspace.image) return DEFAULT_NEED;
+  const { findImage, readLimits } = await import("../images/store.ts");
+  const row = await findImage(workspace.image.id).catch(() => null);
+  const limits = row?.ownerId === null ? readLimits(row.limits) : null;
+  return limits ? { memoryMb: limits.memoryMb, cpus: limits.cpus } : DEFAULT_NEED;
 }
 
 /**
@@ -570,12 +660,11 @@ async function createEntryReserved(
   provider: SandboxProvider,
   ownerId: string,
   conversationId: string,
-  workspace: Workspace,
+  config: CreateSandboxConfig,
 ): Promise<Entry> {
   // `ownerId` is the *conversation's* owner, never whoever triggered the tool
   // call — see the insert below for why, and createEntry for where it is
-  // loaded. The clone credentials are the owner's too.
-  const config = await createConfigFor(ownerId, conversationId, workspace, provider.kind);
+  // loaded. The clone credentials (in `config`) are the owner's too.
   // The owner here too, not the sender: the container's `loxaic.user` label
   // is all `create` uses it for, and labelling the sender meant a shared
   // editor's first tool call left a container labelled for one person and
@@ -700,18 +789,18 @@ export async function replaceConversationSandbox(
   }
 
   const provider = await getProviderByKind("container");
-  // The new container is running before the old one is gone; when the old
-  // one was paused, that is one more running sandbox for the owner's cap.
-  const wakes = existing.status === "stopped";
-  if (wakes) await assertUnderUserLimit(ownerId);
+  // The image and its limits only: the checkout comes across with the home
+  // directory, so nothing is cloned again.
+  const full = await createConfigFor(ownerId, conversationId, next, "container");
+  const config: CreateSandboxConfig = {
+    ...(full.image ? { image: full.image } : {}),
+    ...(full.limits ? { limits: full.limits } : {}),
+  };
+  // The new container must fit the owner's allocation in place of the old
+  // one, which stops once the new one is up — so a running old sandbox is left
+  // out of what is counted, and a paused one never counted.
+  const release = await reserveSandbox(ownerId, configNeed("container", config), existing.id);
   try {
-    // The image and its limits only: the checkout comes across with the home
-    // directory, so nothing is cloned again.
-    const full = await createConfigFor(ownerId, conversationId, next, "container");
-    const config: CreateSandboxConfig = {
-      ...(full.image ? { image: full.image } : {}),
-      ...(full.limits ? { limits: full.limits } : {}),
-    };
     if (signal?.aborted) throw new Error("Stopped before the image was changed.");
     const handle = await provider.create(ownerId, config);
     let row: typeof sandboxes.$inferSelect;
@@ -748,7 +837,7 @@ export async function replaceConversationSandbox(
     await old?.destroy().catch(() => undefined);
     return { moved: true };
   } finally {
-    if (wakes) releaseSandboxSlot(ownerId);
+    release();
   }
 }
 
@@ -789,12 +878,60 @@ async function resume(handle: SandboxHandle): Promise<boolean> {
   }
 }
 
+/**
+ * Starts a sandbox's container and records it running, inside its owner's
+ * allocation (#254). False when the container is gone.
+ *
+ * A row read as `stopped` is a wake: reserved first, and the reservation held
+ * until the row says `running`, or the room would be free twice for a moment.
+ * A row read as `running` is already counted, unless a Pause landed between
+ * that read and this start; the conditional write below notices, and the
+ * start becomes a wake like any other. Should recording it fail, a container
+ * this call woke is stopped again: running with a `stopped` row, nothing
+ * would ever count it.
+ */
+async function wake(
+  handle: SandboxHandle,
+  row: { id: string; provider: string; status?: string; ownerId?: string; limits?: unknown },
+): Promise<boolean> {
+  // Executor sandboxes hold nothing this server pays for.
+  const owner = row.provider !== "executor" ? row.ownerId : undefined;
+  let release = owner !== undefined && row.status === "stopped" ? await reserveSandbox(owner, rowNeed(row)) : undefined;
+  try {
+    if (!(await resume(handle))) return false;
+    try {
+      if (!release && owner !== undefined) {
+        if (await touchRunning(row.id)) return true;
+        release = await reserveSandbox(owner, rowNeed(row));
+      }
+      await markRunning(row.id);
+    } catch (err) {
+      if (release) await handle.stop().catch(() => undefined);
+      throw err;
+    }
+    return true;
+  } finally {
+    release?.();
+  }
+}
+
+/** Records a use of a row still `running`; false when it no longer is. */
+async function touchRunning(rowId: string): Promise<boolean> {
+  const rows = await db
+    .update(sandboxes)
+    .set({ lastUsedAt: new Date() })
+    .where(and(eq(sandboxes.id, rowId), eq(sandboxes.status, "running")))
+    .returning({ id: sandboxes.id });
+  return rows.length > 0;
+}
+
+/** Not swallowed: a row that does not say `running` is a sandbox the
+ * allocation cannot see, so the caller has to know the write failed. */
 async function markRunning(rowId: string): Promise<void> {
   await db
     .update(sandboxes)
     .set({ status: "running", stoppedAt: null, lastUsedAt: new Date() })
-    .where(eq(sandboxes.id, rowId))
-    .catch(() => undefined);
+    .where(eq(sandboxes.id, rowId));
 }
 
 /** Records a sandbox as paused-but-intact. `lastUsedAt` is written here from
@@ -869,6 +1006,52 @@ export async function stopIdleSandboxes(now = Date.now(), kind?: SandboxKind): P
     stopped++;
   }
   return stopped;
+}
+
+/**
+ * Pauses one sandbox because its owner asked (#254), to free room in their
+ * allocation: the same stop the idle timer makes, files kept, resumed by the
+ * next tool call. The caller has checked the row is the requester's and holds
+ * the conversation's claim, so no run can start while it stops; this only
+ * acts on a running container, which is all an allocation counts.
+ */
+export async function pauseSandbox(row: {
+  id: string;
+  containerId: string;
+  provider: string;
+  conversationId: string | null;
+}): Promise<void> {
+  const entry = row.conversationId ? active.get(row.conversationId) : undefined;
+  const mine = entry?.rowId === row.id ? entry : undefined;
+  const provider = await getProviderByKind(row.provider as SandboxKind);
+  // Not swallowed, unlike the idle timer's: a person pressed Pause, and an
+  // engine that did not answer must not be reported as room freed.
+  const handle = await provider.attach(row.containerId);
+  // The row first, and only from `running`. The terminal, files and git
+  // routes wake a sandbox without the conversation's claim; one that read
+  // `running` before this and starts the container after it finds the row
+  // `stopped` (wake()'s conditional write), and counts itself as a wake.
+  // Stopping first and marking after would let that start land in between
+  // and leave a running container behind a `stopped` row.
+  const marked = await db
+    .update(sandboxes)
+    .set({
+      status: "stopped",
+      stoppedAt: new Date(),
+      ...(mine ? { lastUsedAt: new Date(mine.lastUsedAt) } : {}),
+    })
+    .where(and(eq(sandboxes.id, row.id), eq(sandboxes.status, "running")))
+    .returning({ id: sandboxes.id });
+  if (marked.length === 0) return;
+  if (mine && row.conversationId && active.get(row.conversationId) === mine) active.delete(row.conversationId);
+  forgetOverflowWrites(row.containerId);
+  try {
+    await handle.stop();
+  } catch (err) {
+    // Still running: say so again, or the allocation stops counting it.
+    await markRunning(row.id).catch(() => undefined);
+    throw err;
+  }
 }
 
 /**

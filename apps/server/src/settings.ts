@@ -33,6 +33,25 @@ export type SandboxEngine = "auto" | "docker" | "podman" | "custom";
  */
 export type CustomImagesPolicy = "off" | "shared" | "everyone";
 
+/**
+ * What one user's *running* sandboxes may hold together (#254): their memory
+ * and CPU limits summed, and how many there are. Paused sandboxes hold none of
+ * it. This is the server-wide default; an admin can override any part of it
+ * for one user (`user_sandbox_allocations`, agent/allocation.ts).
+ */
+export interface SandboxAllocation {
+  memoryMb: number;
+  cpus: number;
+  maxRunning: number;
+}
+
+/** What an admin may set an allocation to, the default and a user's own alike. */
+export const ALLOCATION_BOUNDS = {
+  memoryMb: { min: 256, max: 1_048_576 },
+  cpus: { min: 0.25, max: 256 },
+  maxRunning: { min: 1, max: 100 },
+} as const;
+
 export interface SandboxSettings {
   mode: SandboxMode;
   engine: SandboxEngine;
@@ -63,6 +82,8 @@ export interface SandboxSettings {
   /** How long a sandbox may go unused before {@link reapEnabled} destroys it. */
   reapAfterMs: number;
   customImages: CustomImagesPolicy;
+  /** Each user's default allocation; see {@link SandboxAllocation}. */
+  allocation: SandboxAllocation;
 }
 
 export interface SandboxSettingsView extends SandboxSettings {
@@ -76,6 +97,8 @@ export interface SandboxSettingsView extends SandboxSettings {
     reapEnabled: boolean;
     reapAfter: boolean;
     customImages: boolean;
+    /** `allocation.maxRunning`, pinned by SANDBOX_MAX_PER_USER. */
+    maxRunning: boolean;
   };
 }
 
@@ -88,6 +111,8 @@ export type SandboxSettingsPatch = Partial<{
   reapEnabled: boolean;
   reapAfterMs: number;
   customImages: CustomImagesPolicy;
+  /** Merged over the stored allocation: a patch may name one field. */
+  allocation: Partial<SandboxAllocation>;
 }>;
 
 /**
@@ -296,6 +321,10 @@ const DEFAULTS: SandboxSettings = {
   reapEnabled: true,
   reapAfterMs: 30 * DAY_MS,
   customImages: "off",
+  // Five sandboxes of Loxaic's own image (512 MB and one CPU each): the same
+  // room the count-only cap of five gave before allocations existed, so an
+  // upgrade refuses nothing it used to allow.
+  allocation: { memoryMb: 2560, cpus: 5, maxRunning: 5 },
 };
 
 export class SettingsError extends Error {
@@ -418,6 +447,19 @@ function envAllowNetwork(): boolean | null {
   return value === "1" || value === "true" || value === "yes";
 }
 
+/** SANDBOX_MAX_PER_USER, which predates allocations (#254) and now pins
+ * their `maxRunning`. */
+function envMaxRunning(): number | null {
+  const raw = envStr("SANDBOX_MAX_PER_USER");
+  if (raw === undefined) return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    warnOnce("SANDBOX_MAX_PER_USER", `[settings] ignoring SANDBOX_MAX_PER_USER="${raw}" (expected a positive whole number)`);
+    return null;
+  }
+  return value;
+}
+
 /** Durations are pinned in milliseconds rather than the hours/days the GUI
  * shows, so a test harness can ask for a one-second idle stop — the whole
  * reason these pins exist. Deliberately not range-checked the way the API is:
@@ -475,6 +517,7 @@ export function getSandboxSettings(): SandboxSettingsView {
   const reapEnabled = envReapEnabled();
   const reapAfterMs = envPositiveInt("SANDBOX_REAP_AFTER_MS");
   const customImages = envCustomImages();
+  const maxRunning = envMaxRunning();
 
   // Fail *closed* when the settings row couldn't be read: falling through to
   // DEFAULTS.mode ("container") would silently restart agent execution that
@@ -496,6 +539,11 @@ export function getSandboxSettings(): SandboxSettingsView {
     // A failed read resolves to off, like the mode: an unreadable row must
     // not hand out what an admin may have withdrawn.
     customImages: customImages ?? (loadFailed ? "off" : (persisted.customImages ?? DEFAULTS.customImages)),
+    allocation: {
+      memoryMb: persisted.allocation?.memoryMb ?? DEFAULTS.allocation.memoryMb,
+      cpus: persisted.allocation?.cpus ?? DEFAULTS.allocation.cpus,
+      maxRunning: maxRunning ?? persisted.allocation?.maxRunning ?? DEFAULTS.allocation.maxRunning,
+    },
     envOverrides: {
       mode: mode !== null,
       socket: socket !== null,
@@ -504,6 +552,7 @@ export function getSandboxSettings(): SandboxSettingsView {
       reapEnabled: reapEnabled !== null,
       reapAfter: reapAfterMs !== null,
       customImages: customImages !== null,
+      maxRunning: maxRunning !== null,
     },
   };
 }
@@ -822,7 +871,79 @@ function coerce(raw: unknown): Partial<SandboxSettings> {
     out.reapAfterMs = value.reapAfterMs;
   }
   if (isCustomImagesPolicy(value.customImages)) out.customImages = value.customImages;
+  // Field by field, each re-checked against the bounds: a stored value the API
+  // would refuse falls back to the default rather than reaching the cap.
+  if (typeof value.allocation === "object" && value.allocation !== null) {
+    const stored = value.allocation as Record<string, unknown>;
+    const allocation: Partial<SandboxAllocation> = {};
+    for (const key of ["memoryMb", "cpus", "maxRunning"] as const) {
+      if (allocationFieldError(key, stored[key]) === null) allocation[key] = stored[key] as number;
+    }
+    out.allocation = { ...DEFAULTS.allocation, ...allocation };
+  }
   return out;
+}
+
+/** A refused allocation patch; `pinned` when the environment sets the field. */
+export class AllocationPatchError extends Error {
+  readonly pinned: boolean;
+  constructor(message: string, pinned = false) {
+    super(message);
+    this.name = "AllocationPatchError";
+    this.pinned = pinned;
+  }
+}
+
+/**
+ * Reads an allocation patch off the wire: the server-wide default's
+ * (`allowNull: false`) and one user's override (`allowNull: true`, where null
+ * puts a part back on the default). The one place either is validated, so the
+ * two can never accept different things.
+ */
+export function parseAllocationPatch(
+  input: unknown,
+  opts: { allowNull: boolean },
+): Partial<Record<keyof SandboxAllocation, number | null>> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new AllocationPatchError("allocation must be an object");
+  }
+  const given = input as Record<string, unknown>;
+  const patch: Partial<Record<keyof SandboxAllocation, number | null>> = {};
+  for (const key of Object.keys(given)) {
+    if (key !== "memoryMb" && key !== "cpus" && key !== "maxRunning") {
+      throw new AllocationPatchError(`allocation has no field "${key}"`);
+    }
+    const value = given[key];
+    if (value === null && opts.allowNull) {
+      patch[key] = null;
+      continue;
+    }
+    const problem = allocationFieldError(key, value);
+    if (problem) throw new AllocationPatchError(problem);
+    if (key === "maxRunning" && getSandboxSettings().envOverrides.maxRunning) {
+      throw new AllocationPatchError("maxRunning is pinned by the SANDBOX_MAX_PER_USER environment variable", true);
+    }
+    patch[key] = value as number;
+  }
+  return patch;
+}
+
+/**
+ * Why `value` is not an acceptable allocation field, or null when it is.
+ * Shared by the default here and a user's override (agent/allocation.ts), so
+ * the two can never accept different things. Memory and the count are whole
+ * numbers; CPUs may be fractional, like a shared image's limit.
+ */
+export function allocationFieldError(field: keyof SandboxAllocation, value: unknown): string | null {
+  const bounds = ALLOCATION_BOUNDS[field];
+  const whole = field !== "cpus";
+  if (typeof value !== "number" || !Number.isFinite(value) || (whole && !Number.isInteger(value))) {
+    return `${field} must be ${whole ? "a whole number" : "a number"}`;
+  }
+  if (value < bounds.min || value > bounds.max) {
+    return `${field} must be between ${String(bounds.min)} and ${String(bounds.max)}`;
+  }
+  return null;
 }
 
 /**
@@ -1046,6 +1167,16 @@ function validate(input: unknown): SandboxSettingsPatch {
     patch.customImages = raw.customImages;
   }
 
+  if (raw.allocation !== undefined) {
+    try {
+      // No nulls in the default: every part of it has to be a number.
+      patch.allocation = parseAllocationPatch(raw.allocation, { allowNull: false }) as Partial<SandboxAllocation>;
+    } catch (err) {
+      if (err instanceof AllocationPatchError) throw new SettingsError(err.message, err.pinned ? "envOverride" : "invalid");
+      throw err;
+    }
+  }
+
   if (raw.reapAfterMs !== undefined) {
     patch.reapAfterMs = duration(raw.reapAfterMs, "reapAfterMs", REAP_AFTER_RANGE, env.reapAfter, "SANDBOX_REAP_AFTER_MS");
   }
@@ -1094,9 +1225,9 @@ function validate(input: unknown): SandboxSettingsPatch {
  * container's network mode can be changed under a running container.
  */
 export async function updateSandboxSettings(input: unknown): Promise<SandboxSettingsView> {
-  // Serialized: `next` is built from the in-memory `persisted` before the
-  // first await, so two concurrent PATCHes would both read the same base and
-  // the second would silently drop the first's field.
+  // Serialized within this process: the write merges in the database, but
+  // the before/after comparison that decides what to apply, and validate()'s
+  // checks against the current settings, read the cache.
   const run = writeChain.catch(() => undefined).then(() => performUpdate(input));
   writeChain = run.catch(() => undefined);
   return run;
@@ -1108,17 +1239,19 @@ async function performUpdate(input: unknown): Promise<SandboxSettingsView> {
   const patch = validate(input);
 
   const before = getSandboxSettings();
-  const next: SandboxSettings = {
-    ...DEFAULTS,
-    ...persisted,
-    ...patch,
-  };
-
-  await db
+  // Merged in the database, never onto the cache: another replica's (or a
+  // stale cache's) fields survive. `allocation` is merged one level down too,
+  // so saving its memory keeps a CPU count stored since this process read it.
+  const { allocation, ...flat } = patch;
+  const merged = allocation
+    ? sql`${serverSettings.value} || excluded.value || jsonb_build_object('allocation', coalesce(${serverSettings.value} -> 'allocation', '{}'::jsonb) || (excluded.value -> 'allocation'))`
+    : sql`${serverSettings.value} || excluded.value`;
+  const [row] = await db
     .insert(serverSettings)
-    .values({ key: SANDBOX_KEY, value: next, updatedAt: new Date() })
-    .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
-  persisted = next;
+    .values({ key: SANDBOX_KEY, value: allocation ? { ...flat, allocation } : flat, updatedAt: new Date() })
+    .onConflictDoUpdate({ target: serverSettings.key, set: { value: merged, updatedAt: new Date() } })
+    .returning({ value: serverSettings.value });
+  persisted = coerce(row.value);
   // Same reasoning as the conversation write: the row we just wrote is now
   // known, so the boot read's failure no longer applies. Fails closed rather
   // than open while set (mode resolves to "off"), but an admin re-enabling

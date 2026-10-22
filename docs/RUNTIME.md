@@ -69,16 +69,21 @@ Agent tool calls run in a container that is deliberately unprivileged:
 | **Capabilities** | none at all (`CapDrop: ALL`), and `no-new-privileges` so none can be regained |
 | **Network** | none, unless an admin enables it (see below) |
 | **Memory / CPU / pids** | 512 MB, 1 CPU, 100 processes |
-| **Per user** | 5 concurrent sandboxes (`SANDBOX_MAX_PER_USER`) |
+| **Per user** | an allocation: 2.5 GB, 5 CPUs and 5 running sandboxes by default |
 
 The root filesystem is deliberately *not* read-only: it would need tmpfs mounts for the working
 directory and `/tmp`, whose pages count against the same memory limit, so a large repository
 clone or document extraction would be killed rather than isolated — and every system directory
 is already unwritable to a non-root user, so it would buy very little.
 
-The per-user cap exists because every other limit is per *container*: without it, one person
-with many open conversations could hold several times the whole budget on a shared host. Raise
-it with `SANDBOX_MAX_PER_USER` if your host is comfortably provisioned.
+The per-user allocation exists because every other limit is per *container*: without it, one
+person with many open conversations could hold several times the whole budget on a shared host.
+A user's running sandboxes may together hold at most their allocation's memory and CPUs, and
+there may be at most its number of them; paused sandboxes hold none of it. An admin sets the
+default in Settings → Agent Sandbox and can override it for one person in Admin → Users (a
+custom image whose limits exceed the default needs that). A start that would not fit is
+refused, never made room for: the person pauses one of theirs in Settings → Sandboxes.
+`SANDBOX_MAX_PER_USER` pins the number for everyone.
 
 ### Sandbox network access
 
@@ -217,7 +222,7 @@ deployment decision — a machine hosting a team accumulates a stopped container
 per conversation that ever ran a tool.
 
 Stopped workspaces cost disk, not memory or CPU, and do not count against the
-per-user sandbox cap (`SANDBOX_MAX_PER_USER`), which is about running ones. The
+per-user sandbox allocation, which is about running ones. The
 retention terms are shown to users in the agent Inspector before they start
 work, and a workspace nearing deletion says when.
 

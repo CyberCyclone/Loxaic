@@ -1,22 +1,31 @@
 import type { FastifyInstance } from "fastify";
-import { and, desc, eq, ne } from "@loxaic/db";
+import { and, desc, eq, inArray, ne } from "@loxaic/db";
 import { db } from "@loxaic/db";
-import { sandboxes } from "@loxaic/db/schema";
+import { conversations, sandboxes } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { hasRole } from "../streams/authz";
 import { resolvePath } from "../agent/executor.ts";
 import {
-  assertUnderUserLimit,
   attachRunningSandbox,
+  configNeed,
   networkFor,
-  releaseSandboxSlot,
-  SandboxLimitError,
+  pauseSandbox,
+  reserveSandbox,
 } from "../agent/sandbox-manager.ts";
+import { allocationFor, rowNeed, usageOf } from "../agent/allocation.ts";
+import { randomUUID } from "node:crypto";
+import {
+  claimConversation,
+  ConversationBusyError,
+  isConversationBusy,
+  listChildRuns,
+  unregisterRun,
+} from "../streams/registry.ts";
 import { getProviderByKind, getSandboxMode } from "../sandbox/provider.ts";
 import { sandboxImage } from "../sandbox/container-provider.ts";
 import { loadWorkspace } from "../agent/workspace.ts";
 import type { SandboxKind } from "../sandbox/provider.ts";
-import { sandboxDisabledReason, sandboxReapAt } from "../settings.ts";
+import { getSandboxSettings, sandboxDisabledReason, sandboxReapAt } from "../settings.ts";
 
 export function sandboxRoutes(app: FastifyInstance) {
   // Lets a caller find the sandbox backing a conversation — agent sandboxes
@@ -39,6 +48,123 @@ export function sandboxRoutes(app: FastifyInstance) {
       ...row,
       reap_at: row.status === "destroyed" ? null : sandboxReapAt(row.lastUsedAt)?.toISOString() ?? null,
     }));
+  });
+
+  /**
+   * The caller's sandbox allocation (#254) and what fills it: every sandbox
+   * of theirs that is running or paused, with what each holds while running
+   * and whether a run is using it right now (which is what keeps Pause off).
+   * Own rows only, and executor sandboxes are left out: they run on the
+   * person's own machine and cost this server nothing.
+   */
+  app.get("/v1/sandboxes/allocation", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const [resolved, rows] = await Promise.all([
+      allocationFor(userId),
+      db
+        .select({
+          id: sandboxes.id,
+          conversationId: sandboxes.conversationId,
+          provider: sandboxes.provider,
+          status: sandboxes.status,
+          limits: sandboxes.limits,
+          lastUsedAt: sandboxes.lastUsedAt,
+          title: conversations.title,
+          ownConversation: conversations.id,
+        })
+        .from(sandboxes)
+        // Only a conversation the caller owns: a sandbox of theirs in someone
+        // else's chat says nothing about that chat, not even its title.
+        .leftJoin(
+          conversations,
+          and(eq(conversations.id, sandboxes.conversationId), eq(conversations.ownerId, userId)),
+        )
+        .where(
+          and(
+            eq(sandboxes.ownerId, userId),
+            inArray(sandboxes.status, ["running", "stopped"]),
+            ne(sandboxes.provider, "executor"),
+          ),
+        )
+        .orderBy(desc(sandboxes.lastUsedAt), desc(sandboxes.id)),
+    ]);
+    return {
+      allocation: resolved.allocation,
+      overridden: resolved.overridden,
+      default: getSandboxSettings().allocation,
+      // From the same rows the list shows, so the bars and the list agree.
+      used: usageOf(rows.filter((row) => row.status === "running")),
+      sandboxes: rows.map((row) => {
+        const need = rowNeed(row);
+        return {
+          id: row.id,
+          conversation_id: row.ownConversation,
+          title: row.title,
+          provider: row.provider,
+          status: row.status,
+          memory_mb: need.memoryMb,
+          cpus: need.cpus,
+          last_used_at: row.lastUsedAt.toISOString(),
+          busy: row.ownConversation !== null && sandboxBusy(row.ownConversation),
+        };
+      }),
+    };
+  });
+
+  /**
+   * Pauses one of the caller's sandboxes, to make room in their allocation
+   * (#254). Files are kept and the next tool call resumes it; open terminals
+   * and running processes end, which the client says before asking.
+   *
+   * Refused while a run uses it — the conversation's own, or a sub-agent's
+   * working in its sandbox — and the conversation is claimed for the stop
+   * itself, so no run can start halfway through.
+   */
+  app.post<{ Params: { id: string } }>("/v1/sandboxes/:id/pause", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const sandbox = await db.query.sandboxes.findFirst({
+      where: and(eq(sandboxes.id, request.params.id), eq(sandboxes.ownerId, userId), ne(sandboxes.status, "destroyed")),
+    });
+    if (!sandbox) return reply.code(404).send({ error: "Not found" });
+    if (sandbox.provider !== "container") {
+      return reply.code(400).send({
+        error: "Only a container sandbox can be paused. This one runs directly on its machine, with nothing to pause.",
+      });
+    }
+    if (sandbox.status === "stopped") return { status: "stopped" };
+    // The sandbox is the caller's to pause, but its conversation's runs are
+    // only theirs to hold off when they own it: claiming someone else's chat,
+    // or reading whether it is busy, is not something a sandbox row grants.
+    const conversationId =
+      sandbox.conversationId && (await hasRole(userId, sandbox.conversationId, "owner")) ? sandbox.conversationId : null;
+    if (conversationId && sandboxBusy(conversationId)) {
+      return reply.code(409).send({ error: "A run is going in this chat. Stop it first, then pause its sandbox." });
+    }
+    const claim = conversationId
+      ? {
+          streamId: `pause-${randomUUID()}`,
+          conversationId,
+          userId,
+          abort: new AbortController(),
+          approvals: new Map(),
+        }
+      : null;
+    if (claim) {
+      try {
+        claimConversation(claim);
+      } catch (err) {
+        if (err instanceof ConversationBusyError) {
+          return reply.code(409).send({ error: "A run is going in this chat. Stop it first, then pause its sandbox." });
+        }
+        throw err;
+      }
+    }
+    try {
+      await pauseSandbox(sandbox);
+    } finally {
+      if (claim) unregisterRun(claim.streamId);
+    }
+    return { status: "stopped" };
   });
 
   app.post("/v1/sandboxes", async (request, reply) => {
@@ -91,18 +217,13 @@ export function sandboxRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "repo_url is not supported with provider=host" });
     }
 
-    // The same per-user cap the tool loop enforces. This is a second creation
-    // path, and a cap honoured by only one of two is not a cap: a user could
-    // loop this endpoint into unbounded containers — and, because rows made
-    // here are never in the in-process map the idle reaper walks, lock
-    // *themselves* out of agent sandboxes with a message promising a reap
-    // that would never come.
-    try {
-      await assertUnderUserLimit(userId);
-    } catch (err) {
-      if (err instanceof SandboxLimitError) return reply.code(429).send({ error: err.message });
-      throw err;
-    }
+    // The same per-user allocation the tool loop enforces (#254). This is a
+    // second creation path, and an allocation honoured by only one of two is
+    // not an allocation: a user could loop this endpoint into unbounded
+    // containers — and, because rows made here are never in the in-process
+    // map the idle reaper walks, lock *themselves* out of agent sandboxes.
+    // A refusal is a 429 through the API's error handler (routes/errors.ts).
+    const release = await reserveSandbox(userId, configNeed(kind, {}));
 
     try {
       const provider = await getProviderByKind(kind);
@@ -128,7 +249,7 @@ export function sandboxRoutes(app: FastifyInstance) {
 
       return row;
     } finally {
-      releaseSandboxSlot(userId);
+      release();
     }
   });
 
@@ -230,4 +351,10 @@ export function sandboxRoutes(app: FastifyInstance) {
     await handle.writeFile(resolved, content);
     return { ok: true };
   });
+}
+
+/** A run is using this conversation's sandbox: its own, or a sub-agent's,
+ * which works in its parent's sandbox. */
+function sandboxBusy(conversationId: string): boolean {
+  return isConversationBusy(conversationId) || listChildRuns(conversationId).length > 0;
 }

@@ -30,6 +30,20 @@ vi.mock("../../auth/middleware", () => ({
     Promise.resolve(token === "good" ? { user: { id: currentUser.id } } : null),
 }));
 
+/** An engine error the next attach throws, as one that cannot reach it would. */
+const attachFails = vi.hoisted(() => ({ next: null as Error | null }));
+vi.mock("../../agent/sandbox-manager.ts", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../agent/sandbox-manager.ts")>();
+  return {
+    ...real,
+    attachRunningSandbox: (row: Parameters<typeof real.attachRunningSandbox>[0]) => {
+      const err = attachFails.next;
+      attachFails.next = null;
+      return err ? Promise.reject(err) : real.attachRunningSandbox(row);
+    },
+  };
+});
+
 const { sandboxTerminalWs } = await import("../sandbox.ts");
 const { destroyConversationSandboxes, getConversationSandbox } = await import("../../agent/sandbox-manager.ts");
 
@@ -243,6 +257,16 @@ describe("/ws/sandbox/:id", () => {
     const again = open(sandboxId);
     await new Promise<void>((resolve) => { again.once("message", () => { resolve(); }); });
     for (const ws of [...held, again]) ws.close();
+  });
+
+  it("says a workspace could not be opened without passing on the engine's own words", async () => {
+    const { sandboxId } = await sandboxFor();
+    attachFails.next = new Error("connect ENOENT /var/run/secret-engine.sock (Docker 29.0.1)");
+    const ws = open(sandboxId);
+    const closed = closeCode(ws);
+    const events = await collect(ws, (e) => e.some((x) => x.type === "terminal.error"));
+    expect(await closed).toBe(4500);
+    expect(events.find((e) => e.type === "terminal.error")?.message).toBe("That workspace could not be opened.");
   });
 
   it("is owner-only, and refuses a bad token or an unknown sandbox the same way", async () => {

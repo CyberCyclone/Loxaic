@@ -21,7 +21,7 @@ import { and, eq, ne } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { sandboxes } from "@loxaic/db/schema";
 import { resolveSessionFromToken } from "../auth/middleware";
-import { attachRunningSandbox } from "../agent/sandbox-manager.ts";
+import { attachRunningSandbox, SandboxLimitError } from "../agent/sandbox-manager.ts";
 import { decodeExecutorRef } from "../sandbox/executor-provider.ts";
 import { executorName, ExecutorOfflineError, getExecutor } from "../executor/registry.ts";
 import { executorOfflineMessage } from "../executor/protocol.ts";
@@ -157,7 +157,22 @@ export function sandboxTerminalWs(app: FastifyInstance) {
     // terminal wants to get back into. Null means genuinely gone, which gets
     // the same 4004 a missing row does — unless the machine it lives on is
     // merely offline, which is a different thing to be told.
-    const handle = await attachRunningSandbox(sandbox);
+    let handle: Awaited<ReturnType<typeof attachRunningSandbox>>;
+    try {
+      handle = await attachRunningSandbox(sandbox);
+    } catch (err) {
+      // Waking a paused sandbox can be refused by the owner's allocation
+      // (#254); anything else escaping here would leave the client on a
+      // paused socket waiting out its own timeout.
+      // Anything else is logged, not shown: an engine's own error can name
+      // host paths, sockets and versions.
+      if (err instanceof SandboxLimitError) refuse(4429, "Sandbox allocation full", err.message);
+      else {
+        request.log.error({ err, sandboxId: id }, "terminal: the sandbox could not be attached");
+        refuse(4500, "Workspace failed", "That workspace could not be opened.");
+      }
+      return;
+    }
     if (!handle) {
       const offline = offlineReason(sandbox);
       if (offline) refuse(4503, "Machine offline", offline);

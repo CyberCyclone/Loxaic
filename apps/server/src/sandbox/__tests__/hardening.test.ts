@@ -29,6 +29,7 @@ vi.mock("../../auth/middleware", () => ({
   authenticate: () => Promise.resolve(currentUser.id),
 }));
 const { sandboxRoutes } = await import("../../routes/sandbox.ts");
+const { installApiErrorHandler } = await import("../../routes/errors.ts");
 
 const userId = `test-hardening-${uuid()}`;
 const conversationId = randomUUID();
@@ -139,6 +140,7 @@ describe.skipIf(!dockerReady)("per-user sandbox limit", () => {
 
   beforeAll(async () => {
     await insertUser(limitUser, "Limit Test");
+    installApiErrorHandler(app);
     sandboxRoutes(app);
     await app.ready();
   });
@@ -159,7 +161,7 @@ describe.skipIf(!dockerReady)("per-user sandbox limit", () => {
       await expect(getConversationSandbox(limitUser, randomUUID())).rejects.toBeInstanceOf(
         SandboxLimitError,
       );
-      await expect(getConversationSandbox(limitUser, randomUUID())).rejects.toThrow(/per-user limit/);
+      await expect(getConversationSandbox(limitUser, randomUUID())).rejects.toThrow(/and your allocation allows/);
     });
   }, 120_000);
 
@@ -198,7 +200,7 @@ describe.skipIf(!dockerReady)("per-user sandbox limit", () => {
     await withLimit(1, async () => {
       const res = await app.inject({ method: "POST", url: "/v1/sandboxes", payload: {} });
       expect(res.statusCode).toBe(429);
-      expect(errorOf(res)).toContain("per-user limit");
+      expect(errorOf(res)).toContain("and your allocation allows");
     });
   }, 60_000);
 
