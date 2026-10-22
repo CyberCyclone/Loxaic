@@ -136,8 +136,9 @@ export function parseLimitsInput(input: { memoryMb: string; cpus: string; pids: 
 /** The line under a shared image's KVM switch (#320) when the server cannot
  * see /dev/kvm: the switch still saves, since the engine may be on another
  * machine that has it, but a sandbox will not start where it is missing. */
-export function kvmWarning(visible: boolean | null): string | null {
-  return visible === false
+export function kvmWarning(visible: boolean | null, on: boolean): string | null {
+  // Only for an image that has it on: one without never needs the device.
+  return on && visible === false
     ? "This server can't see /dev/kvm. A sandbox from this image won't start unless the Docker host has it."
     : null;
 }

@@ -191,9 +191,14 @@ function cleanLabel(label: unknown, fallback: string): string {
  * update); throws a sentence naming the bound that failed. A field left out
  * keeps its base value, so saving the sizes never turns KVM off. */
 export function parseLimits(raw: unknown, base: ImageLimits = DEFAULT_IMAGE_LIMITS): ImageLimits {
+  return { ...base, ...parseLimitsPatch(raw) };
+}
+
+/** The limits a request names, checked; the ones it leaves out are absent. */
+export function parseLimitsPatch(raw: unknown): Partial<ImageLimits> {
   if (typeof raw !== "object" || raw === null) throw new ImageError("limits must be an object");
   const v = raw as Record<string, unknown>;
-  const out = { ...base };
+  const out: Partial<ImageLimits> = {};
   for (const key of ["memoryMb", "cpus", "pids"] as const) {
     if (v[key] === undefined) continue;
     const value = v[key];
@@ -259,7 +264,12 @@ export async function updateImage(
   if (input.label !== undefined) set.label = cleanLabel(input.label, row.reference);
   if (input.limits !== undefined) {
     if (owner !== null) throw new ImageError("Only shared images have limits.");
-    set.limits = parseLimits(input.limits, readLimits(row.limits) ?? DEFAULT_IMAGE_LIMITS);
+    // Merged in the database: the KVM switch and the sizes are separate
+    // requests, and one read here and written back whole would undo the
+    // other's change when the two cross.
+    // The defaults first, for a row stored before a field existed.
+    const patch = parseLimitsPatch(input.limits);
+    set.limits = sql`${JSON.stringify(DEFAULT_IMAGE_LIMITS)}::jsonb || coalesce(${sandboxImages.limits}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`;
   }
   const updated = await db
     .update(sandboxImages)

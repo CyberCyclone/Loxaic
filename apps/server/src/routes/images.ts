@@ -179,6 +179,9 @@ export function imageRoutes(app: FastifyInstance) {
     app.patch<{ Params: { id: string } }>(`${def.prefix}/:id`, async (request, reply) => {
       const { owner } = await def.resolve(request, reply);
       const body = (request.body ?? {}) as { label?: unknown; limits?: unknown };
+      // Limits are a grant (the sizes, and KVM's device), so they pass the
+      // same gate as adding or pulling; a rename does not need to.
+      if (body.limits !== undefined && !(await mayWrite(reply, def.scope))) return;
       try {
         const updated = await updateImage(owner, request.params.id, body);
         return updated ?? fail(reply, 404, "Not found");

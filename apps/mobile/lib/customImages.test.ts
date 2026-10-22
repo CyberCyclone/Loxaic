@@ -91,8 +91,12 @@ describe('chooserImages', () => {
 
 describe('kvmWarning (#320)', () => {
   it('warns only when the server says it cannot see /dev/kvm', () => {
-    expect(kvmWarning(false)).toContain("can't see /dev/kvm");
-    expect(kvmWarning(true)).toBeNull();
-    expect(kvmWarning(null)).toBeNull();
+    expect(kvmWarning(false, true)).toContain("can't see /dev/kvm");
+    expect(kvmWarning(true, true)).toBeNull();
+    expect(kvmWarning(null, true)).toBeNull();
+  });
+
+  it('says nothing for an image with KVM off, which never needs the device', () => {
+    expect(kvmWarning(false, false)).toBeNull();
   });
 });

@@ -220,7 +220,7 @@ function ImageRow({
   kvmVisible: boolean | null;
   onSetKvm: (kvm: boolean) => Promise<void>;
 }) {
-  const kvmNote = kvmWarning(kvmVisible);
+  const kvmNote = kvmWarning(kvmVisible, image.limits?.kvm === true);
   const [memory, setMemory] = useState(String(image.limits?.memoryMb ?? ''));
   const [cpus, setCpus] = useState(String(image.limits?.cpus ?? ''));
   const [pids, setPids] = useState(String(image.limits?.pids ?? ''));
@@ -276,7 +276,7 @@ function ImageRow({
             testID={`images.image.limits.save.${image.id}`}
             size="sm"
             variant="outline"
-            isDisabled={!reachable || busy}
+            isDisabled={!writable || busy}
             onPress={() => {
               const parsed = parseLimitsInput({ memoryMb: memory, cpus, pids });
               if (!parsed.ok) {
@@ -296,7 +296,7 @@ function ImageRow({
                 <Switch
                   testID={`images.image.kvm.${image.id}`}
                   value={image.limits.kvm}
-                  isDisabled={!reachable || busy}
+                  isDisabled={!writable || busy}
                   onValueChange={(value) => { void onSetKvm(value); }}
                 />
                 <Text size="sm" className="min-w-0 flex-1 shrink text-foreground">
@@ -305,7 +305,11 @@ function ImageRow({
               </HStack>
               <Text size="2xs" className="text-muted-foreground">
                 Lets this image&apos;s sandboxes run a virtual machine, such as the Android emulator, through the
-                host&apos;s /dev/kvm. It grants nothing else: no other device, capability or privilege.
+                host&apos;s /dev/kvm. No other device, capability or privilege is passed.
+              </Text>
+              <Text testID={`images.image.kvm.risk.${image.id}`} size="2xs" className="text-warning">
+                /dev/kvm reaches the host kernel&apos;s own virtualisation code, and whatever the agent runs can
+                use it. A flaw there is a way out of the sandbox, so turn this on only for an image you trust.
               </Text>
               {kvmNote && (
                 <Text testID={`images.image.kvm.warning.${image.id}`} size="2xs" className="text-warning">

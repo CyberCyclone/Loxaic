@@ -836,15 +836,26 @@ export interface CustomImage {
 }
 
 /**
- * The group that owns /dev/kvm here, for `GroupAdd`: the device keeps the
- * host's ownership inside the container (usually root:kvm, mode 660), so the
- * image's user can open it only as a member of that group. Null when this
- * process cannot see the device — a server in a container of its own, or an
- * engine on another machine — and the container is then made without it.
+ * The group to add for /dev/kvm (`GroupAdd`), from the device as this process
+ * sees it. The device keeps the host's ownership inside the container (usually
+ * root:kvm, mode 660), so the image's user can open it only as a member of
+ * that group. None when the device is open to everyone anyway, and never gid 0:
+ * a device owned by root's group gets no group, rather than root's.
  */
+export function kvmGroupFor(device: { gid: number; mode: number } | null): number | null {
+  if (!device || device.gid === 0) return null;
+  const openToAll = (device.mode & 0o006) === 0o006;
+  return openToAll ? null : device.gid;
+}
+
+/** `kvmGroupFor` the device here. Null when this process cannot see it (a
+ * server in a container of its own, or an engine on another machine): the
+ * container is then made without a group, and a device the image's user cannot
+ * open is the Android lane's own check to report (infra/docker/dev). */
 export function kvmGroup(): number | null {
   try {
-    return statSync("/dev/kvm").gid;
+    const { gid, mode } = statSync("/dev/kvm");
+    return kvmGroupFor({ gid, mode });
   } catch {
     return null;
   }
@@ -857,20 +868,45 @@ export function kvmVisible(): boolean {
   return existsSync("/dev/kvm");
 }
 
-/** Docker's refusal when the engine's host has no /dev/kvm, in words. */
+/** The engine's refusal of /dev/kvm, in words: the host has none, or the
+ * engine may not pass it (a rootless one, say). The engine's own error is the
+ * `cause`. */
 export class KvmMissingError extends Error {
-  constructor() {
+  readonly reason: "missing" | "refused";
+  constructor(reason: "missing" | "refused", options?: { cause?: unknown }) {
     super(
-      "This image needs KVM (hardware virtualisation), and this Docker host has no /dev/kvm. " +
-        "An admin can turn KVM off for the image, or run sandboxes on a host that has it.",
+      reason === "missing"
+        ? "This image needs KVM (hardware virtualisation), and this Docker host has no /dev/kvm. " +
+            "An admin can turn KVM off for the image, or run sandboxes on a host that has it."
+        : "This image needs KVM (hardware virtualisation), and this container engine may not pass /dev/kvm " +
+            "into a container (a rootless engine cannot). An admin can turn KVM off for the image, or run " +
+            "sandboxes on an engine that can.",
+      options,
     );
     this.name = "KvmMissingError";
+    this.reason = reason;
   }
 }
 
-function isKvmMissing(err: unknown): boolean {
+/**
+ * What the engine said about /dev/kvm, if anything: only its own errors about
+ * adding that device count. Docker: `error gathering device information while
+ * adding custom device "/dev/kvm": no such file or directory`; Podman: `stat
+ * /dev/kvm: no such file or directory`, or a permission error when rootless.
+ */
+export function kvmRefusal(err: unknown): "missing" | "refused" | null {
   const message = err instanceof Error ? err.message : String(err);
-  return message.includes("/dev/kvm") && /no such file|error gathering device/i.test(message);
+  const about = /(adding custom device "\/dev\/kvm"|stat \/dev\/kvm|"\/dev\/kvm"):\s*/i.exec(message);
+  if (!about) return null;
+  const rest = message.slice(about.index + about[0].length);
+  if (/^no such file or directory/i.test(rest)) return "missing";
+  if (/^(operation not permitted|permission denied)/i.test(rest)) return "refused";
+  return null;
+}
+
+function kvmError(err: unknown): unknown {
+  const refusal = kvmRefusal(err);
+  return refusal ? new KvmMissingError(refusal, { cause: err }) : err;
 }
 
 /**
@@ -972,8 +1008,7 @@ export async function createSandboxContainer(
   }).catch((err: unknown) => {
     // Docker may refuse a device it cannot find when the container is made,
     // or only when it starts (below), depending on the engine.
-    if (kvm && isKvmMissing(err)) throw new KvmMissingError();
-    throw err;
+    throw kvm ? kvmError(err) : err;
   });
   // Removed if it never gets going: no handle is returned to destroy it, no
   // row claims it, and only the next boot's orphan sweep would find it. A
@@ -986,8 +1021,7 @@ export async function createSandboxContainer(
     await container.start();
   } catch (err) {
     await container.remove({ force: true, v: true }).catch(() => undefined);
-    if (kvm && isKvmMissing(err)) throw new KvmMissingError();
-    throw err;
+    throw kvm ? kvmError(err) : err;
   }
   return makeHandle(docker, container.id);
 }

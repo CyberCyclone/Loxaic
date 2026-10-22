@@ -6,6 +6,8 @@ import {
   createSandboxContainer,
   KvmMissingError,
   kvmGroup,
+  kvmGroupFor,
+  kvmRefusal,
 } from "../../sandbox/container-engine.ts";
 import { sandboxImage } from "../../sandbox/container-provider.ts";
 import { sandboxImageReady } from "../../sandbox/__tests__/docker-available.ts";
@@ -102,6 +104,17 @@ describe("a container from an image with KVM", () => {
     expect(seen.removed).toBe(true);
   });
 
+  it("says so in words when the engine may not pass the device, keeping the engine's error as the cause", async () => {
+    const engine = 'Error: crun: stat "/dev/kvm": operation not permitted: OCI permission denied';
+    const { docker } = fakeDocker(engine);
+    const err = await createSandboxContainer(docker, { userId: "u", network: false, image: { ...image, kvm: true } }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(KvmMissingError);
+    expect((err as KvmMissingError).reason).toBe("refused");
+    expect(((err as Error).cause as Error).message).toContain(engine);
+  });
+
   it("passes any other start failure through as itself", async () => {
     const { docker } = fakeDocker("(HTTP code 500) server error - no space left on device");
     await expect(
@@ -133,10 +146,36 @@ describe.skipIf(!dockerReady)("against the real engine", () => {
       return;
     }
     try {
-      const check = await handle.exec(["test", "-c", "/dev/kvm"], { workdir: "/" });
+      // Opened by the image's own user, not merely present.
+      const check = await handle.exec(["sh", "-c", "test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm"], { workdir: "/" });
       expect(check.exitCode).toBe(0);
     } finally {
       await handle.destroy();
     }
   }, 60_000);
+});
+
+describe("kvmRefusal", () => {
+  it("reads Docker's and Podman's own words about the device", () => {
+    expect(kvmRefusal(new Error('error gathering device information while adding custom device "/dev/kvm": no such file or directory'))).toBe("missing");
+    expect(kvmRefusal(new Error("stat /dev/kvm: no such file or directory"))).toBe("missing");
+    expect(kvmRefusal(new Error('stat "/dev/kvm": permission denied'))).toBe("refused");
+  });
+
+  it("leaves an error that only mentions the device beside something else", () => {
+    expect(kvmRefusal(new Error("copying /home/loxaic: no such file or directory; /dev/kvm was requested"))).toBeNull();
+    expect(kvmRefusal(new Error("no space left on device"))).toBeNull();
+  });
+});
+
+describe("kvmGroupFor", () => {
+  it("is the device's group when only its group may open it", () => {
+    expect(kvmGroupFor({ gid: 991, mode: 0o20660 })).toBe(991);
+  });
+
+  it("is none for a device everyone may open, for root's group, and when the device cannot be seen", () => {
+    expect(kvmGroupFor({ gid: 991, mode: 0o20666 })).toBeNull();
+    expect(kvmGroupFor({ gid: 0, mode: 0o20660 })).toBeNull();
+    expect(kvmGroupFor(null)).toBeNull();
+  });
 });

@@ -29,6 +29,7 @@ import {
   waitForAbsent,
   waitForFreshText,
   waitForSwitch,
+  waitForTextIn,
   waitForVisible,
 } from '../helpers/selectors.ts';
 import {
@@ -319,6 +320,9 @@ describe('custom sandbox images (#253)', function () {
     await tap('settings.nav.containerImages');
     await scrollTo(`images.image.kvm.${sharedId}`);
     expect(await isSwitchOn(`images.image.kvm.${sharedId}`)).toBe(false);
+    // Off, the image never needs the device: nothing to warn about yet.
+    await expectNeverPresent([`images.image.kvm.warning.${sharedId}`]);
+    await waitForTextIn(`images.image.kvm.risk.${sharedId}`, 'host kernel');
     await tap(`images.image.kvm.${sharedId}`);
     await waitForSwitch(`images.image.kvm.${sharedId}`, true);
     const kvmOf = async () =>
@@ -367,7 +371,9 @@ describe('custom sandbox images (#253)', function () {
       expect(result?.ok).toBe(true);
       const token = await apiToken(user);
       const [sandbox] = await listSandboxes(token, conversation.id);
-      expect((await execInSandbox(token, sandbox.id, 'test -c /dev/kvm && echo yes')).stdout.trim()).toBe('yes');
+      // Opened by the image's own user, not merely present.
+      const open = await execInSandbox(token, sandbox.id, 'test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm && echo yes');
+      expect(open.stdout.trim()).toBe('yes');
     }
     await api(admin, 'PATCH', `/v1/admin/images/${sharedId}`, { limits: { kvm: false } });
   });
