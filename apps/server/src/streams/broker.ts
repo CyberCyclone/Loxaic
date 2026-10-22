@@ -135,6 +135,7 @@ export class StreamBroker {
     let pendingCheckin: StreamSnapshot["pending_checkin"];
     let promptStats: StreamSnapshot["prompt_stats"];
     let subagents: SubAgentLive[] = [];
+    let mode: StreamSnapshot["mode"];
 
     const ensure = (id: string): StreamSnapshotMessage => {
       let m = messages.get(id);
@@ -164,10 +165,11 @@ export class StreamBroker {
       //
       // A sub-agent's events say nothing about where *this* run is: they are
       // written by its children, on their own schedule, and must not clear a
-      // position this run holds.
+      // position this run holds. Nor does a mode switch, which can land while
+      // the run waits in line.
       const aboutChild =
         event.kind === "subagent.started" || event.kind === "subagent.progress" || event.kind === "subagent.ended";
-      if (event.kind !== "run.queued" && !aboutChild) queued = undefined;
+      if (event.kind !== "run.queued" && event.kind !== "run.mode" && !aboutChild) queued = undefined;
       switch (event.kind) {
         case "subagent.started":
         case "subagent.progress":
@@ -234,6 +236,13 @@ export class StreamBroker {
         }
         case "run.queued":
           queued = { position: event.position };
+          break;
+        case "run.mode":
+          // A switch has the waiting call decided again (engine.ts, `regate`):
+          // its question is withdrawn, and a fresh one follows if it still
+          // needs a person.
+          if (mode !== undefined && mode !== event.mode) pendingApproval = undefined;
+          mode = event.mode;
           break;
         case "iteration":
           iteration = { n: event.n, max: event.max };
@@ -329,6 +338,7 @@ export class StreamBroker {
       ...(pendingCheckin ? { pending_checkin: pendingCheckin } : {}),
       ...(promptStats ? { prompt_stats: promptStats } : {}),
       ...(subagents.length ? { subagents } : {}),
+      ...(mode ? { mode } : {}),
     };
   }
 }

@@ -13,6 +13,7 @@ import {
   sendStepsDecision,
   createConversation,
   deleteConversation,
+  getConversation,
   getConversations,
   getMessages,
   updateConversation,
@@ -57,6 +58,7 @@ import { ConversationWatches } from '@/lib/conversationWatch';
 import { rowBadgesFor, useRunNotices } from './useRunNotices';
 import { isSubAgentEvent } from '@/lib/subAgents';
 import { useSubAgentState } from './useSubAgentState';
+import { followSelector, modeChangeNotice, ownStoredMode, type SelectorSource } from '@/lib/modeSelector';
 
 export type { WorkspaceChoice } from '@/lib/types';
 
@@ -116,6 +118,9 @@ export function useAgentSession(
   // tell that apart from someone opening another thread, which moves
   // `activeId` from pending to a server id just the same.
   const [promotion, setPromotion] = useState<Promotion | null>(null);
+  // The selector: the next message's mode, and the one a run going on screen
+  // is switched to. Manual only until a thread says otherwise — see the
+  // effect that follows the thread on screen, below.
   const [mode, setModeState] = useState<PermissionMode>('manual');
   // Each conversation's run — what it is doing and what it is asking — kept
   // for every conversation, not only the one on screen (lib/agentRunState.ts).
@@ -306,6 +311,23 @@ export function useAgentSession(
     subscribeStreams(ws, convId, tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined);
   }, []);
 
+  /** A thread's last mode (#311), as the server stored it or a pick here set it. */
+  const recordThreadMode = useCallback((convId: string, next: PermissionMode | null) => {
+    setRuns((prev) =>
+      prev.some((r) => r.id === convId && (r.permissionMode ?? null) !== next)
+        ? prev.map((r) => (r.id === convId ? { ...r, permissionMode: next } : r))
+        : prev,
+    );
+  }, []);
+  /** Read the thread's stored mode again. Picks on an idle thread are told
+   * only to sockets watching it, so a device that was not, or was offline,
+   * holds an old one; opening the thread, or reconnecting on it, asks. */
+  const refreshThreadMode = useCallback((convId: string) => {
+    getConversation(convId)
+      .then((c) => { recordThreadMode(convId, c.permissionMode ?? null); })
+      .catch(() => undefined);
+  }, [recordThreadMode]);
+
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
     setActiveIdState(id);
@@ -314,6 +336,7 @@ export function useAgentSession(
     // heard of them, and the id gets swapped for the real one as soon as
     // turn.started arrives, no fetch required.
     if (!id || !isServerConvId(id)) return;
+    refreshThreadMode(id);
     // What its runs spawned before this session — once per thread.
     loadSubAgents(id);
     // Watched only after the history fetch settles, as the chat hook does. A
@@ -346,7 +369,7 @@ export function useAgentSession(
         setHistorySettledIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
         watchConversation(id);
       });
-  }, [recordPaging, watchConversation, loadSubAgents]);
+  }, [recordPaging, watchConversation, loadSubAgents, refreshThreadMode]);
 
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: updater(r.msgs) } : r)));
@@ -391,11 +414,16 @@ export function useAgentSession(
           msgs: [],
           role: c.role ?? 'owner',
           workspace: c.workspace ?? null,
+          permissionMode: c.permissionMode ?? null,
         }));
         setRuns((prev) => {
           const existing = new Set(prev.map((r) => r.id));
           const fresh = apiRuns.filter((r) => !existing.has(r.id));
-          return [...fresh, ...prev];
+          // A thread already here keeps its messages, and takes the stored
+          // mode as the server has it now (#311).
+          const stored = new Map(apiRuns.map((r) => [r.id, r.permissionMode ?? null]));
+          const kept = prev.map((r) => (stored.has(r.id) && stored.get(r.id) !== (r.permissionMode ?? null) ? { ...r, permissionMode: stored.get(r.id) } : r));
+          return [...fresh, ...kept];
         });
 
         // History for this run — and any other the user selects — is fetched
@@ -665,7 +693,13 @@ export function useAgentSession(
         // A run may have JIT-loaded the model, changing the context window.
         onStreamEndRef.current?.();
       } else if (event.type === 'agent.mode_changed') {
-        setModeState(event.mode);
+        // For clients older than #311, which moved their selector on it. It
+        // names no thread and can land after the person has opened another,
+        // so it is ignored: the selector is this device's, the run's mode
+        // comes through its log, and the thread's through `conversation.mode`.
+      } else if (event.type === 'conversation.mode') {
+        // The owner picked or sent on another device (or this one).
+        recordThreadMode(event.conversation_id, event.mode);
       } else if (event.type === 'conversation.workspace') {
         // Its owner moved it to another image (#253), maybe on another
         // device: the pill and the Inspector follow.
@@ -734,6 +768,9 @@ export function useAgentSession(
         attempt = 0;
         trackSocket(SOCKET_KEY, 'open');
         resubscribeKnown();
+        // Whatever was picked on the open thread while this socket was away.
+        const openId = activeIdRef.current;
+        if (openId && isServerConvId(openId)) refreshThreadMode(openId);
         // A new socket has heard no liveness notices and the server does not
         // replay them: clear what the last one said, and ask again for the
         // list on screen (#282).
@@ -775,19 +812,40 @@ export function useAgentSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, recordThreadMode, refreshThreadMode]);
+
+  // The selector follows the thread on screen (#311): its live run's mode,
+  // else its last one, on opening it, on a load and on a reconnect; and the
+  // run's mode whenever that changes, from any device. See followSelector.
+  const activeRunMode = runLevelOf(runLevels, activeId).runMode;
+  const activeStoredMode = ownStoredMode(runs.find((r) => r.id === activeId));
+  const followedRef = useRef<SelectorSource | null>(null);
+  useEffect(() => {
+    const next: SelectorSource = { convId: activeId, runMode: activeRunMode, storedMode: activeStoredMode };
+    const prev = followedRef.current;
+    followedRef.current = next;
+    setModeState((selector) => followSelector(selector, prev, next));
+  }, [activeId, activeRunMode, activeStoredMode]);
 
   /** The selector moves only if the server heard it: a chip that switched
    * on screen while the frame went nowhere left the run in the old mode with
-   * the selector saying otherwise. */
+   * the selector saying otherwise. On a thread the server knows, the pick is
+   * that thread's, and switches a run going there between Manual and Auto. */
   const handleModeChange = useCallback((next: PermissionMode): boolean => {
-    if (isOffline() || !wsRef.current || !setAgentMode(wsRef.current, next)) {
+    const convId = activeIdRef.current;
+    const serverConvId = convId && isServerConvId(convId) ? convId : undefined;
+    if (isOffline() || !wsRef.current || !setAgentMode(wsRef.current, next, serverConvId)) {
       showToast(disconnectedCopy(connectionState()).notSent, 4000);
       return false;
     }
     setModeState(next);
+    if (serverConvId) {
+      recordThreadMode(serverConvId, next);
+      const notice = modeChangeNotice(runLevelOf(runLevelsRef.current, serverConvId).runMode, next);
+      if (notice) showToast(notice, 5000);
+    }
     return true;
-  }, [showToast]);
+  }, [showToast, recordThreadMode]);
 
   /**
    * `modeOverride` sends in a mode other than the selector's, and moves the

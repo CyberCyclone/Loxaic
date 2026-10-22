@@ -1294,6 +1294,10 @@ export interface Conversation {
   instructions?: import("@loxaic/types").ProjectInstructionsSummary | null;
   /** Only on the single-conversation read: whether a run is going right now. */
   active_run?: boolean;
+  /** The mode its last message was sent in, or last picked on its selector:
+   * what the thread opens in (#311). Null until a run or a pick records one;
+   * absent on an older server. */
+  permissionMode?: import("@loxaic/types").PermissionMode | null;
   createdAt: string;
   updatedAt: string;
   /** What the caller may do here. Present on list and single-conversation
@@ -2963,8 +2967,10 @@ export function stopStream(ws: WebSocket, streamId: string): boolean {
   return trySend(ws, { type: "stream.stop", stream_id: streamId });
 }
 
-export function setAgentMode(ws: WebSocket, mode: import("@loxaic/types").PermissionMode): boolean {
-  return trySend(ws, { type: "agent.mode", mode });
+/** `conversationId` makes it the thread's mode, and switches a run going
+ * there (#311); absent, the pick is only the next new thread's. */
+export function setAgentMode(ws: WebSocket, mode: import("@loxaic/types").PermissionMode, conversationId?: string): boolean {
+  return trySend(ws, { type: "agent.mode", mode, ...(conversationId ? { conversation_id: conversationId } : {}) });
 }
 
 /**

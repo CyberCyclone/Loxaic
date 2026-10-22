@@ -1,4 +1,4 @@
-import type { RunActivity, StepsDecision } from "@loxaic/types";
+import type { PermissionMode, RunActivity, StepsDecision } from "@loxaic/types";
 import { announceRunActivity } from "./watchers.ts";
 
 /**
@@ -57,6 +57,69 @@ export interface RunHandle {
    * conversation was last told about — the activity and, while queued, the
    * place in line. Nothing outside this module reads or writes it. */
   announcedActivity?: string;
+  /**
+   * The run's permission mode now (#311): what it was sent in, until someone
+   * switches it between Manual and Auto mid-run. The tool loop reads it for
+   * every call. Absent on runs that call no tools of their own (compaction,
+   * a context stage, a rewind's claim). Written only by `setRunMode`.
+   */
+  mode?: PermissionMode;
+  /** Writes the change into the run's log, so every device following it
+   * hears. Set by `startModeLog` the moment the run's producer opens. */
+  emitMode?: (mode: PermissionMode) => void;
+  /** The approvals waiting in this run, each told to decide its call again
+   * when the mode changes. Through `onRunModeChange` only. */
+  modeListeners?: Set<() => void>;
+}
+
+/**
+ * The mode a live run moves to when someone picks `requested`, or null when
+ * it stays as it is (#311).
+ *
+ * Only Manual and Auto trade places mid-run. Planning differs from both in
+ * its system prompt, its tools (no writes, plus the plan and questions tools)
+ * and the nudge to hand over, and those are fixed for the run so that every
+ * request extends the prompt the backend has cached. Planning, in or out,
+ * applies from the next message, which is built for it.
+ */
+export function liveModeAfter(current: PermissionMode | undefined, requested: PermissionMode): PermissionMode | null {
+  if (current === undefined || current === requested) return null;
+  if (current === "planning" || requested === "planning") return null;
+  return requested;
+}
+
+/**
+ * Switch a live run's mode, when `liveModeAfter` allows it: say so in its log,
+ * then have every approval it is waiting on decide its call again. Returns
+ * whether the mode changed. In that order, so a device that clears its prompt
+ * on hearing the new mode is never behind a fresh prompt for the same call.
+ */
+export function setRunMode(handle: RunHandle, requested: PermissionMode): boolean {
+  const next = liveModeAfter(handle.mode, requested);
+  if (next === null) return false;
+  handle.mode = next;
+  handle.emitMode?.(next);
+  for (const listener of [...(handle.modeListeners ?? [])]) listener();
+  return true;
+}
+
+/**
+ * Put the run's mode in its log now, and every switch from here on (#311).
+ * Called by whatever opens the run's producer, so a switch made before the
+ * tool loop starts is in the log too. A run with no mode (chat, compaction)
+ * logs none.
+ */
+export function startModeLog(handle: RunHandle, emit: (mode: PermissionMode) => void): void {
+  if (handle.mode === undefined) return;
+  handle.emitMode = emit;
+  emit(handle.mode);
+}
+
+/** Be told when the run's mode changes; returns the way to stop. */
+export function onRunModeChange(handle: RunHandle, listener: () => void): () => void {
+  handle.modeListeners ??= new Set();
+  handle.modeListeners.add(listener);
+  return () => { handle.modeListeners?.delete(listener); };
 }
 
 /**
@@ -286,6 +349,11 @@ export function listBusyRuns(conversationIds: Iterable<string>): RunHandle[] {
     if (wanted.has(handle.conversationId)) out.push(handle);
   }
   return out;
+}
+
+/** The sub-agents running under `conversationId`'s run, which share its mode. */
+export function listChildRuns(conversationId: string): RunHandle[] {
+  return [...runsByStreamId.values()].filter((r) => r.parentConversationId === conversationId);
 }
 
 export function isConversationBusy(conversationId: string): boolean {

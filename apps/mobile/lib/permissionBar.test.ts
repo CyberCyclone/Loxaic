@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { permissionBadge, permissionBarView, permissionCheckNote, splitMcpTool } from './permissionBar';
+import { permissionBadge, permissionBarView, permissionCheckNote, runModeNote, splitMcpTool } from './permissionBar';
 
 const ME = 'user-me';
 
@@ -74,6 +74,27 @@ describe('bash approvals', () => {
     expect(note({ by: 'classifier', outcome: 'unparseable' })).toContain('no clear answer');
     expect(note(undefined)).toBeNull();
     expect(permissionBarView({ tool: 'fs_write', check: { by: 'classifier', outcome: 'ask' } }, ME).checkNote).toContain('asking you');
+  });
+
+  it('names the asking run’s mode when the selector says another (#311), and keeps the check line', () => {
+    const view = permissionBarView(
+      { tool: 'bash', mode: 'manual', granterUserId: ME, check: { by: 'classifier', outcome: 'ask' } },
+      ME,
+      'planning',
+    );
+    expect(view.modeNote).toBe('This run is in Manual mode. Planning applies from your next message.');
+    expect(view.checkNote).toContain('asking you');
+    expect(permissionBarView({ tool: 'github__create_issue', mode: 'auto', granterUserId: ME }, ME, 'manual').modeNote).toBe(
+      'This run is in Auto mode. Manual applies from your next message.',
+    );
+  });
+
+  it('says nothing about the mode when the two agree, or either is unknown', () => {
+    expect(permissionBarView({ tool: 'bash', mode: 'auto' }, ME, 'auto').modeNote).toBeNull();
+    // An older server, which names no mode: never guessed from the selector.
+    expect(permissionBarView({ tool: 'bash' }, ME, 'auto').modeNote).toBeNull();
+    expect(permissionBarView({ tool: 'fs_write', mode: 'manual' }, ME).modeNote).toBeNull();
+    expect(runModeNote('manual', undefined)).toBeNull();
   });
 });
 

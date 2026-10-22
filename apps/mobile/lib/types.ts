@@ -220,6 +220,10 @@ export interface Conversation {
   /** Where an agent conversation's files live. Absent or null means scratch.
    * Fixed at creation; the chooser is only offered before the first run. */
   workspace?: Workspace | WorkspaceChoice | null
+  /** An agent thread's last mode: its last run's, or the selector's last pick
+   * there (#311). What the selector shows on opening it with nothing running.
+   * Absent or null: never recorded. */
+  permissionMode?: AgentMode | null
 }
 
 export type ConversationRole = 'viewer' | 'editor' | 'owner'

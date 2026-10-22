@@ -1,4 +1,4 @@
-import type { StreamEventKind, StreamSnapshot } from '@loxaic/api-client';
+import type { PermissionMode, StreamEventKind, StreamSnapshot } from '@loxaic/api-client';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from './pendingWaits';
 
 /**
@@ -45,6 +45,9 @@ export interface AgentRunLevel {
   pendingCheckin: PendingCheckin | null;
   iteration: { n: number; max: number } | null;
   queuePosition: number | null;
+  /** The live run's permission mode, as the server says it is (#311), or
+   * null with no run going or from an older server. Never the selector's. */
+  runMode: PermissionMode | null;
 }
 
 export const IDLE_RUN: AgentRunLevel = Object.freeze({
@@ -53,6 +56,7 @@ export const IDLE_RUN: AgentRunLevel = Object.freeze({
   pendingCheckin: null,
   iteration: null,
   queuePosition: null,
+  runMode: null,
 });
 
 export type RunLevels = Partial<Record<string, AgentRunLevel>>;
@@ -117,6 +121,7 @@ export function runLevelFromSnapshot(
     pendingCheckin: status === 'active' && snapshot.pending_checkin
       ? toPendingCheckin(snapshot.pending_checkin, now, serverNow, streamId) : null,
     queuePosition: snapshot.queued?.position ?? null,
+    runMode: status === 'active' ? (snapshot.mode ?? null) : null,
   };
 }
 
@@ -132,12 +137,25 @@ export function runLevelAfterEvent(
   // queue: a compaction run never emits `iteration`, and an agent run
   // re-queued after an approval emits its tool results before its next one —
   // both left "Queued · #N" on screen with the response streaming underneath.
-  if (event.kind !== 'run.queued' && (next.queuePosition !== null || next.runState === 'queued')) {
+  // A mode switch can land while the run waits in line, and says nothing about it.
+  if (event.kind !== 'run.queued' && event.kind !== 'run.mode' && (next.queuePosition !== null || next.runState === 'queued')) {
     next = { ...next, queuePosition: null, runState: next.runState === 'queued' ? 'running' : next.runState };
   }
   switch (event.kind) {
     case 'run.queued':
       return { ...next, runState: 'queued', queuePosition: event.position };
+    case 'run.mode':
+      // A switch has the waiting call decided again on the server: the
+      // question goes, and comes back in the new mode if it still needs a
+      // person. The first one, as the run starts, has nothing to withdraw.
+      if (next.runMode === event.mode) return next;
+      if (next.runMode === null) return { ...next, runMode: event.mode };
+      return {
+        ...next,
+        runMode: event.mode,
+        pendingApproval: null,
+        runState: next.runState === 'awaiting_approval' ? 'running' : next.runState,
+      };
     case 'iteration':
       return { ...next, runState: 'running', iteration: { n: event.n, max: event.max } };
     case 'approval.request':
@@ -174,6 +192,7 @@ export function runLevelAfterEnd(prev: AgentRunLevel, status: string): AgentRunL
     queuePosition: null,
     pendingApproval: null,
     pendingCheckin: null,
+    runMode: null,
   };
 }
 

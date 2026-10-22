@@ -9,7 +9,7 @@ The stream log, run registry and conversation authorization shared by every run 
 
 ## Snapshot folds
 
-- Any event other than `run.queued` clears the queue position in `foldSnapshot` (and both client hooks); `subagent.*` events never clear it.
+- Any event other than `run.queued` clears the queue position in `foldSnapshot` (and both client hooks); `subagent.*` and `run.mode` events never clear it.
 - `stream.end.error_code` rides only the live event and is deliberately never replayed from a snapshot.
 
 ## Run registry
@@ -66,6 +66,7 @@ The stream log, run registry and conversation authorization shared by every run 
 
 - A standing grant comes only from `always: true` and only from the run's sender (`always && answeredBy === userId`); an editor's "always" approves once.
 - `approval.request` carries the run's `mode` and `granter_user_id`; clients must not infer either.
+- Read a run's mode live (`liveMode()` / `ctx.mode()`, a child's from `getRun(parent.streamId)` as it registers), never a value captured earlier; change it only through `setRunMode`, which moves only between manual and auto (`liveModeAfter`) and re-gates every waiting approval. Prompt, tools and the planning nudge use the start mode. Whatever opens a run's producer calls `startModeLog`.
 
 ### Planning handover
 

@@ -363,6 +363,19 @@ export async function listConversations(
   return (await res.json()) as { id: string; title: string; kind?: 'chat' | 'agent' }[];
 }
 
+/** One conversation as the API returns it: the fields a spec reads. */
+export async function getConversation(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<{ id: string; permissionMode?: 'planning' | 'manual' | 'auto' | null; active_run?: boolean }> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] reading the conversation failed (${String(res.status)})`);
+  return (await res.json()) as { id: string; permissionMode?: 'planning' | 'manual' | 'auto' | null; active_run?: boolean };
+}
+
 // ── Routines ──────────────────────────────────────────────
 //
 // Seeded through the API rather than the UI wherever the spec is about

@@ -25,7 +25,7 @@ import { getSandboxMode } from "../../sandbox/provider.ts";
 import type { StreamProducer } from "../broker.ts";
 import { turnErrorText } from "../error-text.ts";
 import { getStreamBroker } from "../index.ts";
-import { registerRun } from "../registry.ts";
+import { getRun, registerRun, startModeLog, type RunHandle } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 import { chatWorkspaceDescription } from "./chatRun.ts";
 import { runToolLoop } from "./engine.ts";
@@ -339,10 +339,32 @@ export async function runSubagent(
   parent.signal.addEventListener("abort", onParentAbort, { once: true });
   if (hasFired(parent.signal)) abort.abort();
 
+  // The child's own log, with its progress mirrored onto the parent's card.
+  const childProducer = mirrorProgress(producer, parent.producer, childId, streamId, {
+    onInLine: hooks?.onInLine,
+    onQueued: () => {
+      childClock.set(streamId, { ...childClock.get(streamId), queued: true });
+    },
+    onAdmitted: (at) => {
+      info.admittedAt = at;
+      childClock.set(streamId, { queued: false, admittedAt: at });
+    },
+    onRunning: () => {
+      const clock = childClock.get(streamId);
+      if (clock?.queued) childClock.set(streamId, { ...clock, queued: false });
+    },
+  });
+
+  // The parent's mode as it is at this moment, not as it was when the batch
+  // began: a switch made while this child was being set up has already
+  // passed `listChildRuns` by (ws/run-actions.ts, `changeRunMode`), and every
+  // later one reaches the child there. Planning never changes mid-run, so the
+  // prompt below, built for `parent.mode`, still fits.
+  const mode = getRun(parent.streamId)?.mode ?? parent.mode;
   // Under its own conversation id: reachable by `getRun(streamId)` for Stop
   // and approvals, without ever touching the parent's entry in the
   // one-run-per-conversation map.
-  registerRun({
+  const handle: RunHandle = {
     streamId,
     conversationId: childId,
     userId: parent.userId,
@@ -350,7 +372,10 @@ export async function runSubagent(
     approvals: new Map(),
     model: call.model,
     parentConversationId: parent.convId,
-  });
+    mode,
+  };
+  registerRun(handle);
+  startModeLog(handle, (next) => { childProducer.emit({ kind: "run.mode", mode: next }); });
   starting.delete(streamId);
   announceNewRun(childId, streamId);
 
@@ -381,7 +406,7 @@ export async function runSubagent(
       userMsgId,
       userLamport: startedAt,
       model: call.model,
-      mode: parent.mode,
+      mode,
       basePrompt: subagentSystemPrompt({ surface: parent.surface, workspace, mode: parent.mode, instructions }),
       surface: parent.surface,
       thinkingLevel: parent.thinkingLevel,
@@ -389,20 +414,7 @@ export async function runSubagent(
       role: { kind: "subagent", parentConvId: parent.convId },
       ...(parent.checkpointTurn ? { checkpointTurn: parent.checkpointTurn } : {}),
       abort,
-      producer: mirrorProgress(producer, parent.producer, childId, streamId, {
-        onInLine: hooks?.onInLine,
-        onQueued: () => {
-          childClock.set(streamId, { ...childClock.get(streamId), queued: true });
-        },
-        onAdmitted: (at) => {
-          info.admittedAt = at;
-          childClock.set(streamId, { queued: false, admittedAt: at });
-        },
-        onRunning: () => {
-          const clock = childClock.get(streamId);
-          if (clock?.queued) childClock.set(streamId, { ...clock, queued: false });
-        },
-      }),
+      producer: childProducer,
     });
   } catch (err) {
     // `runToolLoop` rethrows anything that is not a cancellation. Awaited here
@@ -535,6 +547,15 @@ export function mirrorProgress(
         report({ state: "awaiting_approval", pending_approval: { stream_id: childStreamId, ...request } });
         break;
       }
+      case "run.mode":
+        // A switch between Manual and Auto has the waiting call decided again
+        // (#311): the question is withdrawn, and either asked afresh in the
+        // new mode or answered without anyone.
+        if (pendingCallId !== null) {
+          pendingCallId = null;
+          report({ state: "running", pending_approval: null });
+        }
+        break;
       case "tool.result":
         // However the wait ended — allowed, refused, timed out, stopped — its
         // call now has a result, and the question is no longer open. It is

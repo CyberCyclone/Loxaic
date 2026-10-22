@@ -343,6 +343,29 @@ export async function isSwitchOn(id: string): Promise<boolean> {
   }
 }
 
+/** Whether the segment carrying `id` is the selected one (`aria-selected`,
+ * which React Native turns into the selected accessibility state). */
+export async function isSelected(id: string): Promise<boolean> {
+  const el = byTestId(id);
+  await el.waitForDisplayed();
+  switch (platform()) {
+    case 'web':
+    case 'electron':
+      return (await el.getAttribute('aria-selected')) === 'true';
+    case 'android':
+    case 'ios':
+      return (await el.getAttribute('selected')) === 'true';
+  }
+}
+
+/** Waits until the segment carrying `id` is the selected one. */
+export async function waitForSelected(id: string, timeout = 20_000): Promise<void> {
+  await browser.waitUntil(() => isSelected(id), {
+    timeout,
+    timeoutMsg: `${id} was not selected within ${String(timeout)}ms`,
+  });
+}
+
 /** Waits until the Switch carrying `id` reads `on` — a toggle saves before it
  * settles, and a read taken mid-flip would see the old value. */
 export async function waitForSwitch(id: string, on: boolean, timeout = 10_000): Promise<void> {

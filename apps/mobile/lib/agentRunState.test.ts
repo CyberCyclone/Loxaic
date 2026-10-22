@@ -166,3 +166,44 @@ describe('per-conversation run state', () => {
     expect(withoutRunLevel(levels, 'B')).toBe(levels);
   });
 });
+
+describe('the run’s mode (#311)', () => {
+  const modeEvent = (mode: 'manual' | 'auto' | 'planning'): StreamEventKind => ({ kind: 'run.mode', mode });
+
+  it('is the snapshot’s while the run is active, and nothing once it ended', () => {
+    const snapshot: StreamSnapshot = { messages: [], mode: 'auto' };
+    expect(runLevelFromSnapshot(snapshot, 'active', 's1', NOW).runMode).toBe('auto');
+    expect(runLevelFromSnapshot(snapshot, 'complete', 's1', NOW).runMode).toBeNull();
+    expect(runLevelFromSnapshot({ messages: [] }, 'active', 's1', NOW).runMode).toBeNull();
+  });
+
+  it('takes the mode a run starts in without touching anything else', () => {
+    const levels = fold({}, 'A', [{ kind: 'run.queued', position: 2 }, modeEvent('manual')]);
+    expect(runLevelOf(levels, 'A')).toMatchObject({ runMode: 'manual', runState: 'queued', queuePosition: 2 });
+  });
+
+  it('withdraws a waiting question on a switch, which the server decides again', () => {
+    let levels = fold({}, 'A', [modeEvent('manual'), ask]);
+    levels = fold(levels, 'A', [modeEvent('auto')]);
+    expect(runLevelOf(levels, 'A')).toMatchObject({ runMode: 'auto', pendingApproval: null, runState: 'running' });
+    // And the question asked again in the new mode comes back.
+    levels = fold(levels, 'A', [{ ...ask, mode: 'auto' }]);
+    expect(runLevelOf(levels, 'A').pendingApproval?.mode).toBe('auto');
+  });
+
+  it('keeps the queue position across a switch while queued', () => {
+    const levels = fold({}, 'A', [modeEvent('manual'), { kind: 'run.queued', position: 1 }, modeEvent('auto')]);
+    expect(runLevelOf(levels, 'A')).toMatchObject({ runState: 'queued', queuePosition: 1, runMode: 'auto' });
+  });
+
+  it('changes nothing when the mode is the one already known', () => {
+    const levels = fold({}, 'A', [modeEvent('manual'), ask]);
+    const before = runLevelOf(levels, 'A');
+    expect(runLevelAfterEvent(before, modeEvent('manual'), 's1', NOW)).toBe(before);
+  });
+
+  it('is forgotten when the run ends', () => {
+    const levels = fold({}, 'A', [modeEvent('auto')]);
+    expect(runLevelAfterEnd(runLevelOf(levels, 'A'), 'complete').runMode).toBeNull();
+  });
+});

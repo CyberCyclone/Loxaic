@@ -24,9 +24,13 @@ export function watchConversation(conversationId: string, onNewRun: (streamId: s
 }
 
 /** Something that happened to a conversation itself rather than in one run:
- * messages removed from its end (conversations/rewind.ts), or its workspace
- * moved to another image (routes/conversations.ts). */
-export type ConversationEvent = Extract<ServerMessage, { type: "conversation.rewound" | "conversation.workspace" }>;
+ * messages removed from its end (conversations/rewind.ts), its workspace
+ * moved to another image (routes/conversations.ts), or its owner's mode
+ * changed (conversations/permission-mode.ts). */
+export type ConversationEvent = Extract<
+  ServerMessage,
+  { type: "conversation.rewound" | "conversation.workspace" | "conversation.mode" }
+>;
 
 const EVENT_CHANNEL = (conversationId: string) => `event:${conversationId}`;
 

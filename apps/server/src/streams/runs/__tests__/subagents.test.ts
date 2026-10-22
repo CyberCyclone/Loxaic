@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
 import { db, eq, inArray } from "@loxaic/db";
-import { conversationShares, conversations, messages, usageRecords, user } from "@loxaic/db/schema";
+import { conversationShares, conversations, messages, sandboxes, usageRecords, user } from "@loxaic/db/schema";
 import {
   COMPACTION_CONTINUE_NUDGE,
   MAX_SUBAGENTS_PER_MESSAGE,
@@ -25,7 +25,8 @@ import { lastRequestShape } from "../request-shape.ts";
 import { recentUses } from "../../../llama/context-stage-policy.ts";
 import { buildToolset } from "../../../mcp/registry.ts";
 import { purgeConversation } from "../../../conversations/delete.ts";
-import { answerApproval, mayActOnRun } from "../../../ws/run-actions.ts";
+import { destroyConversationSandboxes } from "../../../agent/sandbox-manager.ts";
+import { answerApproval, changeRunMode, mayActOnRun } from "../../../ws/run-actions.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 
 /**
@@ -89,6 +90,8 @@ describe("sub-agents", () => {
       await db.delete(usageRecords).where(eq(usageRecords.conversationId, id));
       await db.delete(conversations).where(eq(conversations.id, id));
     }
+    // A case whose child wrote a file ran it in a sandbox, torn down by the case.
+    await db.delete(sandboxes).where(eq(sandboxes.ownerId, userId));
     for (const id of everyone) {
       await db.delete(usageRecords).where(eq(usageRecords.userId, id));
       await db.delete(user).where(eq(user.id, id));
@@ -653,6 +656,44 @@ describe("sub-agents", () => {
     const after = (await snapshotOf(streamId)).subagents?.[0];
     expect(after?.pending_approval).toBeUndefined();
     expect(after?.status).toBe("complete");
+  }, 40_000);
+
+  it("switches a running child with its parent, and decides its waiting call again (#311)", async () => {
+    // The write runs: in host mode, so no container image has to exist.
+    const sandbox = { mode: process.env.SANDBOX_MODE, root: process.env.SANDBOX_HOST_ROOT };
+    process.env.SANDBOX_MODE = "host";
+    process.env.SANDBOX_HOST_ROOT = path.join(dir, "sandboxes");
+    try {
+      const convId = await newConversation();
+      const streamId = await agentRun(convId, "Use a sub-agent: write a file called notes", "manual");
+      await waitFor("the child's approval to reach the parent's stream", async () =>
+        (await snapshotOf(streamId)).subagents?.[0]?.pending_approval !== undefined,
+      );
+      const [child] = await childrenOf(convId);
+      const info = child.subagent as SubAgentInfo;
+
+      // Never by the child's own id: its mode is its parent's.
+      await changeRunMode(userId, child.id, "auto");
+      expect(getRun(info.streamId)?.mode).toBe("manual");
+      await changeRunMode(userId, convId, "auto");
+      await waitFor("the parent to end", ended(convId));
+      // Nobody answered: in Auto, a write inside the workspace runs.
+      const [childResult] = await resultsOf(child.id);
+      expect(childResult).toMatchObject({ ok: true });
+      const childModes = (await getStreamBroker().readFrom(info.streamId, 0))
+        .map((r) => r.event)
+        .filter((e) => e.kind === "run.mode")
+        .map((e) => (e as { mode: string }).mode);
+      expect(childModes).toEqual(["manual", "auto"]);
+      expect((await snapshotOf(streamId)).subagents?.[0]?.pending_approval).toBeUndefined();
+      // The write ran, in the parent's sandbox: this suite's own to remove.
+      await destroyConversationSandboxes(convId);
+    } finally {
+      for (const [key, value] of [["SANDBOX_MODE", sandbox.mode], ["SANDBOX_HOST_ROOT", sandbox.root]] as const) {
+        if (value === undefined) Reflect.deleteProperty(process.env, key);
+        else process.env[key] = value;
+      }
+    }
   }, 40_000);
 
   it("gives a planning parent a read-only child with nothing to hand over", async () => {

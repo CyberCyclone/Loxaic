@@ -1,5 +1,17 @@
+import type { PermissionMode } from "@loxaic/types";
+import { recordPermissionMode } from "../conversations/permission-mode.ts";
 import { actingRole, atLeast, resolveAccess } from "../streams/authz.ts";
-import { clearRunApproval, findRunsByApprovalCallId, getRun, takeRunCheckin, isStepsDecision, type RunHandle } from "../streams/registry.ts";
+import {
+  clearRunApproval,
+  findRunsByApprovalCallId,
+  getRun,
+  getRunByConversation,
+  listChildRuns,
+  setRunMode,
+  takeRunCheckin,
+  isStepsDecision,
+  type RunHandle,
+} from "../streams/registry.ts";
 
 /**
  * Whether this user may stop a run or answer its approvals.
@@ -100,4 +112,41 @@ export async function answerCheckin(
   const resolve = takeRunCheckin(run);
   if (!resolve) return;
   resolve(decision, userId);
+}
+
+/** Whether a mode off a socket is one of the three words. */
+export function isPermissionMode(value: unknown): value is PermissionMode {
+  return value === "planning" || value === "manual" || value === "auto";
+}
+
+/**
+ * Someone moved the mode selector on an agent thread (#311).
+ *
+ * - **The run.** Only the run's sender switches the run going there, and its
+ *   sub-agents with it, between Manual and Auto (`liveModeAfter`; Planning,
+ *   in or out, waits for the next message). Auto lets the sender's tools run
+ *   unasked under the sender's identity, so it is a standing grant, and like
+ *   "Allow always" only the sender may give it: an editor answers calls one
+ *   at a time, or stops the run. A switch has every approval the runs are
+ *   waiting on decided again (engine.ts, `regate`), and each run's log says
+ *   so, which is how every device following it hears.
+ * - **The thread's mode.** Only the owner's pick is remembered, for the same
+ *   reason (`recordPermissionMode`).
+ *
+ * Only an agent thread itself: never a sub-agent's conversation (its mode is
+ * its parent's), a chat or a routine. A silent no-op otherwise, and for a
+ * conversation that does not exist — the same "no existence oracle" rule as
+ * `stream.stop`.
+ */
+export async function changeRunMode(userId: string, conversationId: unknown, mode: unknown): Promise<void> {
+  if (typeof conversationId !== "string" || !isPermissionMode(mode)) return;
+  const grant = await resolveAccess(userId, conversationId);
+  if (grant?.kind !== "agent" || !atLeast(grant.role, "editor")) return;
+  // Read after the await: the run may have started or ended meanwhile.
+  const run = getRunByConversation(conversationId);
+  if (run?.userId === userId) {
+    setRunMode(run, mode);
+    for (const child of listChildRuns(conversationId)) setRunMode(child, mode);
+  }
+  if (grant.role === "owner") await recordPermissionMode(conversationId, mode);
 }

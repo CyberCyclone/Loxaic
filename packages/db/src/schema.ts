@@ -100,6 +100,10 @@ export const conversations = pgTable("conversations", {
    * compaction after a restart, which has no in-memory request shape — rather
    * than the default. Null until a run names one. */
   thinkingLevel: text("thinking_level"),
+  /** The permission mode (`PermissionMode` in packages/types) its last run
+   * was sent in, or last picked on its selector since: what the thread opens
+   * in after a reload (#311). Null until either happens. */
+  permissionMode: text("permission_mode", { enum: ["planning", "manual", "auto"] }),
   /**
    * Set only on a `subagent` conversation: the conversation whose run spawned
    * it. No foreign key, like `messages.conversation_id` — erasing a parent
