@@ -31,8 +31,6 @@ import {
   waitForToolResult,
 } from '../helpers/app.ts';
 
-/** Where a container sandbox's working directory lives. */
-const WORKDIR = '/home/loxaic/repo';
 const MARKER = 'survived-the-pause';
 /** The API's floor for an idle window, so this is as fast as the real path
  * can be driven. The harness's 2s reaper tick does the rest. */
@@ -92,7 +90,7 @@ describe('sandbox lifecycle', () => {
     expect(sandbox.status).toBe('running');
 
     // Something to lose. A real session's equivalent is an hour of edits.
-    const write = await execInSandbox(token, sandbox.id, `echo ${MARKER} > ${WORKDIR}/work.txt`, WORKDIR);
+    const write = await execInSandbox(token, sandbox.id, `echo ${MARKER} > work.txt`);
     expect(write.exitCode).toBe(0);
 
     // The Inspector states the terms while the work is still safe, which is
@@ -107,7 +105,7 @@ describe('sandbox lifecycle', () => {
 
     // The whole point: paused, not gone. Exec resumes it the same way a
     // user's next message would.
-    const read = await execInSandbox(token, sandbox.id, `cat ${WORKDIR}/work.txt`, WORKDIR);
+    const read = await execInSandbox(token, sandbox.id, 'cat work.txt');
     expect(read.exitCode).toBe(0);
     expect(read.stdout).toContain(MARKER);
   });

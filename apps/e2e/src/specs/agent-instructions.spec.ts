@@ -170,8 +170,8 @@ describe('agent: the project\'s own AGENTS.md', () => {
     const edit = await execInSandbox(
       token,
       sandbox.id,
+      // In the sandbox's own working directory, the checkout (#320).
       "sed -i 's/Run the tests with node --test./Run the tests with node --test --watch./' AGENTS.md",
-      '/home/loxaic/repo',
     );
     expect(edit.exitCode).toBe(0);
 
