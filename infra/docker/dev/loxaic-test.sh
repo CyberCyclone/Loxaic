@@ -83,6 +83,17 @@ in_repo() {
   cd "$REPO" || exit 1
 }
 
+# An e2e lane starts its own server on E2E_PORT and refuses one already
+# there; a server a stopped lane left behind would otherwise fail every spec.
+port_free() {
+  local holder
+  holder="$(lsof -nP -iTCP:"$E2E_PORT" -sTCP:LISTEN 2>/dev/null | tail -n +2)"
+  [ -z "$holder" ] && return 0
+  die "port $E2E_PORT is already in use, so the lane can't start its own server:
+$holder
+A server left by an earlier run? Stop it (kill <PID>) and start the lane again."
+}
+
 kvm_ready() {
   [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]
 }
@@ -145,11 +156,13 @@ run_lane() {
     web)
       in_repo
       pg_start || return $?
+      port_free
       cd apps/e2e && without_egress env E2E_FRESH_WEB="${E2E_FRESH_WEB:-1}" npx wdio run ./wdio.web.ts "$@"
       ;;
     electron)
       in_repo
       pg_start || return $?
+      port_free
       if [ ! -d apps/desktop/dist/linux-unpacked ] || [ "${LOXAIC_TEST_REBUILD:-}" = "1" ]; then
         pnpm --filter @loxaic/desktop package:dir || return $?
       fi
@@ -161,6 +174,7 @@ run_lane() {
       kvm_ready || die "this sandbox has no usable /dev/kvm, which the Android emulator needs. An admin turns on \
 Hardware virtualisation (KVM) for this image in Settings → Container Images, on a host that has KVM."
       pg_start || return $?
+      port_free
       boot_emulator || return $?
       local apk=apps/mobile/android/app/build/outputs/apk/release/app-release.apk
       if [ ! -f "$apk" ] || [ "${LOXAIC_TEST_REBUILD:-}" = "1" ]; then
