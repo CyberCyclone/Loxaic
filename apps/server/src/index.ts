@@ -55,7 +55,6 @@ import { egressCa } from "./egress/ca.ts";
 import type { EgressProxy } from "./egress/proxy.ts";
 import { startExtractionReaper, stopAllExtractionSandboxes } from "./files/extract";
 import { startConversationReaper, startOrphanRowReaper, sweepRetainedConversations } from "./conversations/reaper";
-import { sweepOrphanedRows } from "./conversations/delete";
 
 const app = Fastify({
   logger: {
@@ -334,13 +333,8 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   conversationReaperTimer = startConversationReaper((n) => {
     app.log.info(`Erased ${String(n)} deleted conversation(s) past the retention window`);
   });
-  // What a run wrote after its conversation's delete had finished with it.
-  sweepOrphanedRows()
-    .then((n) => { if (n > 0) app.log.info(`Erased ${String(n)} message(s) left by erased conversations`); })
-    .catch(() => { /* best-effort sweep */ });
-  orphanRowReaperTimer = startOrphanRowReaper((n) => {
-    app.log.info(`Erased ${String(n)} message(s) left by erased conversations`);
-  });
+  // What erased conversations left behind: late rows, orphaned sub-agents.
+  orphanRowReaperTimer = startOrphanRowReaper(app.log);
 });
 
 // ── Graceful shutdown ─────────────────────────────────────

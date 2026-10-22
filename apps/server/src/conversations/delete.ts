@@ -394,51 +394,79 @@ export async function purgeConversations(ids: string[], log: DeleteLogger): Prom
  */
 const ORPHAN_GRACE_MS = 60 * 60 * 1000;
 
+/** How many conversations one sweep erases at most; the next takes the rest. */
+const ORPHAN_SWEEP_LIMIT = 500;
+
 type ConversationIdColumn =
   | typeof messages.conversationId
   | typeof checkpointFiles.conversationId
   | typeof routineRuns.conversationId
-  | typeof usageRecords.conversationId;
+  | typeof usageRecords.conversationId
+  | typeof conversations.parentConversationId;
 
 /**
- * Erases what `eraseRows` would have, for every conversation whose row is
- * gone: messages, checkpoint manifests and routine runs deleted, usage kept
- * and detached. Returns how many messages it deleted.
+ * Erases what a delete left behind, for conversations whose row is gone: runs
+ * `eraseRows` for each, so this and a delete share one definition of "fully
+ * erased". Returns how many conversations it erased.
  *
  * The backstop, not the mechanism. A delete collects its own rows in its
  * passes above; what it cannot collect is a row written after its last one, by
- * a run that outlived even the ceiling. Such a row keeps the content of a
- * conversation the user was told was erased, and its uploads with it, since
+ * a run that outlived even the ceiling, or a sub-agent created just as its
+ * parent's last pass committed. Such rows keep the content of a conversation
+ * the user was told was erased, and its uploads with it, since
  * `files/reaper.ts` only collects an attachment no message references.
  *
- * A retained conversation still has its row, so nothing of it is touched here.
+ * Found two ways, each past the grace period: any conversation-keyed row whose
+ * conversation is gone, and any sub-agent conversation whose parent is gone.
+ * A retained conversation still has its row, so nothing of it is found.
  *
- * `scope` limits it to those conversation ids. Production passes nothing; the
- * suites share one Postgres, and an unscoped sweep would act on whatever
- * another suite is in the middle of.
+ * `scope` limits it to those conversation ids (and `limit` overrides the batch
+ * size). Production passes nothing; the suites share one Postgres, and an
+ * unscoped sweep would act on whatever another suite is in the middle of.
  */
-export async function sweepOrphanedRows(scope?: { conversationIds: string[] }): Promise<number> {
+export async function sweepOrphanedRows(
+  log: DeleteLogger,
+  scope?: { conversationIds: string[]; limit?: number },
+): Promise<number> {
+  const ids = await orphanedConversationIds(scope?.limit ?? ORPHAN_SWEEP_LIMIT, scope?.conversationIds);
+  let erased = 0;
+  for (const id of ids) {
+    try {
+      await eraseRows(id);
+      erased++;
+    } catch (err) {
+      log.warn({ err, conversationId: id }, "failed to erase what an erased conversation left behind");
+    }
+  }
+  return erased;
+}
+
+async function orphanedConversationIds(limit: number, scope?: string[]): Promise<string[]> {
   const cutoff = new Date(Date.now() - ORPHAN_GRACE_MS);
-  const orphaned = (conversationId: ConversationIdColumn) =>
-    and(
-      sql`NOT EXISTS (SELECT 1 FROM ${conversations} WHERE ${conversations.id} = ${conversationId})`,
-      scope ? inArray(conversationId, scope.conversationIds) : undefined,
-    );
-  return db.transaction(async (tx) => {
-    const erased = await tx
-      .delete(messages)
-      .where(and(orphaned(messages.conversationId), lt(messages.createdAt, cutoff)))
-      .returning({ id: messages.id });
-    await tx
-      .delete(checkpointFiles)
-      .where(and(orphaned(checkpointFiles.conversationId), lt(checkpointFiles.createdAt, cutoff)));
-    await tx
-      .delete(routineRuns)
-      .where(and(orphaned(routineRuns.conversationId), lt(routineRuns.startedAt, cutoff)));
-    await tx
-      .update(usageRecords)
-      .set({ conversationId: null, messageId: null })
-      .where(and(isNotNull(usageRecords.conversationId), orphaned(usageRecords.conversationId), lt(usageRecords.createdAt, cutoff)));
-    return erased.length;
-  });
+  const gone = (conversationId: ConversationIdColumn) =>
+    sql`NOT EXISTS (SELECT 1 FROM ${conversations} AS c WHERE c.id = ${conversationId})`;
+  const inScope = (conversationId: ConversationIdColumn | typeof conversations.id) =>
+    scope ? inArray(conversationId, scope) : undefined;
+  // Each source is bounded on its own, so the first sweep after a long gap
+  // reads one batch rather than every orphan there is.
+  const sources = [
+    db.selectDistinct({ id: messages.conversationId }).from(messages)
+      .where(and(gone(messages.conversationId), lt(messages.createdAt, cutoff), inScope(messages.conversationId))),
+    db.selectDistinct({ id: checkpointFiles.conversationId }).from(checkpointFiles)
+      .where(and(gone(checkpointFiles.conversationId), lt(checkpointFiles.createdAt, cutoff), inScope(checkpointFiles.conversationId))),
+    db.selectDistinct({ id: routineRuns.conversationId }).from(routineRuns)
+      .where(and(gone(routineRuns.conversationId), lt(routineRuns.startedAt, cutoff), inScope(routineRuns.conversationId))),
+    db.selectDistinct({ id: sql<string>`${usageRecords.conversationId}` }).from(usageRecords)
+      .where(and(isNotNull(usageRecords.conversationId), gone(usageRecords.conversationId), lt(usageRecords.createdAt, cutoff), inScope(usageRecords.conversationId))),
+    // A sub-agent whose parent is gone still has its own row, so none of the
+    // above would ever find it; erasing it takes its rows with it.
+    db.select({ id: conversations.id }).from(conversations)
+      .where(and(isNotNull(conversations.parentConversationId), gone(conversations.parentConversationId), lt(conversations.createdAt, cutoff), inScope(conversations.id))),
+  ];
+  const ids = new Set<string>();
+  for (const source of sources) {
+    if (ids.size >= limit) break;
+    for (const row of await source.limit(limit - ids.size)) ids.add(row.id);
+  }
+  return [...ids];
 }

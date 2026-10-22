@@ -72,20 +72,30 @@ export async function sweepRetainedConversations(ownerId?: string): Promise<numb
   );
 }
 
+export interface OrphanSweepLogger extends DeleteLogger {
+  info(msg: string): void;
+}
+
 /**
- * Sweeps rows left by erased conversations (`sweepOrphanedRows`) on the same
- * hour. Unlike the sweep above it never stands down on an unreadable policy:
- * what it erases belongs to no conversation under any policy.
+ * Sweeps what erased conversations left behind (`sweepOrphanedRows`), once now
+ * and then hourly. Unlike the sweep above it never stands down on an
+ * unreadable policy: what it erases belongs to no conversation under any
+ * policy. A failure is logged, never swallowed: this is the last thing that
+ * erases content a user was told is gone.
  */
-export function startOrphanRowReaper(onSweep?: (count: number) => void): NodeJS.Timeout {
-  const timer = setInterval(() => {
-    void sweepOrphanedRows().then(
+export function startOrphanRowReaper(log: OrphanSweepLogger): NodeJS.Timeout {
+  const sweep = () => {
+    void sweepOrphanedRows(log).then(
       (n) => {
-        if (n > 0) onSweep?.(n);
+        if (n > 0) log.info(`Erased what ${String(n)} erased conversation(s) left behind`);
       },
-      () => undefined,
+      (err: unknown) => {
+        log.warn({ err }, "the sweep for rows of erased conversations failed");
+      },
     );
-  }, SWEEP_INTERVAL_MS);
+  };
+  sweep();
+  const timer = setInterval(sweep, SWEEP_INTERVAL_MS);
   timer.unref();
   return timer;
 }
