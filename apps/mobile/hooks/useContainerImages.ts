@@ -4,7 +4,7 @@ import {
   deleteRegistryLogin,
   deleteSandboxImage,
   getRegistryLogins,
-  getSandboxImages,
+  getSandboxImageList,
   ImageApiError,
   pullSandboxImage,
   putRegistryLogin,
@@ -29,6 +29,9 @@ const PULL_POLL_MS = 1_000;
 export function useContainerImages(scope: ImageScope, token: string | null) {
   const [logins, setLogins] = useState<RegistryLogin[]>([]);
   const [images, setImages] = useState<SandboxImage[]>([]);
+  /** Whether the server can see /dev/kvm (shared images only, #320); null
+   * when it did not say. */
+  const [kvmVisible, setKvmVisible] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   /** The lists could not be asked for — not the same as "none". */
   const [unknown, setUnknown] = useState(false);
@@ -44,10 +47,11 @@ export function useContainerImages(scope: ImageScope, token: string | null) {
     if (!token) return;
     const mine = gate.current.beginRead();
     try {
-      const [l, i] = await Promise.all([getRegistryLogins(scope), getSandboxImages(scope)]);
+      const [l, list] = await Promise.all([getRegistryLogins(scope), getSandboxImageList(scope)]);
       if (!gate.current.landed(mine)) return;
       setLogins(l);
-      setImages(i);
+      setImages(list.images);
+      setKvmVisible(list.kvm?.visible ?? null);
       setUnknown(false);
       setLoadError(null);
     } catch (err) {
@@ -100,6 +104,7 @@ export function useContainerImages(scope: ImageScope, token: string | null) {
   return {
     logins,
     images,
+    kvmVisible,
     loading,
     unknown,
     error: writeError ?? loadError,
@@ -110,7 +115,7 @@ export function useContainerImages(scope: ImageScope, token: string | null) {
     addImage: (input: { reference: string; label?: string; limits?: ImageLimits }) =>
       write(() => addSandboxImage(scope, input), "Couldn't add the image"),
     pullImage: (id: string) => write(() => pullSandboxImage(scope, id), "Couldn't pull the image"),
-    updateImage: (id: string, input: { label?: string; limits?: ImageLimits }) =>
+    updateImage: (id: string, input: { label?: string; limits?: Partial<ImageLimits> }) =>
       write(() => updateSandboxImage(scope, id, input), "Couldn't save the image"),
     removeImage: (id: string) => write(() => deleteSandboxImage(scope, id), "Couldn't remove the image"),
   };

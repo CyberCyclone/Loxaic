@@ -14,7 +14,8 @@ import { useContainerImages } from '@/hooks/useContainerImages';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
 import { useServerReachable } from '@/lib/connection';
-import { imageStatusLine, parseLimitsInput } from '@/lib/customImages';
+import { imageStatusLine, kvmWarning, parseLimitsInput } from '@/lib/customImages';
+import { Switch } from '@/components/ui/switch';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import type { ImageScope, SandboxImage } from '@loxaic/api-client';
 
@@ -167,6 +168,8 @@ export function ImageManager({ scope }: { scope: ImageScope }) {
                     onPull={() => { void run(`pull-${image.id}`, () => images.pullImage(image.id)); }}
                     onRemove={() => { void run(`remove-${image.id}`, () => images.removeImage(image.id)); }}
                     onSaveLimits={(limits) => run(`limits-${image.id}`, () => images.updateImage(image.id, { limits }))}
+                    kvmVisible={images.kvmVisible}
+                    onSetKvm={(kvm) => run(`kvm-${image.id}`, () => images.updateImage(image.id, { limits: { kvm } }))}
                   />
                 ))}
                 <Input>
@@ -204,6 +207,8 @@ function ImageRow({
   onPull,
   onRemove,
   onSaveLimits,
+  kvmVisible,
+  onSetKvm,
 }: {
   image: SandboxImage;
   busy: boolean;
@@ -212,7 +217,10 @@ function ImageRow({
   onPull: () => void;
   onRemove: () => void;
   onSaveLimits: (limits: { memoryMb: number; cpus: number; pids: number }) => Promise<void>;
+  kvmVisible: boolean | null;
+  onSetKvm: (kvm: boolean) => Promise<void>;
 }) {
+  const kvmNote = kvmWarning(kvmVisible);
   const [memory, setMemory] = useState(String(image.limits?.memoryMb ?? ''));
   const [cpus, setCpus] = useState(String(image.limits?.cpus ?? ''));
   const [pids, setPids] = useState(String(image.limits?.pids ?? ''));
@@ -281,6 +289,31 @@ function ImageRow({
           >
             <ButtonText>Save limits</ButtonText>
           </Button>
+          {/* Absent from a server that predates it (#320). */}
+          {image.limits.kvm !== undefined && (
+            <VStack space="xs" className="pt-1">
+              <HStack space="sm" className="items-center">
+                <Switch
+                  testID={`images.image.kvm.${image.id}`}
+                  value={image.limits.kvm}
+                  isDisabled={!reachable || busy}
+                  onValueChange={(value) => { void onSetKvm(value); }}
+                />
+                <Text size="sm" className="min-w-0 flex-1 shrink text-foreground">
+                  Hardware virtualisation (KVM)
+                </Text>
+              </HStack>
+              <Text size="2xs" className="text-muted-foreground">
+                Lets this image&apos;s sandboxes run a virtual machine, such as the Android emulator, through the
+                host&apos;s /dev/kvm. It grants nothing else: no other device, capability or privilege.
+              </Text>
+              {kvmNote && (
+                <Text testID={`images.image.kvm.warning.${image.id}`} size="2xs" className="text-warning">
+                  {kvmNote}
+                </Text>
+              )}
+            </VStack>
+          )}
         </VStack>
       )}
       <HStack space="xs" className="pt-1">

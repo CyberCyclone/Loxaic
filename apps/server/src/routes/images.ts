@@ -157,7 +157,12 @@ export function imageRoutes(app: FastifyInstance) {
 
     app.get(def.prefix, async (request, reply) => {
       const { owner } = await def.resolve(request, reply);
-      return { images: await listImages(owner) };
+      const images = await listImages(owner);
+      if (def.scope !== "shared") return { images };
+      // For the KVM switch on shared images (#320): whether this server can
+      // see the device it would pass through.
+      const { kvmVisible } = await import("../sandbox/container-engine.ts");
+      return { images, kvm: { visible: kvmVisible() } };
     });
 
     app.post(def.prefix, async (request, reply) => {

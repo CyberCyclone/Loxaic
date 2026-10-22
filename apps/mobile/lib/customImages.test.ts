@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ImageChoice, SandboxImage } from '@loxaic/api-client';
-import { chooserImages, effectiveImageChoice, imageOptions, imageScreens, imageStatusLine, parseLimitsInput } from './customImages';
+import { chooserImages, effectiveImageChoice, imageOptions, imageScreens, imageStatusLine, kvmWarning, parseLimitsInput } from './customImages';
 
 const choice = (id: string, extra: Partial<ImageChoice> = {}): ImageChoice => ({
   id, scope: 'shared', label: id, reference: `docker.io/library/${id}:1`, hasGit: true, ...extra,
@@ -86,5 +86,13 @@ describe('chooserImages', () => {
   it('decides from the loaded list once it arrives', () => {
     const loaded = chooserImages({ choices: [choice('b', { hasGit: false })], failed: false, current, chosen: 'b', source: 'github' });
     expect(loaded).toMatchObject({ ready: true, chosenId: null });
+  });
+});
+
+describe('kvmWarning (#320)', () => {
+  it('warns only when the server says it cannot see /dev/kvm', () => {
+    expect(kvmWarning(false)).toContain("can't see /dev/kvm");
+    expect(kvmWarning(true)).toBeNull();
+    expect(kvmWarning(null)).toBeNull();
   });
 });

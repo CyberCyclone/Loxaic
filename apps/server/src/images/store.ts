@@ -24,10 +24,17 @@ export interface ImageLimits {
   memoryMb: number;
   cpus: number;
   pids: number;
+  /**
+   * Pass the host's `/dev/kvm` into this image's sandboxes (#320), so they can
+   * run a hardware-accelerated VM — the Android emulator. Shared images only,
+   * set by an admin, off by default; nothing else about the container changes
+   * (no capability, no other device). Absent on rows that predate it: off.
+   */
+  kvm: boolean;
 }
 
 /** Today's defaults for every sandbox (container-engine.ts's DEFAULT_LIMITS). */
-export const DEFAULT_IMAGE_LIMITS: ImageLimits = { memoryMb: 512, cpus: 1, pids: 100 };
+export const DEFAULT_IMAGE_LIMITS: ImageLimits = { memoryMb: 512, cpus: 1, pids: 100, kvm: false };
 
 /** The bounds an admin may set a shared image's limits within. */
 export const LIMIT_BOUNDS = {
@@ -104,7 +111,7 @@ export function readLimits(raw: unknown): ImageLimits | null {
   const cpus = n(v.cpus);
   const pids = n(v.pids);
   if (memoryMb === null || cpus === null || pids === null) return null;
-  return { memoryMb, cpus, pids };
+  return { memoryMb, cpus, pids, kvm: v.kvm === true };
 }
 
 export function toImageView(row: ImageRow): ImageView {
@@ -180,11 +187,13 @@ function cleanLabel(label: unknown, fallback: string): string {
   return trimmed;
 }
 
-/** Validates admin limits; throws a sentence naming the bound that failed. */
-export function parseLimits(raw: unknown): ImageLimits {
+/** Validates admin limits over `base` (the row's current ones, on an
+ * update); throws a sentence naming the bound that failed. A field left out
+ * keeps its base value, so saving the sizes never turns KVM off. */
+export function parseLimits(raw: unknown, base: ImageLimits = DEFAULT_IMAGE_LIMITS): ImageLimits {
   if (typeof raw !== "object" || raw === null) throw new ImageError("limits must be an object");
   const v = raw as Record<string, unknown>;
-  const out = { ...DEFAULT_IMAGE_LIMITS };
+  const out = { ...base };
   for (const key of ["memoryMb", "cpus", "pids"] as const) {
     if (v[key] === undefined) continue;
     const value = v[key];
@@ -194,6 +203,10 @@ export function parseLimits(raw: unknown): ImageLimits {
     }
     if (key !== "cpus" && !Number.isInteger(value)) throw new ImageError(`${key} must be a whole number.`);
     out[key] = value;
+  }
+  if (v.kvm !== undefined) {
+    if (typeof v.kvm !== "boolean") throw new ImageError("kvm must be true or false.");
+    out.kvm = v.kvm;
   }
   return out;
 }
@@ -246,7 +259,7 @@ export async function updateImage(
   if (input.label !== undefined) set.label = cleanLabel(input.label, row.reference);
   if (input.limits !== undefined) {
     if (owner !== null) throw new ImageError("Only shared images have limits.");
-    set.limits = parseLimits(input.limits);
+    set.limits = parseLimits(input.limits, readLimits(row.limits) ?? DEFAULT_IMAGE_LIMITS);
   }
   const updated = await db
     .update(sandboxImages)
