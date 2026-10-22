@@ -156,6 +156,11 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
         data={users}
         keyExtractor={(u) => u.id}
         style={{ flex: 1, minHeight: 0 }}
+        // With the search keyboard up, a row's button must act on the first
+        // tap, not spend it closing the keyboard (iOS): Reset password and
+        // the allocation both open a dialog from here.
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         renderItem={({ item }) => (
           <HStack testID={`admin.user.${item.id}`} space="sm" className="items-center border-b border-border px-4 py-3">
             <VStack className="min-w-0 flex-1">
