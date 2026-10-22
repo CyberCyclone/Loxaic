@@ -633,6 +633,18 @@
     "finalText": "[Mock] Showed the call in full."
   },
   {
+    "match": "show the hidden characters",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch rlo-note.txt && echo safe\u202etxt.exe"
+        }
+      }
+    ],
+    "finalText": "[Mock] Showed the hidden characters."
+  },
+  {
     "match": "list then touch a note",
     "steps": [
       {

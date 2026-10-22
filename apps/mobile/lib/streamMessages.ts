@@ -269,6 +269,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
           // The stale-list reminder the server appends is for the model, not
           // the person: it says nothing about the tool (@loxaic/types).
           tc.result = stripTodoReminder(b.output);
+          tc.hasResult = true;
           tc.diff = diffLinesFor(b.diff);
           // Carried through so a failed call still reads as failed after a
           // reload. Undefined on rows written before the block gained the
@@ -321,6 +322,8 @@ export function snapshotMessageToMessage(
             args: tc.args,
             // Stripped on every path a tool result arrives by (history, snapshot, live).
             result: stripTodoReminder(tc.output ?? ''),
+            // The broker sets `output` when the result arrives, and only then.
+            ...(tc.output === undefined ? {} : { hasResult: true as const }),
             diff: diffLinesFor(tc.diff),
             callId: tc.call_id,
             ok: tc.ok,
@@ -507,6 +510,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
                   ...t,
                   // Stripped on every path a tool result arrives by (history, snapshot, live).
                   result: stripTodoReminder(event.output),
+                  hasResult: true as const,
                   diff: diffLinesFor(event.diff),
                   ok: event.ok,
                   ...(event.permission ? { permission: event.permission } : {}),

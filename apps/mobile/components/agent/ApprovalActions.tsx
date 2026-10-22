@@ -4,6 +4,12 @@ import { Button, ButtonText } from '@/components/ui/button';
 import { useServerReachable } from '@/lib/connection';
 import type { PermissionBarView } from '@/lib/permissionBar';
 
+/** Whether "Allow always" is on offer: given a handler, and to this person
+ * (`permissionBarView`). One answer for the buttons and the notes. */
+export function offersAllowAlways(view: PermissionBarView, onAllowAlways: (() => void) | undefined): boolean {
+  return onAllowAlways !== undefined && view.canAllowAlways;
+}
+
 interface ApprovalActionsProps {
   view: PermissionBarView;
   /** Given only where "Allow always" may be offered at all. */
@@ -33,7 +39,7 @@ export function ApprovalActions({
 }: ApprovalActionsProps) {
   // An answer needs an open socket; until then it could only be dropped (#231).
   const disconnected = !useServerReachable();
-  const offerAlways = onAllowAlways !== undefined && view.canAllowAlways;
+  const offerAlways = offersAllowAlways(view, onAllowAlways);
   const alwaysFirst = offerAlways && view.primary === 'always';
   return (
     <HStack space="sm" className="flex-wrap items-center justify-end">

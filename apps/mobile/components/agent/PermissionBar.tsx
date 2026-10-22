@@ -3,15 +3,14 @@ import { Keyboard, Platform } from 'react-native';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Button, ButtonText } from '@/components/ui/button';
-import { ApprovalActions } from '@/components/agent/ApprovalActions';
+import { ApprovalActions, offersAllowAlways } from '@/components/agent/ApprovalActions';
+import { ApprovalNotes, ApprovalRequestLine } from '@/components/agent/ApprovalNotes';
 import { ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
-import { DeadlineCountdown } from '@/components/chat/DeadlineCountdown';
-import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import type { WaitDeadline } from '@/lib/pendingWaits';
 import { permissionBarView } from '@/lib/permissionBar';
 import { useSession } from '@/lib/session';
 import { toolSummary } from '@/lib/streamMessages';
-import { clampLines } from '@/lib/truncate';
+import { revealHidden } from '@/lib/toolDetails';
 import type { PermissionCheckNote, PermissionMode } from '@loxaic/api-client';
 
 interface PermissionBarProps {
@@ -65,13 +64,12 @@ export function PermissionBar({
 }: PermissionBarProps) {
   const { user } = useSession();
   const view = permissionBarView({ tool, mode, granterUserId, rules, check }, user?.id, selectorMode);
-  const { mcp } = view;
-  const offerAlways = onAllowAlways !== undefined && view.canAllowAlways;
+  const offerAlways = offersAllowAlways(view, onAllowAlways);
   // The bar is keyed by the question, so this starts closed for each new one.
   const [detailsOpen, setDetailsOpen] = useState(false);
   // One line of what the call does, two at most; the whole of it is a tap
-  // away in the Details sheet (#267).
-  const summary = toolSummary(tool, args);
+  // away in the Details sheet (#267). Hidden characters shown, as there.
+  const summary = revealHidden(toolSummary(tool, args));
   // On a phone the keyboard leaves about a hundred points between the header
   // and the composer, and the bar's buttons were cut off below it: a run
   // parked on a question nobody could reach the answer to. The prompt is what
@@ -95,41 +93,14 @@ export function PermissionBar({
           Sub-agent · {source}
         </Text>
       ) : null}
-      <Text testID={`${testIDBase}.summary`} size="sm" className="text-foreground" numberOfLines={2} style={clampLines(2)}>
-        {mcp ? (
-          <>
-            MCP server <Text size="sm" className="font-mono text-warning">{mcp.server}</Text> wants to run{' '}
-            <Text size="sm" className="font-mono text-warning">{mcp.tool}</Text>
-          </>
-        ) : (
-          <>
-            {source ? 'It wants' : 'Agent wants'} to run <Text size="sm" className="font-mono text-warning">{tool}</Text>
-          </>
-        )}
-        {summary === '{}' ? null : (
-          <>
-            {' — '}
-            <Text size="sm" className="font-mono text-muted-foreground">{summary}</Text>
-          </>
-        )}
-      </Text>
-      {view.modeNote ? (
-        <Text testID={`${testIDBase}.mode`} size="2xs" className="text-muted-foreground">
-          {view.modeNote}
-        </Text>
-      ) : null}
-      {view.checkNote ? (
-        <Text testID={`${testIDBase}.checkNote`} size="2xs" className="text-muted-foreground">
-          {view.checkNote}
-        </Text>
-      ) : null}
-      {offerAlways && view.note ? (
-        <Text testID={`${testIDBase}.alwaysNote`} size="2xs" className="text-muted-foreground">
-          {view.note}
-        </Text>
-      ) : null}
-      <DeadlineCountdown kind="approval" deadline={deadline} testID={`${testIDBase}.deadline`} />
-      <DisconnectedNote testID={`${testIDBase}.reconnecting`} />
+      <ApprovalRequestLine
+        testID={`${testIDBase}.summary`}
+        tool={tool}
+        view={view}
+        source={source}
+        summary={summary === '{}' ? undefined : summary}
+      />
+      <ApprovalNotes view={view} offerAlways={offerAlways} deadline={deadline} testIDBase={testIDBase} />
       <ApprovalActions
         view={view}
         onAllow={onAllow}

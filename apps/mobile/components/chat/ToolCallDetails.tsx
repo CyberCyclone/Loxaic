@@ -59,6 +59,15 @@ export function ToolCallDetails({ tool, args, argTestID, capped = false }: ToolC
             ) : (
               value
             )}
+            {field.more > 0 ? (
+              <Text
+                testID={argTestID ? `${argTestID(field.key)}.more` : undefined}
+                size="2xs"
+                className="text-warning"
+              >
+                {`… and ${field.more.toLocaleString()} more characters, not shown`}
+              </Text>
+            ) : null}
           </VStack>
         );
       })}

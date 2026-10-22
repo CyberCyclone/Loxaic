@@ -28,6 +28,7 @@ import { useSession } from '@/lib/session';
 import { ImageViewer } from '@/components/viewer/ImageViewer';
 import { CARD_VALUE_MAX_HEIGHT, ToolCallDetails } from '@/components/chat/ToolCallDetails';
 import { TRUNCATE_TEXT, WRAP_ANYWHERE } from '@/lib/truncate';
+import { revealHidden } from '@/lib/toolDetails';
 
 const TOOL_ICONS: Record<string, typeof FileText> = {
   fs_read: FileText,
@@ -78,9 +79,9 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
   // still not success. See the same note in `lib/types.ts`.
   const failed = tool.ok === false;
   const id = tool.callId;
-  // No result has come back yet: the call is waiting for approval or running.
+  // No result has come back: the call is waiting for approval or running.
   // Every way a call ends — run, refused, expired, stopped — sends a result.
-  const pending = tool.result === '' && tool.ok === undefined;
+  const pending = !tool.hasResult;
   const tint = failed
     ? 'text-destructive bg-destructive/15'
     : mcp
@@ -132,11 +133,11 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
               <>
                 {`${mcp.server} · ${mcp.tool}`}
                 {tool.summary && tool.summary !== '{}' ? (
-                  <Text size="sm" className="text-muted-foreground">{`  ${tool.summary}`}</Text>
+                  <Text size="sm" className="text-muted-foreground">{`  ${revealHidden(tool.summary)}`}</Text>
                 ) : null}
               </>
             ) : (
-              tool.summary
+              revealHidden(tool.summary)
             )}
           </Text>
           {tool.duration && (

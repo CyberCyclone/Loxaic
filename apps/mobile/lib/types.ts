@@ -94,6 +94,11 @@ export interface ToolCall {
    * design fixtures. */
   args?: Record<string, unknown>
   result: string
+  /** A result came back — on all three paths, whatever it says. `result`
+   * cannot tell: a command that prints nothing has an empty one, and `ok` is
+   * absent on rows that predate it. Absent: the call is waiting for approval
+   * or running, or its result was never written. */
+  hasResult?: true
   duration?: string
   diff?: DiffLine[]
   /** call_id from the agent protocol — used to join a later tool_result while streaming. Not from the design source. */

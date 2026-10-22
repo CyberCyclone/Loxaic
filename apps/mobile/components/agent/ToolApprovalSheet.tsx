@@ -4,10 +4,9 @@ import { ShieldAlert } from 'lucide-react-native';
 import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
 import { ReviewSheet } from '@/components/agent/ReviewSheet';
-import { ApprovalActions } from '@/components/agent/ApprovalActions';
+import { ApprovalActions, offersAllowAlways } from '@/components/agent/ApprovalActions';
+import { ApprovalNotes, ApprovalRequestLine } from '@/components/agent/ApprovalNotes';
 import { ToolCallDetails } from '@/components/chat/ToolCallDetails';
-import { DeadlineCountdown } from '@/components/chat/DeadlineCountdown';
-import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { permissionBarView } from '@/lib/permissionBar';
 import { useSession } from '@/lib/session';
 import type { WaitDeadline } from '@/lib/pendingWaits';
@@ -82,7 +81,7 @@ export function ToolApprovalSheet({
 }: ToolApprovalSheetProps) {
   const { user } = useSession();
   const view = permissionBarView({ tool, mode, granterUserId, rules, check }, user?.id, selectorMode);
-  const offerAlways = onAllowAlways !== undefined && view.canAllowAlways;
+  const offerAlways = offersAllowAlways(view, onAllowAlways);
   // See PermissionBar: the request is what needs attention, and the keyboard
   // would cover the answers. Not on the web, where it would take focus from
   // someone typing.
@@ -125,16 +124,7 @@ export function ToolApprovalSheet({
             Sub-agent · {source}
           </Text>
         ) : null}
-        {view.mcp ? (
-          <Text size="sm" className="text-foreground">
-            MCP server <Text size="sm" className="font-mono text-warning">{view.mcp.server}</Text> wants to run{' '}
-            <Text size="sm" className="font-mono text-warning">{view.mcp.tool}</Text>
-          </Text>
-        ) : (
-          <Text size="sm" className="text-foreground">
-            {source ? 'It wants' : 'Agent wants'} to run <Text size="sm" className="font-mono text-warning">{tool}</Text>
-          </Text>
-        )}
+        <ApprovalRequestLine tool={tool} view={view} source={source} />
         {reason !== undefined ? (
           <VStack space="xs">
             <Text size="2xs" className="uppercase text-muted-foreground">
@@ -146,23 +136,7 @@ export function ToolApprovalSheet({
           </VStack>
         ) : null}
         <ToolCallDetails tool={tool} args={args} argTestID={(key) => `${testIDBase}.arg.${key}`} />
-        {view.modeNote ? (
-          <Text testID={`${testIDBase}.mode`} size="2xs" className="text-muted-foreground">
-            {view.modeNote}
-          </Text>
-        ) : null}
-        {view.checkNote ? (
-          <Text testID={`${testIDBase}.checkNote`} size="xs" className="text-muted-foreground">
-            {view.checkNote}
-          </Text>
-        ) : null}
-        {offerAlways && view.note ? (
-          <Text testID={`${testIDBase}.alwaysNote`} size="2xs" className="text-muted-foreground">
-            {view.note}
-          </Text>
-        ) : null}
-        <DeadlineCountdown kind="approval" deadline={deadline} testID={`${testIDBase}.deadline`} />
-        <DisconnectedNote testID={`${testIDBase}.reconnecting`} />
+        <ApprovalNotes view={view} offerAlways={offerAlways} deadline={deadline} testIDBase={testIDBase} />
       </VStack>
     </ReviewSheet>
   );

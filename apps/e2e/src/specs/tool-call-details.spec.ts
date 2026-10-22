@@ -8,7 +8,10 @@
  * - The agent's permission bar keeps one line of the call; its Details pulls
  *   up a sheet with the whole of it and the same answers.
  * - Chat's request is that sheet, opened by itself, which only an answer
- *   ends: a tap on the backdrop leaves it up.
+ *   ends: a tap on the backdrop leaves it up. It waits for an overlay that
+ *   is already open (Settings) rather than stacking on it.
+ * - A character that changes what is displayed (a right-to-left override)
+ *   is shown as an escape, on the bar and in the sheet.
  *
  * The command is a scenario (fixtures/scenarios.json) longer than the bar's
  * line, ending in a marker only the full command contains.
@@ -30,10 +33,13 @@ import {
   TOOL_PROMPT,
   getToolCalls,
   goToSurface,
+  listConversations,
+  openSettings,
   sendInNewRun,
   sendMessage,
   signUp,
   startNewAgentRun,
+  startNewThread,
   tapOverlayBackdrop,
   waitForRunDone,
 } from '../helpers/app.ts';
@@ -43,6 +49,10 @@ const PROMPT = 'show the call in full';
  * one line stops. */
 const TAIL = 'echo tail-of-a-long-command-for-267';
 const OUTPUT_TAIL = 'tail-of-a-long-command-for-267';
+/** Its command ends in U+202E, which would show "exe.txt" reversed. */
+const HIDDEN_PROMPT = 'show the hidden characters';
+/** The mock waits eight seconds before asking: time to open Settings. */
+const SLOW_TOOL_PROMPT = `take your time and ${TOOL_PROMPT}`;
 
 describe('tool call details', () => {
   const creds = uniqueCreds();
@@ -136,6 +146,52 @@ describe('tool call details', () => {
     expect(await isVisible('chat.approval.allowOnce')).toBe(true);
 
     await tap('chat.approval.allowOnce');
+    await waitForAbsent('chat.approval.panel', 20_000);
+  });
+
+  it('shows a character that changes what is displayed as an escape', async function () {
+    this.timeout(3 * 60_000);
+    await goToSurface('agent');
+    await startNewAgentRun();
+    await tap('agent.mode.manual');
+    await sendInNewRun(creds, HIDDEN_PROMPT);
+    await waitForVisible('agent.permission.bar', 60_000);
+    await waitForFreshText('agent.permission.summary', 'safe\\u202etxt.exe');
+    await tap('agent.permission.details');
+    await waitForFreshText('agent.permission.sheet.arg.command', 'echo safe\\u202etxt.exe');
+    await shot('tool-details-hidden-character');
+    await tap('agent.permission.sheet.deny');
+    await waitForAbsent('agent.permission.bar');
+  });
+
+  it("holds chat's request while Settings is open, then shows it", async function () {
+    this.timeout(3 * 60_000);
+    await goToSurface('chat');
+    // A send goes into the open thread: the case before left one open.
+    await startNewThread('chat');
+    const before = new Set((await listConversations(creds)).map((c) => c.id));
+    await sendMessage(SLOW_TOOL_PROMPT);
+    await openSettings();
+    await waitForVisible('settings.close');
+
+    // The request has arrived, and the call is stored, while Settings is up.
+    let conversationId = '';
+    await browser.waitUntil(
+      async () => {
+        conversationId = (await listConversations(creds)).find((c) => c.kind === 'chat' && !before.has(c.id))?.id ?? '';
+        return conversationId !== '' && (await getToolCalls(creds, conversationId)).some((c) => c.tool === 'fs_write');
+      },
+      { timeout: 60_000, timeoutMsg: 'the fs_write call never arrived' },
+    );
+    await browser.pause(1_500);
+    expect(await isVisible('chat.approval.panel')).toBe(false);
+    expect(await isVisible('settings.close')).toBe(true);
+    await shot('tool-details-chat-held-under-settings');
+
+    await tap('settings.close');
+    await waitForVisible('chat.approval.panel', 20_000);
+    await waitForFreshText('chat.approval.arg.path', 'notes.txt');
+    await tap('chat.approval.reject');
     await waitForAbsent('chat.approval.panel', 20_000);
   });
 });

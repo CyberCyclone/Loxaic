@@ -16,7 +16,8 @@ import { MessageList } from '@/components/chat/MessageList';
 import { PromptSuggestions } from '@/components/chat/PromptSuggestions';
 import { CHAT_APPROVAL_IDS, ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
-import { checkinKey } from '@/lib/pendingWaits';
+import { approvalKey, checkinKey } from '@/lib/pendingWaits';
+import { useOverlayGone } from '@/hooks/useOverlayGone';
 import { Composer } from '@/components/composer/Composer';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useSkills } from '@/hooks/useSkills';
@@ -189,6 +190,22 @@ export default function ChatScreen() {
   const approvalReason = pendingApproval
     ? activeConv?.msgs.find((m) => m.tools?.some((t) => t.callId === pendingApproval.callId))?.text
     : undefined;
+  // The approval opens by itself, so it waits for whatever is open over the
+  // screen — this one's dialogs and sheets, the composer's `+`, the shell's
+  // Settings — to close and leave: overlays never stack, and on iOS one put
+  // over another is never presented, so the request would sit unseen until
+  // its deadline refused it. The thread list still says "Awaiting approval".
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  const overlayGone = useOverlayGone(
+    modelModalOpen ||
+      sharingId !== null ||
+      deletingId !== null ||
+      noRoom !== null ||
+      rewind.dialog !== null ||
+      stages.dialog !== null ||
+      plusMenuOpen ||
+      shell.overlayOpen,
+  );
 
   const handleRunCommand = useCallback(
     (name: string, args: string) => {
@@ -325,6 +342,7 @@ export default function ChatScreen() {
           />
         )}
         <Composer
+          onMenuOpenChange={setPlusMenuOpen}
           onSend={(text, attachments) => {
             // Reordered locally the moment the send happens, so reopening the
             // picker is already right rather than a turn behind. The server
@@ -369,8 +387,11 @@ export default function ChatScreen() {
         </>
       )}
 
-      {pendingApproval && (
+      {pendingApproval && overlayGone && (
         <ToolApprovalSheet
+          // A new question is a new sheet: re-rendering one in place could
+          // carry a tap meant for the last request onto the next.
+          key={approvalKey(pendingApproval)}
           open
           testIDBase="chat.approval"
           ids={CHAT_APPROVAL_IDS}

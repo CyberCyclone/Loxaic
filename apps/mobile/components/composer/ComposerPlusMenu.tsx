@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ScrollView, useWindowDimensions } from 'react-native';
 import { Brain, Camera, Check, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Layers, Plug, Plus } from 'lucide-react-native';
 import type { ModelThinking, ThinkingLevel } from '@loxaic/types';
@@ -54,6 +54,9 @@ export interface ComposerPlusMenuProps {
    * are saved on the server, so there is nothing to do while it is
    * unreachable. */
   disabled?: boolean;
+  /** Told when the menu opens and closes, so an overlay that opens by itself
+   * (chat's tool approval) can wait for it rather than stack on it. */
+  onOpenChange?: (open: boolean) => void;
 }
 
 /**
@@ -73,8 +76,10 @@ export function ComposerPlusMenu({
   contextSettings = null,
   thinking = null,
   disabled = false,
+  onOpenChange,
 }: ComposerPlusMenuProps) {
   const [open, setOpen] = useState(false);
+  useEffect(() => { onOpenChange?.(open); }, [open, onOpenChange]);
   const [page, setPage] = useState<PlusMenuPage>('main');
   const shown = plusMenuPage(page, { thinking: Boolean(thinking?.capability), mcp: mcp !== null });
   const { height } = useWindowDimensions();

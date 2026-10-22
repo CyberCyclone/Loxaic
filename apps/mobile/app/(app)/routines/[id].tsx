@@ -17,7 +17,8 @@ import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
 import { CHAT_APPROVAL_IDS, ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
-import { checkinKey } from '@/lib/pendingWaits';
+import { approvalKey, checkinKey } from '@/lib/pendingWaits';
+import { useOverlayGone } from '@/hooks/useOverlayGone';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { RewindModal } from '@/components/chat/RewindModal';
@@ -185,7 +186,7 @@ export default function RoutineChatScreen() {
   // still leaving). So a sheet gives way to the run's own approval, and the
   // approval waits until the sheet has gone.
   const sheetOpen = subAgents.listOpen || subAgents.panel.view !== null;
-  const [sheetGone, setSheetGone] = useState(true);
+  const sheetGone = useOverlayGone(sheetOpen);
   const closeSubAgentPanel = subAgents.panel.close;
   const closeSubAgentList = subAgents.closeList;
   useEffect(() => {
@@ -194,14 +195,6 @@ export default function RoutineChatScreen() {
       closeSubAgentList();
     }
   }, [pendingApproval, sheetOpen, closeSubAgentPanel, closeSubAgentList]);
-  useEffect(() => {
-    if (sheetOpen) {
-      setSheetGone(false);
-      return;
-    }
-    const timer = setTimeout(() => { setSheetGone(true); }, 300);
-    return () => { clearTimeout(timer); };
-  }, [sheetOpen]);
   // A routine's chats exist only because a run made them, so there is never
   // a first send to carry choices on: every switch here is a PATCH.
   const mcp = useMcpSwitches(token, activeConv?.id ?? null, 'routine');
@@ -560,6 +553,7 @@ export default function RoutineChatScreen() {
 
       {pendingApproval && sheetGone && (
         <ToolApprovalSheet
+          key={approvalKey(pendingApproval)}
           open
           testIDBase="chat.approval"
           ids={CHAT_APPROVAL_IDS}
@@ -582,6 +576,7 @@ export default function RoutineChatScreen() {
           is in the panel's footer then — and not over the list. */}
       {childApproval?.approval && sheetGone && !sheetOpen && (
         <ToolApprovalSheet
+          key={approvalKey(childApproval.approval)}
           open
           testIDBase="chat.approval"
           ids={CHAT_APPROVAL_IDS}
