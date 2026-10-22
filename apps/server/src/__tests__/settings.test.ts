@@ -373,26 +373,30 @@ describe("updateSandboxSettings persistence", () => {
   beforeEach(() => { __setSandboxApplyForTest(false); });
   afterEach(() => { __setSandboxApplyForTest(true); });
 
-  it("writes the full resolved object and returns the new view", async () => {
+  it("stores the patched fields and returns the new view", async () => {
     const view = await updateSandboxSettings({ mode: "container", allowNetwork: false });
 
     expect(view.mode).toBe("container");
     expect(view.allowNetwork).toBe(false);
 
     const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
-    // Every field is stored, not just the patched ones, so a later read
-    // doesn't depend on defaults drifting.
-    expect(row?.value).toEqual({
-      mode: "container",
-      engine: "auto",
-      customSocket: null,
-      allowNetwork: false,
-      idleStopMs: 4 * 60 * 60 * 1000,
-      reapEnabled: true,
-      reapAfterMs: 30 * 24 * 60 * 60 * 1000,
-      customImages: "off",
-      allocation: { memoryMb: 2560, cpus: 5, maxRunning: 5 },
-    });
+    expect(row?.value).toEqual({ mode: "container", allowNetwork: false });
+  });
+
+  it("merges in the database, so a field this process never read survives (#254)", async () => {
+    await updateSandboxSettings({ mode: "container" });
+    // Another replica's writes, which this process's cache has not seen.
+    await db
+      .update(serverSettings)
+      .set({ value: { mode: "container", allowNetwork: true, allocation: { cpus: 3 } } })
+      .where(eq(serverSettings.key, SANDBOX_KEY));
+
+    const view = await updateSandboxSettings({ allocation: { memoryMb: 4096 } });
+
+    expect(view.allowNetwork).toBe(true);
+    expect(view.allocation).toEqual({ memoryMb: 4096, cpus: 3, maxRunning: 5 });
+    const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
+    expect(row?.value).toEqual({ mode: "container", allowNetwork: true, allocation: { memoryMb: 4096, cpus: 3 } });
   });
 
   it("merges an allocation patch into the stored one, field by field (#254)", async () => {
@@ -400,7 +404,7 @@ describe("updateSandboxSettings persistence", () => {
     const view = await updateSandboxSettings({ allocation: { cpus: 2.5 } });
     expect(view.allocation).toEqual({ memoryMb: 8192, cpus: 2.5, maxRunning: 5 });
     const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
-    expect((row?.value as { allocation: unknown }).allocation).toEqual({ memoryMb: 8192, cpus: 2.5, maxRunning: 5 });
+    expect((row?.value as { allocation: unknown }).allocation).toEqual({ memoryMb: 8192, cpus: 2.5 });
   });
 
   it("upserts rather than duplicating the row", async () => {

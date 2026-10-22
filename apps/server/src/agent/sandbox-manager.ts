@@ -13,9 +13,11 @@ import { getSandboxRetention, getSandboxSettings, type SandboxAllocation } from 
 import {
   allocationDecision,
   allocationFor,
+  addNeed,
   allocationMessage,
   DEFAULT_NEED,
   rowNeed,
+  usageOf,
   type AllocationReason,
   type AllocationUsage,
   type SandboxNeed,
@@ -147,18 +149,8 @@ export async function attachRunningSandbox(row: {
   if (!handle) return null;
   // Waking a paused sandbox is the transition the per-user cap guards — it is
   // what makes one *running* again — so the cap applies here exactly as it
-  // does in createEntry. A row with no owner in hand cannot be counted, and
-  // executor sandboxes hold nothing this server pays for.
-  const capOwner = row.status === "stopped" && row.provider !== "executor" ? row.ownerId : undefined;
-  const release = capOwner !== undefined ? await reserveSandbox(capOwner, rowNeed(row)) : undefined;
-  let resumed: boolean;
-  try {
-    resumed = await resume(handle);
-    if (resumed) await markRunning(row.id);
-  } finally {
-    release?.();
-  }
-  if (!resumed) {
+  // does in createEntry. A row with no owner in hand cannot be counted.
+  if (!(await wake(handle, row))) {
     await markDestroyed(row.id);
     return null;
   }
@@ -287,13 +279,14 @@ const reserved = new Map<string, Set<SandboxNeed>>();
 
 function reservedUsage(userId: string): AllocationUsage {
   const usage: AllocationUsage = { running: 0, memoryMb: 0, cpus: 0 };
-  for (const need of reserved.get(userId) ?? []) {
-    usage.running++;
-    usage.memoryMb += need.memoryMb;
-    usage.cpus += need.cpus;
-  }
+  for (const need of reserved.get(userId) ?? []) addNeed(usage, need);
   return usage;
 }
+
+/** Each user's reservations are decided one at a time: between reading the
+ * rows and adding its own reservation, a check must not interleave with
+ * another of the same user's. */
+const reserving = new Map<string, Promise<unknown>>();
 
 /**
  * What a user's running sandboxes hold, from their rows. Executor sandboxes
@@ -302,15 +295,7 @@ function reservedUsage(userId: string): AllocationUsage {
  */
 export async function runningUsage(userId: string, exceptRowId?: string): Promise<AllocationUsage> {
   const rows = await runningRowsFor(userId);
-  const usage: AllocationUsage = { running: 0, memoryMb: 0, cpus: 0 };
-  for (const row of rows) {
-    if (row.id === exceptRowId) continue;
-    const need = rowNeed(row);
-    usage.running++;
-    usage.memoryMb += need.memoryMb;
-    usage.cpus += need.cpus;
-  }
-  return usage;
+  return usageOf(rows.filter((row) => row.id !== exceptRowId));
 }
 
 function sum(a: AllocationUsage, b: AllocationUsage): AllocationUsage {
@@ -335,17 +320,31 @@ function sum(a: AllocationUsage, b: AllocationUsage): AllocationUsage {
  * `createEntry` reconciles exactly one conversation's row. Counting them meant
  * telling a user to pause something that no longer exists.
  */
-export async function reserveSandbox(
-  userId: string,
-  need: SandboxNeed,
-  exceptRowId?: string,
-): Promise<() => void> {
+export function reserveSandbox(userId: string, need: SandboxNeed, exceptRowId?: string): Promise<() => void> {
+  const run = (reserving.get(userId) ?? Promise.resolve()).then(() => reserveNow(userId, need, exceptRowId));
+  const tail = run.catch(() => undefined);
+  reserving.set(userId, tail);
+  void tail.then(() => {
+    if (reserving.get(userId) === tail) reserving.delete(userId);
+  });
+  return run;
+}
+
+async function reserveNow(userId: string, need: SandboxNeed, exceptRowId?: string): Promise<() => void> {
   const { allocation } = await allocationFor(userId);
-  let used = sum(await runningUsage(userId, exceptRowId), reservedUsage(userId));
+  // The reservations are read *before* the rows. A start that finishes during
+  // the row read releases its reservation once its row says `running`; read
+  // after, it could be in neither count. Read before, it is in at least one
+  // (or both, which only errs towards refusing).
+  const measure = async () => {
+    const held = reservedUsage(userId);
+    return sum(await runningUsage(userId, exceptRowId), held);
+  };
+  let used = await measure();
   let decision = allocationDecision(used, need, allocation);
   if (!decision.ok && decision.reason !== "too_big") {
     await markDeadRowsDestroyed(await runningRowsFor(userId));
-    used = sum(await runningUsage(userId, exceptRowId), reservedUsage(userId));
+    used = await measure();
     decision = allocationDecision(used, need, allocation);
   }
   if (!decision.ok) throw new SandboxLimitError(decision.reason, used, need, allocation);
@@ -375,10 +374,23 @@ export function configNeed(kind: SandboxKind, config: CreateSandboxConfig): Sand
 }
 
 async function runningRowsFor(userId: string) {
+  return runningRowsForUsers([userId]);
+}
+
+/** The running rows an allocation counts, for several users in one query
+ * (the admin's user list). */
+export async function runningRowsForUsers(userIds: string[]) {
+  if (userIds.length === 0) return [];
   return db
-    .select({ id: sandboxes.id, containerId: sandboxes.containerId, provider: sandboxes.provider, limits: sandboxes.limits })
+    .select({
+      id: sandboxes.id,
+      ownerId: sandboxes.ownerId,
+      containerId: sandboxes.containerId,
+      provider: sandboxes.provider,
+      limits: sandboxes.limits,
+    })
     .from(sandboxes)
-    .where(and(eq(sandboxes.ownerId, userId), eq(sandboxes.status, "running"), ne(sandboxes.provider, "executor")));
+    .where(and(inArray(sandboxes.ownerId, userIds), eq(sandboxes.status, "running"), ne(sandboxes.provider, "executor")));
 }
 
 /**
@@ -474,18 +486,7 @@ async function createEntry(
     // is what makes one *running* again — so it is checked here as well as on
     // creation. Without this the cap was defeatable by cycling: pause N
     // sandboxes, create N more, then resume the first N.
-    const wakes = existing.status === "stopped" && provider.kind !== "executor";
-    const release = wakes ? await reserveSandbox(ownerId, rowNeed(existing)) : undefined;
-    let resumed: boolean;
-    try {
-      resumed = await resume(handle);
-      // Inside the reservation: released before the row said `running`, the
-      // room would be free twice for a moment.
-      if (resumed) await markRunning(existing.id);
-    } finally {
-      release?.();
-    }
-    if (resumed) {
+    if (await wake(handle, existing)) {
       const entry: Entry = { rowId: existing.id, provider: provider.kind, ref: existing.containerId, lastUsedAt: Date.now() };
       active.set(conversationId, entry);
       return entry;
@@ -512,20 +513,44 @@ async function createEntry(
   //
   // Not for executor sandboxes: those run on the user's own machine and
   // cost this server nothing to hold open.
-  // Configured before reserving: what it reserves is this sandbox's own
-  // limits, which a shared image (#253) can set well above the default.
-  const config = await createConfigFor(ownerId, conversationId, workspace, provider.kind);
   if (provider.kind === "executor") {
-    return createEntryReserved(provider, ownerId, conversationId, config);
+    return createEntryReserved(provider, ownerId, conversationId, await createConfigFor(ownerId, conversationId, workspace, provider.kind));
   }
   // Counted against the owner, whose row this becomes — the same id the
-  // resume path above reserves against, so the two agree.
-  const release = await reserveSandbox(ownerId, configNeed(provider.kind, config));
+  // resume path above reserves against, so the two agree. Reserved before the
+  // config is built (the GitHub connection, the image's policy checks), so a
+  // refused start does none of that work, and a refusal is what it reports.
+  let need = await workspaceNeed(workspace, provider.kind);
+  let release = await reserveSandbox(ownerId, need);
   try {
+    const config = await createConfigFor(ownerId, conversationId, workspace, provider.kind);
+    // The image's limits can change between the two reads; what is reserved
+    // has to be what the container gets.
+    const actual = configNeed(provider.kind, config);
+    if (actual.memoryMb !== need.memoryMb || actual.cpus !== need.cpus) {
+      release();
+      need = actual;
+      release = await reserveSandbox(ownerId, need);
+    }
     return await createEntryReserved(provider, ownerId, conversationId, config);
   } finally {
     release();
   }
+}
+
+/**
+ * What a sandbox for this workspace will hold, from its image's row alone:
+ * the reservation's estimate before createConfigFor's checks run. Anything
+ * the estimate cannot read falls back to the default, and the config step
+ * reports the real problem.
+ */
+async function workspaceNeed(workspace: Workspace, kind: SandboxKind): Promise<SandboxNeed> {
+  if (kind !== "container") return { memoryMb: 0, cpus: 0 };
+  if (workspace.kind === "local" || !workspace.image) return DEFAULT_NEED;
+  const { findImage, readLimits } = await import("../images/store.ts");
+  const row = await findImage(workspace.image.id).catch(() => null);
+  const limits = row?.ownerId === null ? readLimits(row.limits) : null;
+  return limits ? { memoryMb: limits.memoryMb, cpus: limits.cpus } : DEFAULT_NEED;
 }
 
 /**
@@ -853,12 +878,60 @@ async function resume(handle: SandboxHandle): Promise<boolean> {
   }
 }
 
+/**
+ * Starts a sandbox's container and records it running, inside its owner's
+ * allocation (#254). False when the container is gone.
+ *
+ * A row read as `stopped` is a wake: reserved first, and the reservation held
+ * until the row says `running`, or the room would be free twice for a moment.
+ * A row read as `running` is already counted, unless a Pause landed between
+ * that read and this start; the conditional write below notices, and the
+ * start becomes a wake like any other. Should recording it fail, a container
+ * this call woke is stopped again: running with a `stopped` row, nothing
+ * would ever count it.
+ */
+async function wake(
+  handle: SandboxHandle,
+  row: { id: string; provider: string; status?: string; ownerId?: string; limits?: unknown },
+): Promise<boolean> {
+  // Executor sandboxes hold nothing this server pays for.
+  const owner = row.provider !== "executor" ? row.ownerId : undefined;
+  let release = owner !== undefined && row.status === "stopped" ? await reserveSandbox(owner, rowNeed(row)) : undefined;
+  try {
+    if (!(await resume(handle))) return false;
+    try {
+      if (!release && owner !== undefined) {
+        if (await touchRunning(row.id)) return true;
+        release = await reserveSandbox(owner, rowNeed(row));
+      }
+      await markRunning(row.id);
+    } catch (err) {
+      if (release) await handle.stop().catch(() => undefined);
+      throw err;
+    }
+    return true;
+  } finally {
+    release?.();
+  }
+}
+
+/** Records a use of a row still `running`; false when it no longer is. */
+async function touchRunning(rowId: string): Promise<boolean> {
+  const rows = await db
+    .update(sandboxes)
+    .set({ lastUsedAt: new Date() })
+    .where(and(eq(sandboxes.id, rowId), eq(sandboxes.status, "running")))
+    .returning({ id: sandboxes.id });
+  return rows.length > 0;
+}
+
+/** Not swallowed: a row that does not say `running` is a sandbox the
+ * allocation cannot see, so the caller has to know the write failed. */
 async function markRunning(rowId: string): Promise<void> {
   await db
     .update(sandboxes)
     .set({ status: "running", stoppedAt: null, lastUsedAt: new Date() })
-    .where(eq(sandboxes.id, rowId))
-    .catch(() => undefined);
+    .where(eq(sandboxes.id, rowId));
 }
 
 /** Records a sandbox as paused-but-intact. `lastUsedAt` is written here from
@@ -951,13 +1024,34 @@ export async function pauseSandbox(row: {
   const entry = row.conversationId ? active.get(row.conversationId) : undefined;
   const mine = entry?.rowId === row.id ? entry : undefined;
   const provider = await getProviderByKind(row.provider as SandboxKind);
-  const handle = await provider.attach(row.containerId).catch(() => null);
   // Not swallowed, unlike the idle timer's: a person pressed Pause, and an
   // engine that did not answer must not be reported as room freed.
-  await handle?.stop();
-  if (mine && row.conversationId) active.delete(row.conversationId);
+  const handle = await provider.attach(row.containerId);
+  // The row first, and only from `running`. The terminal, files and git
+  // routes wake a sandbox without the conversation's claim; one that read
+  // `running` before this and starts the container after it finds the row
+  // `stopped` (wake()'s conditional write), and counts itself as a wake.
+  // Stopping first and marking after would let that start land in between
+  // and leave a running container behind a `stopped` row.
+  const marked = await db
+    .update(sandboxes)
+    .set({
+      status: "stopped",
+      stoppedAt: new Date(),
+      ...(mine ? { lastUsedAt: new Date(mine.lastUsedAt) } : {}),
+    })
+    .where(and(eq(sandboxes.id, row.id), eq(sandboxes.status, "running")))
+    .returning({ id: sandboxes.id });
+  if (marked.length === 0) return;
+  if (mine && row.conversationId && active.get(row.conversationId) === mine) active.delete(row.conversationId);
   forgetOverflowWrites(row.containerId);
-  await markStopped(row.id, mine?.lastUsedAt);
+  try {
+    await handle.stop();
+  } catch (err) {
+    // Still running: say so again, or the allocation stops counting it.
+    await markRunning(row.id).catch(() => undefined);
+    throw err;
+  }
 }
 
 /**

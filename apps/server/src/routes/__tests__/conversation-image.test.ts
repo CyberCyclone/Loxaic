@@ -22,6 +22,10 @@ vi.mock("../../auth/middleware", () => ({
 const { conversationRoutes } = await import("../conversations.ts");
 const { claimConversation, unregisterRun } = await import("../../streams/registry.ts");
 const { watchConversationEvents } = await import("../../streams/watchers.ts");
+const { destroyConversationSandboxes, getConversationSandbox } = await import("../../agent/sandbox-manager.ts");
+const { clearAllocationOverride, setAllocationOverride } = await import("../../agent/allocation.ts");
+const { sandboxImageReady } = await import("../../sandbox/__tests__/docker-available.ts");
+const dockerReady = await sandboxImageReady();
 
 const owner = `img-owner-${randomUUID()}`;
 const editor = `img-editor-${randomUUID()}`;
@@ -163,4 +167,28 @@ describe("changing a conversation's image", () => {
     const after = await db.query.sandboxes.findFirst({ where: eq(sandboxes.id, row.id) });
     expect(after?.status).toBe("running");
   });
+
+  it.skipIf(!dockerReady)("answers a move the owner's allocation refuses with a 429 and the numbers (#254)", async () => {
+    const image = await readyImage(null, "Shared");
+    const id = await conversation("agent");
+    try {
+      await getConversationSandbox(owner, id);
+      // Smaller than one default sandbox: the new container cannot fit.
+      await setAllocationOverride(owner, { memoryMb: 256 });
+      const res = await post(owner, id, { id: image.id });
+      expect(res.statusCode).toBe(429);
+      expect(res.json()).toMatchObject({
+        code: "sandbox_allocation",
+        reason: "too_big",
+        allocation: { memoryMb: 256 },
+        error: expect.stringMatching(/^The image was not changed: /) as unknown,
+      });
+      expect(await workspaceOf(id)).toBeNull();
+      const row = await db.query.sandboxes.findFirst({ where: eq(sandboxes.conversationId, id) });
+      expect(row?.status).toBe("running");
+    } finally {
+      await clearAllocationOverride(owner);
+      await destroyConversationSandboxes(id);
+    }
+  }, 120_000);
 });

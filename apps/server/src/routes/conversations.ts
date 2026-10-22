@@ -9,7 +9,8 @@ import { deleteConversation } from "../conversations/delete.ts";
 import { isRewindScope, previewRewind, rewindConversation, RewindError } from "../conversations/rewind.ts";
 import { claimConversation, ConversationBusyError, unregisterRun } from "../streams/registry.ts";
 import { announceConversationEvent } from "../streams/watchers.ts";
-import { replaceConversationSandbox } from "../agent/sandbox-manager.ts";
+import { replaceConversationSandbox, SandboxLimitError } from "../agent/sandbox-manager.ts";
+import { sandboxLimitBody } from "./errors.ts";
 import { randomUUID } from "node:crypto";
 import { NotFoundError } from "../streams/authz.ts";
 import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
@@ -313,6 +314,11 @@ export function conversationRoutes(app: FastifyInstance) {
     try {
       await replaceConversationSandbox(conversationId, next, claim.abort.signal);
     } catch (err) {
+      // With the numbers, so the client can offer the Sandboxes screen (#254).
+      if (err instanceof SandboxLimitError) {
+        reply.code(429);
+        return { ...sandboxLimitBody(err), error: `The image was not changed: ${err.message}` };
+      }
       reply.code(409);
       return { error: `The image was not changed: ${err instanceof Error ? err.message : String(err)}` };
     } finally {

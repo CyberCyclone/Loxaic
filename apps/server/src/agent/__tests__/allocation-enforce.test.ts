@@ -9,6 +9,7 @@ import { db, eq } from "@loxaic/db";
 import { conversations, messages, sandboxes, usageRecords, user } from "@loxaic/db/schema";
 import type { ContentBlock } from "@loxaic/types";
 import {
+  attachRunningSandbox,
   getConversationSandbox,
   reserveSandbox,
   SandboxLimitError,
@@ -41,6 +42,8 @@ const { adminUserRoutes } = await import("../../routes/admin-users.ts");
 const { installApiErrorHandler } = await import("../../routes/errors.ts");
 
 const userId = `test-allocation-enforce-${uuid()}`;
+/** Someone else, whose conversation a row of `userId`'s can name. */
+const otherId = `test-allocation-other-${uuid()}`;
 let root: string;
 const app = Fastify();
 
@@ -53,6 +56,14 @@ beforeAll(async () => {
     createdAt: new Date(),
     updatedAt: new Date(),
   });
+  await db.insert(user).values({
+    id: otherId,
+    name: "Allocation Other",
+    email: `${otherId}@example.test`,
+    emailVerified: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
   installApiErrorHandler(app);
   sandboxRoutes(app);
   adminUserRoutes(app);
@@ -61,13 +72,15 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
-  const convs = await db.select({ id: conversations.id }).from(conversations).where(eq(conversations.ownerId, userId));
-  for (const { id } of convs) {
-    await db.delete(messages).where(eq(messages.conversationId, id));
-    await db.delete(usageRecords).where(eq(usageRecords.conversationId, id));
+  for (const owner of [userId, otherId]) {
+    const convs = await db.select({ id: conversations.id }).from(conversations).where(eq(conversations.ownerId, owner));
+    for (const { id } of convs) {
+      await db.delete(messages).where(eq(messages.conversationId, id));
+      await db.delete(usageRecords).where(eq(usageRecords.conversationId, id));
+    }
+    await db.delete(conversations).where(eq(conversations.ownerId, owner));
+    await db.delete(user).where(eq(user.id, owner));
   }
-  await db.delete(conversations).where(eq(conversations.ownerId, userId));
-  await db.delete(user).where(eq(user.id, userId));
 });
 
 beforeEach(() => {
@@ -90,11 +103,8 @@ afterEach(async () => {
   await db.delete(sandboxes).where(eq(sandboxes.ownerId, userId));
 });
 
-async function newConversation(): Promise<string> {
-  const [row] = await db
-    .insert(conversations)
-    .values({ ownerId: userId, title: "Allocation", kind: "agent" })
-    .returning();
+async function newConversation(ownerId = userId, title = "Allocation"): Promise<string> {
+  const [row] = await db.insert(conversations).values({ ownerId, title, kind: "agent" }).returning();
   return row.id;
 }
 
@@ -134,6 +144,56 @@ describe("starting and waking sandboxes", () => {
     expect((await rowFor(first))?.status).toBe("stopped");
   });
 
+  it("counts a wake that read the row as running but found it paused, and refuses it when full", async () => {
+    // A terminal or files route read the row as `running`, then a Pause
+    // landed before its start: the start is a wake, not a free one.
+    await setAllocationOverride(userId, { maxRunning: 1 });
+    const first = await newConversation();
+    await getConversationSandbox(userId, first);
+    await stopIdleSandboxes(Date.now() + 5 * 60 * 60 * 1000, "host");
+    await getConversationSandbox(userId, await newConversation());
+    const row = await rowFor(first);
+    if (!row) throw new Error("no row");
+
+    await refusal(attachRunningSandbox({ ...row, status: "running" }));
+    expect((await rowFor(first))?.status).toBe("stopped");
+  });
+
+  it("fails a wake whose row could not be marked running, and keeps nothing reserved", async () => {
+    await setAllocationOverride(userId, { maxRunning: 1 });
+    const conv = await newConversation();
+    await getConversationSandbox(userId, conv);
+    await stopIdleSandboxes(Date.now() + 5 * 60 * 60 * 1000, "host");
+    const row = await rowFor(conv);
+    if (!row) throw new Error("no row");
+
+    // Not a uuid, so the write itself fails.
+    await expect(attachRunningSandbox({ ...row, id: "not-a-uuid" })).rejects.toThrow();
+    const release = await reserveSandbox(userId, { memoryMb: 0, cpus: 0 });
+    release();
+  });
+
+  it("refuses over the allocation before building the workspace's config", async () => {
+    // A GitHub workspace whose owner has no connection: built first, that
+    // error would hide the refusal.
+    await setAllocationOverride(userId, { maxRunning: 1 });
+    await getConversationSandbox(userId, await newConversation());
+    const conv = await newConversation();
+    await db
+      .update(conversations)
+      .set({
+        workspace: {
+          kind: "github",
+          repo: "example/repo",
+          baseBranch: "main",
+          branch: "loxaic/test",
+          cloneUrl: "https://github.com/example/repo.git",
+        },
+      })
+      .where(eq(conversations.id, conv));
+    expect((await refusal(getConversationSandbox(userId, conv))).reason).toBe("count");
+  });
+
   it("follows the default again once the override is cleared", async () => {
     await setAllocationOverride(userId, { maxRunning: 1 });
     await getConversationSandbox(userId, await newConversation());
@@ -158,6 +218,19 @@ describe("reservations", () => {
     const first = await reserveSandbox(userId, { memoryMb: 256, cpus: 1.5 });
     expect((await refusal(reserveSandbox(userId, { memoryMb: 256, cpus: 1 }))).reason).toBe("cpus");
     first();
+  });
+
+  it("let only one of two simultaneous starts take the last room", async () => {
+    await setAllocationOverride(userId, { maxRunning: 1 });
+    // Open connections first, so the starts' reads really do overlap rather
+    // than queue behind one connection being set up.
+    await Promise.all(Array.from({ length: 8 }, () => db.select({ id: user.id }).from(user).where(eq(user.id, userId))));
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, () => reserveSandbox(userId, { memoryMb: 256, cpus: 1 })),
+    );
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    for (const r of results) if (r.status === "rejected") expect(r.reason).toBeInstanceOf(SandboxLimitError);
+    for (const r of results) if (r.status === "fulfilled") r.value();
   });
 
   it("release once, however often the release is called", async () => {
@@ -230,6 +303,41 @@ describe("routes", () => {
     currentUser.id = `someone-else-${uuid()}`;
     const res = await app.inject({ method: "GET", url: "/v1/sandboxes/allocation" });
     expect(res.json<{ sandboxes: unknown[] }>().sandboxes).toEqual([]);
+  });
+
+  it("names no conversation the caller does not own, nor whether it is busy", async () => {
+    const theirs = await newConversation(otherId, "Not yours");
+    await db
+      .insert(sandboxes)
+      .values({ ownerId: userId, conversationId: theirs, containerId: `none-${randomUUID()}`, provider: "container", image: "x", status: "running" });
+    const claim = { streamId: `test-${randomUUID()}`, conversationId: theirs, userId: otherId, abort: new AbortController(), approvals: new Map() };
+    claimConversation(claim);
+    try {
+      const res = await app.inject({ method: "GET", url: "/v1/sandboxes/allocation" });
+      expect(res.json<{ sandboxes: unknown[] }>().sandboxes).toEqual([
+        expect.objectContaining({ conversation_id: null, title: null, busy: false }),
+      ]);
+    } finally {
+      unregisterRun(claim.streamId);
+    }
+  });
+
+  it("does not hold off, or read, the runs of a conversation the caller does not own", async () => {
+    const theirs = await newConversation(otherId, "Not yours");
+    const [row] = await db
+      .insert(sandboxes)
+      .values({ ownerId: userId, conversationId: theirs, containerId: `none-${randomUUID()}`, provider: "container", image: "x", status: "running" })
+      .returning();
+    const claim = { streamId: `test-${randomUUID()}`, conversationId: theirs, userId: otherId, abort: new AbortController(), approvals: new Map() };
+    claimConversation(claim);
+    try {
+      const res = await app.inject({ method: "POST", url: `/v1/sandboxes/${row.id}/pause` });
+      // Their run is no answer this caller gets; the pause goes ahead.
+      expect(res.statusCode).not.toBe(409);
+      expect(getRunByConversation(theirs)?.streamId).toBe(claim.streamId);
+    } finally {
+      unregisterRun(claim.streamId);
+    }
   });
 
   it("will not pause a host sandbox, nor anyone else's", async () => {
@@ -362,7 +470,7 @@ describe("a run whose sandbox is refused", () => {
 
     const [result] = await storedResults(convId);
     expect(result.ok).toBe(false);
-    expect(result.output).toContain("which is your allocation");
+    expect(result.output).toContain("running or starting, and your allocation allows 1");
     expect(result.notice).toEqual({ kind: "sandbox_allocation", reason: "count" });
 
     // And live: a device following the run, or joining it mid-turn, gets it

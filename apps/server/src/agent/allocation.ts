@@ -1,6 +1,11 @@
 import { and, db, eq, isNull } from "@loxaic/db";
 import { userSandboxAllocations } from "@loxaic/db/schema";
-import { allocationFieldError, getSandboxSettings, type SandboxAllocation } from "../settings.ts";
+import {
+  AllocationPatchError,
+  getSandboxSettings,
+  parseAllocationPatch,
+  type SandboxAllocation,
+} from "../settings.ts";
 
 /**
  * Per-user sandbox allocations (#254): what one user's running sandboxes may
@@ -61,6 +66,22 @@ export function rowNeed(row: { provider: string; limits?: unknown }): SandboxNee
   };
 }
 
+/** Adds one sandbox's need to a usage, in place. */
+export function addNeed(usage: AllocationUsage, need: SandboxNeed): AllocationUsage {
+  usage.running++;
+  usage.memoryMb += need.memoryMb;
+  usage.cpus += need.cpus;
+  return usage;
+}
+
+/** What these running rows hold together: the one sum the check, the
+ * Sandboxes screen and the admin list all use. */
+export function usageOf(rows: { provider: string; limits?: unknown }[]): AllocationUsage {
+  const usage: AllocationUsage = { running: 0, memoryMb: 0, cpus: 0 };
+  for (const row of rows) addNeed(usage, rowNeed(row));
+  return usage;
+}
+
 /** A container with no limits of its own: container-engine.ts's defaults. */
 export const DEFAULT_NEED: SandboxNeed = { memoryMb: 512, cpus: 1 };
 
@@ -93,9 +114,12 @@ export function allocationMessage(
         "Ask an admin to raise your allocation."
       );
     case "count":
+      // Against the allocation's number, never "which is your allocation":
+      // an admin may have lowered it below what is already running, and the
+      // count includes starts still on their way.
       return (
-        `You already have ${String(used.running)} sandbox${used.running === 1 ? "" : "es"} running, which is your ` +
-        `allocation. ${PAUSE_HINT}`
+        `You have ${String(used.running)} sandbox${used.running === 1 ? "" : "es"} running or starting, and your ` +
+        `allocation allows ${String(allocation.maxRunning)}. ${PAUSE_HINT}`
       );
     case "memory":
       return (
@@ -162,26 +186,12 @@ export class AllocationInputError extends Error {
  * are all null is deleted, so "no row" stays the one way to say "default".
  */
 export async function setAllocationOverride(userId: string, input: unknown): Promise<ResolvedAllocation> {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    throw new AllocationInputError("body must be an object");
-  }
-  const given = input as Record<string, unknown>;
-  const patch: Partial<Record<keyof SandboxAllocation, number | null>> = {};
-  for (const key of Object.keys(given)) {
-    if (key !== "memoryMb" && key !== "cpus" && key !== "maxRunning") {
-      throw new AllocationInputError(`allocation has no field "${key}"`);
-    }
-    const value = given[key];
-    if (value === null) {
-      patch[key] = null;
-      continue;
-    }
-    const problem = allocationFieldError(key, value);
-    if (problem) throw new AllocationInputError(problem);
-    if (key === "maxRunning" && getSandboxSettings().envOverrides.maxRunning) {
-      throw new AllocationInputError("maxRunning is pinned by the SANDBOX_MAX_PER_USER environment variable", 409);
-    }
-    patch[key] = value as number;
+  let patch: Partial<Record<keyof SandboxAllocation, number | null>>;
+  try {
+    patch = parseAllocationPatch(input, { allowNull: true });
+  } catch (err) {
+    if (err instanceof AllocationPatchError) throw new AllocationInputError(err.message, err.pinned ? 409 : 400);
+    throw err;
   }
   const now = new Date();
   // One statement, so two admins saving different fields at once both land.

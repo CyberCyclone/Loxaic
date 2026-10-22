@@ -884,6 +884,50 @@ function coerce(raw: unknown): Partial<SandboxSettings> {
   return out;
 }
 
+/** A refused allocation patch; `pinned` when the environment sets the field. */
+export class AllocationPatchError extends Error {
+  readonly pinned: boolean;
+  constructor(message: string, pinned = false) {
+    super(message);
+    this.name = "AllocationPatchError";
+    this.pinned = pinned;
+  }
+}
+
+/**
+ * Reads an allocation patch off the wire: the server-wide default's
+ * (`allowNull: false`) and one user's override (`allowNull: true`, where null
+ * puts a part back on the default). The one place either is validated, so the
+ * two can never accept different things.
+ */
+export function parseAllocationPatch(
+  input: unknown,
+  opts: { allowNull: boolean },
+): Partial<Record<keyof SandboxAllocation, number | null>> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new AllocationPatchError("allocation must be an object");
+  }
+  const given = input as Record<string, unknown>;
+  const patch: Partial<Record<keyof SandboxAllocation, number | null>> = {};
+  for (const key of Object.keys(given)) {
+    if (key !== "memoryMb" && key !== "cpus" && key !== "maxRunning") {
+      throw new AllocationPatchError(`allocation has no field "${key}"`);
+    }
+    const value = given[key];
+    if (value === null && opts.allowNull) {
+      patch[key] = null;
+      continue;
+    }
+    const problem = allocationFieldError(key, value);
+    if (problem) throw new AllocationPatchError(problem);
+    if (key === "maxRunning" && getSandboxSettings().envOverrides.maxRunning) {
+      throw new AllocationPatchError("maxRunning is pinned by the SANDBOX_MAX_PER_USER environment variable", true);
+    }
+    patch[key] = value as number;
+  }
+  return patch;
+}
+
 /**
  * Why `value` is not an acceptable allocation field, or null when it is.
  * Shared by the default here and a user's override (agent/allocation.ts), so
@@ -1124,23 +1168,13 @@ function validate(input: unknown): SandboxSettingsPatch {
   }
 
   if (raw.allocation !== undefined) {
-    if (typeof raw.allocation !== "object" || raw.allocation === null || Array.isArray(raw.allocation)) {
-      throw new SettingsError("allocation must be an object", "invalid");
+    try {
+      // No nulls in the default: every part of it has to be a number.
+      patch.allocation = parseAllocationPatch(raw.allocation, { allowNull: false }) as Partial<SandboxAllocation>;
+    } catch (err) {
+      if (err instanceof AllocationPatchError) throw new SettingsError(err.message, err.pinned ? "envOverride" : "invalid");
+      throw err;
     }
-    const given = raw.allocation as Record<string, unknown>;
-    const allocation: Partial<SandboxAllocation> = {};
-    for (const key of Object.keys(given)) {
-      if (key !== "memoryMb" && key !== "cpus" && key !== "maxRunning") {
-        throw new SettingsError(`allocation has no field "${key}"`, "invalid");
-      }
-      const problem = allocationFieldError(key, given[key]);
-      if (problem) throw new SettingsError(problem, "invalid");
-      if (key === "maxRunning" && env.maxRunning) {
-        throw new SettingsError("maxRunning is pinned by the SANDBOX_MAX_PER_USER environment variable", "envOverride");
-      }
-      allocation[key] = given[key] as number;
-    }
-    patch.allocation = allocation;
   }
 
   if (raw.reapAfterMs !== undefined) {
@@ -1191,9 +1225,9 @@ function validate(input: unknown): SandboxSettingsPatch {
  * container's network mode can be changed under a running container.
  */
 export async function updateSandboxSettings(input: unknown): Promise<SandboxSettingsView> {
-  // Serialized: `next` is built from the in-memory `persisted` before the
-  // first await, so two concurrent PATCHes would both read the same base and
-  // the second would silently drop the first's field.
+  // Serialized within this process: the write merges in the database, but
+  // the before/after comparison that decides what to apply, and validate()'s
+  // checks against the current settings, read the cache.
   const run = writeChain.catch(() => undefined).then(() => performUpdate(input));
   writeChain = run.catch(() => undefined);
   return run;
@@ -1205,18 +1239,19 @@ async function performUpdate(input: unknown): Promise<SandboxSettingsView> {
   const patch = validate(input);
 
   const before = getSandboxSettings();
-  const next: SandboxSettings = {
-    ...DEFAULTS,
-    ...persisted,
-    ...patch,
-    allocation: { ...DEFAULTS.allocation, ...persisted.allocation, ...patch.allocation },
-  };
-
-  await db
+  // Merged in the database, never onto the cache: another replica's (or a
+  // stale cache's) fields survive. `allocation` is merged one level down too,
+  // so saving its memory keeps a CPU count stored since this process read it.
+  const { allocation, ...flat } = patch;
+  const merged = allocation
+    ? sql`${serverSettings.value} || excluded.value || jsonb_build_object('allocation', coalesce(${serverSettings.value} -> 'allocation', '{}'::jsonb) || (excluded.value -> 'allocation'))`
+    : sql`${serverSettings.value} || excluded.value`;
+  const [row] = await db
     .insert(serverSettings)
-    .values({ key: SANDBOX_KEY, value: next, updatedAt: new Date() })
-    .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
-  persisted = next;
+    .values({ key: SANDBOX_KEY, value: allocation ? { ...flat, allocation } : flat, updatedAt: new Date() })
+    .onConflictDoUpdate({ target: serverSettings.key, set: { value: merged, updatedAt: new Date() } })
+    .returning({ value: serverSettings.value });
+  persisted = coerce(row.value);
   // Same reasoning as the conversation write: the row we just wrote is now
   // known, so the boot read's failure no longer applies. Fails closed rather
   // than open while set (mode resolves to "off"), but an admin re-enabling

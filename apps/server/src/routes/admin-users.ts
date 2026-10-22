@@ -1,16 +1,16 @@
 import type { FastifyInstance } from "fastify";
-import { and, count, db, desc, eq, ilike, inArray, ne, or, user } from "@loxaic/db";
-import { sandboxes, userSandboxAllocations } from "@loxaic/db/schema";
+import { count, db, desc, eq, ilike, inArray, or, user } from "@loxaic/db";
+import { userSandboxAllocations } from "@loxaic/db/schema";
 import {
   AllocationInputError,
   allocationFor,
   clearAllocationOverride,
   resolveAllocation,
-  rowNeed,
   setAllocationOverride,
+  usageOf,
   type AllocationUsage,
 } from "../agent/allocation.ts";
-import { runningUsage } from "../agent/sandbox-manager.ts";
+import { runningRowsForUsers, runningUsage } from "../agent/sandbox-manager.ts";
 import { getSandboxSettings, type SandboxAllocation } from "../settings.ts";
 import { requireAdmin } from "../auth/middleware";
 import { isBanned } from "../auth/ban.ts";
@@ -153,23 +153,12 @@ async function sandboxSummaries(userIds: string[]): Promise<Map<string, SandboxS
   const settings = getSandboxSettings();
   const [overrides, running] = await Promise.all([
     db.select().from(userSandboxAllocations).where(inArray(userSandboxAllocations.userId, userIds)),
-    db
-      .select({ ownerId: sandboxes.ownerId, provider: sandboxes.provider, limits: sandboxes.limits })
-      .from(sandboxes)
-      .where(and(inArray(sandboxes.ownerId, userIds), eq(sandboxes.status, "running"), ne(sandboxes.provider, "executor"))),
+    runningRowsForUsers(userIds),
   ]);
   const byUser = new Map(overrides.map((row) => [row.userId, row]));
   for (const id of userIds) {
     const resolved = resolveAllocation(byUser.get(id), settings.allocation, settings.envOverrides.maxRunning);
-    out.set(id, { ...resolved, used: { running: 0, memoryMb: 0, cpus: 0 } });
-  }
-  for (const row of running) {
-    const summary = out.get(row.ownerId);
-    if (!summary) continue;
-    const need = rowNeed(row);
-    summary.used.running++;
-    summary.used.memoryMb += need.memoryMb;
-    summary.used.cpus += need.cpus;
+    out.set(id, { ...resolved, used: usageOf(running.filter((row) => row.ownerId === id)) });
   }
   return out;
 }

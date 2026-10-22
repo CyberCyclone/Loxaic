@@ -11,6 +11,7 @@ import {
   resolveAllocation,
   rowNeed,
   setAllocationOverride,
+  usageOf,
 } from "../allocation.ts";
 
 /**
@@ -60,7 +61,7 @@ describe("allocationMessage", () => {
   it("names the numbers and what to do for each reason", () => {
     const need = { memoryMb: 512, cpus: 1 };
     expect(allocationMessage("count", { running: 5, memoryMb: 2560, cpus: 5 }, need, allocation)).toBe(
-      "You already have 5 sandboxes running, which is your allocation. " +
+      "You have 5 sandboxes running or starting, and your allocation allows 5. " +
         "Pause one in Settings → Sandboxes, or ask an admin to raise your allocation.",
     );
     expect(allocationMessage("memory", { running: 2, memoryMb: 2304, cpus: 2 }, need, allocation)).toBe(
@@ -75,6 +76,25 @@ describe("allocationMessage", () => {
       "This sandbox needs 16 GB and 8 CPUs, more than your whole sandbox allocation (2.5 GB, 5 CPUs). " +
         "Ask an admin to raise your allocation.",
     );
+  });
+
+  it("states the allocation's own number once an admin has lowered it below what runs", () => {
+    expect(allocationMessage("count", { running: 7, memoryMb: 0, cpus: 0 }, { memoryMb: 0, cpus: 0 }, { ...allocation, maxRunning: 3 })).toBe(
+      "You have 7 sandboxes running or starting, and your allocation allows 3. " +
+        "Pause one in Settings → Sandboxes, or ask an admin to raise your allocation.",
+    );
+  });
+});
+
+describe("usageOf", () => {
+  it("sums what each row holds, and counts a host row as one running with nothing held", () => {
+    expect(
+      usageOf([
+        { provider: "container", limits: { memory: 16_384, cpu: 8 } },
+        { provider: "container", limits: null },
+        { provider: "host", limits: null },
+      ]),
+    ).toEqual({ running: 3, memoryMb: 16_896, cpus: 9 });
   });
 });
 

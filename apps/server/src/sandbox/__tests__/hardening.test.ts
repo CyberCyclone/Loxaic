@@ -161,7 +161,7 @@ describe.skipIf(!dockerReady)("per-user sandbox limit", () => {
       await expect(getConversationSandbox(limitUser, randomUUID())).rejects.toBeInstanceOf(
         SandboxLimitError,
       );
-      await expect(getConversationSandbox(limitUser, randomUUID())).rejects.toThrow(/which is your allocation/);
+      await expect(getConversationSandbox(limitUser, randomUUID())).rejects.toThrow(/and your allocation allows/);
     });
   }, 120_000);
 
@@ -200,7 +200,7 @@ describe.skipIf(!dockerReady)("per-user sandbox limit", () => {
     await withLimit(1, async () => {
       const res = await app.inject({ method: "POST", url: "/v1/sandboxes", payload: {} });
       expect(res.statusCode).toBe(429);
-      expect(errorOf(res)).toContain("which is your allocation");
+      expect(errorOf(res)).toContain("and your allocation allows");
     });
   }, 60_000);
 

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, inArray, ne } from "@loxaic/db";
 import { db } from "@loxaic/db";
-import { sandboxes } from "@loxaic/db/schema";
+import { conversations, sandboxes } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { hasRole } from "../streams/authz";
 import { resolvePath } from "../agent/executor.ts";
@@ -11,11 +11,9 @@ import {
   networkFor,
   pauseSandbox,
   reserveSandbox,
-  runningUsage,
 } from "../agent/sandbox-manager.ts";
-import { allocationFor, rowNeed } from "../agent/allocation.ts";
+import { allocationFor, rowNeed, usageOf } from "../agent/allocation.ts";
 import { randomUUID } from "node:crypto";
-import { conversations } from "@loxaic/db/schema";
 import {
   claimConversation,
   ConversationBusyError,
@@ -61,9 +59,8 @@ export function sandboxRoutes(app: FastifyInstance) {
    */
   app.get("/v1/sandboxes/allocation", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const [resolved, used, rows] = await Promise.all([
+    const [resolved, rows] = await Promise.all([
       allocationFor(userId),
-      runningUsage(userId),
       db
         .select({
           id: sandboxes.id,
@@ -73,9 +70,15 @@ export function sandboxRoutes(app: FastifyInstance) {
           limits: sandboxes.limits,
           lastUsedAt: sandboxes.lastUsedAt,
           title: conversations.title,
+          ownConversation: conversations.id,
         })
         .from(sandboxes)
-        .leftJoin(conversations, eq(conversations.id, sandboxes.conversationId))
+        // Only a conversation the caller owns: a sandbox of theirs in someone
+        // else's chat says nothing about that chat, not even its title.
+        .leftJoin(
+          conversations,
+          and(eq(conversations.id, sandboxes.conversationId), eq(conversations.ownerId, userId)),
+        )
         .where(
           and(
             eq(sandboxes.ownerId, userId),
@@ -89,19 +92,20 @@ export function sandboxRoutes(app: FastifyInstance) {
       allocation: resolved.allocation,
       overridden: resolved.overridden,
       default: getSandboxSettings().allocation,
-      used,
+      // From the same rows the list shows, so the bars and the list agree.
+      used: usageOf(rows.filter((row) => row.status === "running")),
       sandboxes: rows.map((row) => {
         const need = rowNeed(row);
         return {
           id: row.id,
-          conversation_id: row.conversationId,
+          conversation_id: row.ownConversation,
           title: row.title,
           provider: row.provider,
           status: row.status,
           memory_mb: need.memoryMb,
           cpus: need.cpus,
           last_used_at: row.lastUsedAt.toISOString(),
-          busy: row.conversationId !== null && sandboxBusy(row.conversationId),
+          busy: row.ownConversation !== null && sandboxBusy(row.ownConversation),
         };
       }),
     };
@@ -128,13 +132,18 @@ export function sandboxRoutes(app: FastifyInstance) {
       });
     }
     if (sandbox.status === "stopped") return { status: "stopped" };
-    if (sandbox.conversationId && sandboxBusy(sandbox.conversationId)) {
+    // The sandbox is the caller's to pause, but its conversation's runs are
+    // only theirs to hold off when they own it: claiming someone else's chat,
+    // or reading whether it is busy, is not something a sandbox row grants.
+    const conversationId =
+      sandbox.conversationId && (await hasRole(userId, sandbox.conversationId, "owner")) ? sandbox.conversationId : null;
+    if (conversationId && sandboxBusy(conversationId)) {
       return reply.code(409).send({ error: "A run is going in this chat. Stop it first, then pause its sandbox." });
     }
-    const claim = sandbox.conversationId
+    const claim = conversationId
       ? {
           streamId: `pause-${randomUUID()}`,
-          conversationId: sandbox.conversationId,
+          conversationId,
           userId,
           abort: new AbortController(),
           approvals: new Map(),

@@ -164,8 +164,13 @@ export function sandboxTerminalWs(app: FastifyInstance) {
       // Waking a paused sandbox can be refused by the owner's allocation
       // (#254); anything else escaping here would leave the client on a
       // paused socket waiting out its own timeout.
+      // Anything else is logged, not shown: an engine's own error can name
+      // host paths, sockets and versions.
       if (err instanceof SandboxLimitError) refuse(4429, "Sandbox allocation full", err.message);
-      else refuse(4500, "Workspace failed", err instanceof Error ? err.message : "That workspace could not be opened.");
+      else {
+        request.log.error({ err, sandboxId: id }, "terminal: the sandbox could not be attached");
+        refuse(4500, "Workspace failed", "That workspace could not be opened.");
+      }
       return;
     }
     if (!handle) {
