@@ -25,10 +25,11 @@ on:
 permissions:
   contents: read
 
-# One build per branch at a time; a newer push supersedes an older one.
+# One build per branch at a time. A newer push to a pull request supersedes an
+# older one; a publish from dev is never cancelled halfway through its pushes.
 concurrency:
   group: dev-image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Two jobs that do the same build, so that only the one that pushes holds
@@ -41,19 +42,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Free runner disk
-        # The image is about 9 GB; the runner's preinstalled SDKs are not needed.
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          docker image prune -af >/dev/null
-          df -h /
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build
-        run: docker buildx bake -f infra/docker/dev/docker-bake.hcl --load
-      - name: Selftest
-        run: |
-          docker run --rm --cap-drop ALL --security-opt no-new-privileges --network none --shm-size 64m \
-            -v "$PWD/infra/docker/dev/selftest.sh:/selftest.sh:ro" loxaic-dev:local bash /selftest.sh
+      - name: Build and selftest
+        run: infra/docker/dev/ci-build.sh
 
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
@@ -66,18 +57,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Free runner disk
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          docker image prune -af >/dev/null
-          df -h /
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build
-        run: docker buildx bake -f infra/docker/dev/docker-bake.hcl --load
-      - name: Selftest
+      - name: Build and selftest
+        env:
+          SHA: ${{ github.sha }}
         run: |
-          docker run --rm --cap-drop ALL --security-opt no-new-privileges --network none --shm-size 64m \
-            -v "$PWD/infra/docker/dev/selftest.sh:/selftest.sh:ro" loxaic-dev:local bash /selftest.sh
+          image=ghcr.io/cybercyclone/loxaic-dev
+          TAGS="loxaic-dev:local,$image:sha-${SHA::12},$image:latest" infra/docker/dev/ci-build.sh
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
@@ -86,9 +72,9 @@ jobs:
       - name: Push
         env:
           SHA: ${{ github.sha }}
+        # The immutable tag first: :latest never names an image that has no
+        # :sha- tag to roll back to.
         run: |
           image=ghcr.io/cybercyclone/loxaic-dev
-          docker tag loxaic-dev:local "$image:latest"
-          docker tag loxaic-dev:local "$image:sha-${SHA::12}"
-          docker push "$image:latest"
           docker push "$image:sha-${SHA::12}"
+          docker push "$image:latest"

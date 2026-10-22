@@ -14,10 +14,13 @@ FROM sandbox
 USER root
 
 # Chrome for Testing and the chromedriver of the same build. Google publishes
-# no checksums for these, so the version is the pin; selftest.sh checks the
-# two agree. To move it, take a Stable version from
-# https://googlechromelabs.github.io/chrome-for-testing/.
+# no checksums for these, so each zip's SHA-256 is pinned here, taken once when
+# the version was chosen; selftest.sh checks the two agree. To move it, take a
+# Stable version from https://googlechromelabs.github.io/chrome-for-testing/
+# and `sha256sum` both zips.
 ARG CHROME_VERSION=156.0.8078.47
+ARG CHROME_SHA256=e6c94490f0b6b337225aeb2d2a5034858516b7017356980ba94f5176d8774a50
+ARG CHROMEDRIVER_SHA256=2a5024610c53f340a1aaa5d9a3e2a4fa448be7d71cca5238bd8c3c7f16181df4
 # The Android command-line tools: a build number and its SHA-1, from
 # https://dl.google.com/android/repository/repository2-3.xml (the only checksum
 # Google lists for it). 21.0, not newer: from 22.0 `sdkmanager` is a shim that
@@ -36,13 +39,19 @@ ARG ANDROID_SYSTEM_IMAGE="system-images;android-35;google_apis;x86_64"
 
 # Postgres 17 from PGDG, matching CI and the Compose file. No cluster is made
 # at install: loxaic-test makes one as the sandbox's own user, which is the
-# only user a Loxaic sandbox can run it as.
+# only user a Loxaic sandbox can run it as. The signing key is trusted only if
+# it is PGDG's (https://www.postgresql.org/download/linux/ubuntu/ gives the
+# fingerprint).
+ARG PGDG_KEY_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
 RUN set -eu; \
     apt-get update; \
     apt-get install -y --no-install-recommends gnupg unzip zip xz-utils jq lsof procps; \
     install -d /usr/share/postgresql-common/pgdg; \
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-      | gpg --dearmor -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg; \
+    curl -fsSL -o /tmp/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc; \
+    fpr="$(gpg --show-keys --with-colons /tmp/pgdg.asc | awk -F: '$1 == "fpr" { print $10; exit }')"; \
+    [ "$fpr" = "$PGDG_KEY_FINGERPRINT" ] || { echo "PGDG signing key fingerprint is $fpr, not $PGDG_KEY_FINGERPRINT" >&2; exit 1; }; \
+    gpg --dearmor -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg /tmp/pgdg.asc; \
+    rm /tmp/pgdg.asc; \
     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" \
       > /etc/apt/sources.list.d/pgdg.list; \
     apt-get update; \
@@ -70,6 +79,7 @@ RUN set -eu; \
     base="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64"; \
     curl -fsSL -o /tmp/chrome.zip "$base/chrome-linux64.zip"; \
     curl -fsSL -o /tmp/chromedriver.zip "$base/chromedriver-linux64.zip"; \
+    printf '%s  %s\n' "$CHROME_SHA256" /tmp/chrome.zip "$CHROMEDRIVER_SHA256" /tmp/chromedriver.zip | sha256sum -c -; \
     mkdir -p /opt/chrome; \
     unzip -q /tmp/chrome.zip -d /opt/chrome; \
     unzip -q /tmp/chromedriver.zip -d /opt/chrome; \

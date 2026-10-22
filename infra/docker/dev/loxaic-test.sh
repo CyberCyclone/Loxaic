@@ -56,14 +56,26 @@ without_egress() {
     -u GH_TOKEN "$@"
 }
 
+# A paused sandbox loses its processes but keeps postmaster.pid, and pids
+# start low again in the resumed container: the one it names may now be some
+# other process, which pg_ctl takes for a running server. Only a postgres
+# process counts.
+clear_stale_pid() {
+  local pidfile="$PGDATA/postmaster.pid" pid
+  [ -f "$pidfile" ] || return 0
+  pid="$(head -n 1 "$pidfile")"
+  if [ "$(ps -o comm= -p "$pid" 2>/dev/null)" != "postgres" ]; then
+    rm -f "$pidfile"
+  fi
+}
+
 pg_start() {
   if [ ! -s "$PGDATA/PG_VERSION" ]; then
     mkdir -p "$(dirname "$PGDATA")"
     "$PGBIN/initdb" -D "$PGDATA" -U postgres --auth=trust >"$STATE/initdb.log" 2>&1 || die "initdb failed: see $STATE/initdb.log"
   fi
+  clear_stale_pid
   if ! "$PGBIN/pg_ctl" -D "$PGDATA" status >/dev/null 2>&1; then
-    # A paused sandbox loses its processes but keeps postmaster.pid; pg_ctl
-    # starts over a stale one once the process it names is gone.
     "$PGBIN/pg_ctl" -D "$PGDATA" -l "$STATE/postgres.log" -w \
       -o "-k /tmp -c listen_addresses=localhost -p 5432" start >/dev/null || die "Postgres did not start: see $STATE/postgres.log"
   fi
@@ -203,6 +215,8 @@ current_id() {
   [ -f "$STATE/current" ] || return 1
   local id
   id="$(cat "$STATE/current")"
+  # Its exit recorded, a lane is over, though its process lingers a moment.
+  [ -f "$LANES/$id.exit" ] && return 1
   [ -f "$LANES/$id.pid" ] && kill -0 "$(cat "$LANES/$id.pid")" 2>/dev/null || return 1
   echo "$id"
 }
@@ -234,23 +248,41 @@ cmd_start() {
   local lane="$1"
   shift
   [ "${1:-}" = "--" ] && shift
+  # Held from the check until the new lane has written its pid: two starts at
+  # once (two parallel tool calls) would otherwise both find nothing running.
+  exec 9>"$STATE/lock"
+  flock 9
   local running
   if running="$(current_id)"; then
     die "$running is still running; one lane at a time (loxaic-test wait $running, or loxaic-test stop $running)"
   fi
   local id
-  id="$(date +%Y%m%d-%H%M%S)-$lane"
+  # The starting process's pid makes it unique: two in the same second, or a
+  # rerun of one that failed at once, never share files.
+  id="$(date +%Y%m%d-%H%M%S)-$$-$lane"
+  rm -f "$LANES/$id.exit" "$LANES/$id.offset" "$LANES/$id.pid"
   echo "$id" >"$STATE/current"
   # setsid: its own process group, so `stop` can end all of it, and so the
-  # tool call that started it can return without taking it down.
-  setsid nohup "$0" __run "$id" "$lane" "$@" >"$LANES/$id.log" 2>&1 </dev/null &
-  echo $! >"$LANES/$id.pid"
+  # tool call that started it can return without taking it down. It forks
+  # when the caller is a group leader (an interactive shell's job), so the
+  # lane records its own pid (cmd_run) rather than this `$!`. Not given the
+  # lock's descriptor, or it would hold the lock for its whole run.
+  setsid nohup "$0" __run "$id" "$lane" "$@" >"$LANES/$id.log" 2>&1 </dev/null 9>&- &
+  local waited=0
+  until [ -s "$LANES/$id.pid" ]; do
+    [ $waited -lt 100 ] || die "the lane did not start: see $LANES/$id.log"
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  flock -u 9
   echo "$id"
 }
 
 cmd_run() {
   local id="$1" lane="$2"
   shift 2
+  # This process leads the lane's group (setsid), which is what `stop` ends.
+  echo "$$" >"$LANES/$id.pid"
   echo "== $lane started $(date -u +%FT%TZ)"
   # A subshell, so a lane that dies (die exits) still has its exit recorded.
   (run_lane "$lane" "$@")
@@ -264,7 +296,11 @@ cmd_wait() {
   local id="" seconds=50
   while [ $# -gt 0 ]; do
     case "$1" in
-      --seconds) seconds="${2:-50}"; shift 2 ;;
+      --seconds)
+        [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]] || die "--seconds needs a whole number of seconds"
+        seconds="$2"
+        shift 2
+        ;;
       *) id="$1"; shift ;;
     esac
   done
@@ -273,7 +309,8 @@ cmd_wait() {
   local offset_file="$LANES/$id.offset" deadline=$((SECONDS + seconds))
   local offset
   offset="$(cat "$offset_file" 2>/dev/null || echo 0)"
-  while :; do
+  # Prints what the lane has written since the last look.
+  print_new() {
     local size
     size="$(wc -c <"$LANES/$id.log" | tr -d ' ')"
     if [ "$size" -gt "$offset" ]; then
@@ -281,9 +318,16 @@ cmd_wait() {
       offset="$size"
       echo "$offset" >"$offset_file"
     fi
+  }
+  while :; do
+    print_new
     local state
     state="$(status_of "$id")"
     if [ "$state" != "running" ] || [ $SECONDS -ge $deadline ]; then
+      # Once more: what the lane wrote between the look above and its end
+      # (vitest's summary, the exit line) would otherwise wait for a `wait`
+      # nobody has a reason to call.
+      [ "$state" = "running" ] || print_new
       echo
       echo "status: $state ($id)"
       return 0

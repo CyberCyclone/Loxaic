@@ -66,6 +66,41 @@ result="$(loxaic-test wait "$failing" --seconds 30)"
 grep -q 'status: failed (exit 7)' <<<"$result" || fail "wait did not report the exit code: $result"
 pass "lanes run detached, one at a time, and report how they ended"
 
+# Two starts at once (two parallel tool calls): exactly one runs.
+first="$(mktemp)"
+second="$(mktemp)"
+loxaic-test start shell -- sleep 3 >"$first" 2>&1 &
+p1=$!
+loxaic-test start shell -- sleep 3 >"$second" 2>&1 &
+p2=$!
+started=0
+if wait "$p1"; then started=$((started + 1)); fi
+if wait "$p2"; then started=$((started + 1)); fi
+[ "$started" = "1" ] || fail "$started of two simultaneous starts ran: $(cat "$first" "$second")"
+running="$(grep -h -- '-shell$' "$first" "$second")"
+result="$(loxaic-test wait "$running" --seconds 30)"
+grep -q 'status: passed' <<<"$result" || fail "the lane that won did not finish: $result"
+pass "two simultaneous starts run one lane"
+
+# A wait with no number of seconds says so, rather than looping.
+if timeout 10 loxaic-test wait --seconds >/dev/null 2>&1; then fail "wait --seconds with no value succeeded"; fi
+[ "$(timeout 10 loxaic-test wait --seconds 2>&1 | head -n 1)" = "loxaic-test: --seconds needs a whole number of seconds" ] ||
+  fail "wait --seconds with no value did not say what was wrong"
+pass "wait --seconds needs a number"
+
+# A sandbox paused and resumed keeps postmaster.pid, naming a pid that one of
+# the sandbox user's own processes may now hold: Postgres still starts.
+pgdata="${LOXAIC_PG_DATA:-$HOME/.local/share/loxaic-pg}"
+cp "$pgdata/postmaster.pid" /tmp/postmaster.pid
+pg_ctl -D "$pgdata" stop -m fast >/dev/null
+sleep 300 &
+squatter=$!
+sed "1s/.*/$squatter/" /tmp/postmaster.pid >"$pgdata/postmaster.pid"
+loxaic-test pg >/dev/null || fail "Postgres did not start over a stale postmaster.pid naming a live process"
+[ "$(psql -h localhost -U postgres -tAc 'select 1' loxaic)" = "1" ] || fail "Postgres is not answering after the stale pid"
+kill "$squatter"
+pass "Postgres starts over a stale postmaster.pid"
+
 # Without /dev/kvm the Android lane says what is missing and who can fix it.
 mkdir -p /tmp/fake-repo && echo '{}' >/tmp/fake-repo/package.json
 android="$(LOXAIC_REPO=/tmp/fake-repo loxaic-test start android)"
