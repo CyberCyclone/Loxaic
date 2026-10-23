@@ -278,6 +278,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
           if (b.permission) tc.permission = b.permission;
           if (b.images?.length) tc.images = b.images;
           if (b.browser) tc.browser = true;
+          if (b.notice) tc.notice = b.notice;
         }
       }
     }
@@ -330,6 +331,7 @@ export function snapshotMessageToMessage(
             ...(tc.permission ? { permission: tc.permission } : {}),
             ...(tc.images?.length ? { images: tc.images } : {}),
             ...(tc.browser ? { browser: true as const } : {}),
+            ...(tc.notice ? { notice: tc.notice } : {}),
             ...withPlan(tc.tool, tc.args, sm.message_id),
           }))
         : undefined,
@@ -516,6 +518,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
                   ...(event.permission ? { permission: event.permission } : {}),
                   ...(event.images?.length ? { images: event.images } : {}),
                   ...(event.browser ? { browser: true as const } : {}),
+                  ...(event.notice ? { notice: event.notice } : {}),
                 }
               : t,
           ),

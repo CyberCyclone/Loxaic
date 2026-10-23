@@ -12,6 +12,7 @@ import { EnginePicker } from '@/components/sandbox/EnginePicker';
 import { NetworkToggle } from '@/components/sandbox/NetworkToggle';
 import { RetentionSettings } from '@/components/sandbox/RetentionSettings';
 import { CustomImagesPicker } from '@/components/sandbox/CustomImagesPicker';
+import { AllocationSettings } from '@/components/sandbox/AllocationSettings';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSandboxSettings } from '@/hooks/useSandboxSettings';
@@ -192,6 +193,16 @@ export default function SandboxScreen() {
           onChange={handleRetentionChange}
           unavailable={!reachable}
         />
+
+        {/* Absent from a server that predates allocations (#254). */}
+        {settings.allocation && (
+          <AllocationSettings
+            allocation={settings.allocation}
+            maxRunningPinned={settings.envOverrides.maxRunning === true}
+            unavailable={!reachable}
+            onSave={async (allocation) => { await update({ allocation }); }}
+          />
+        )}
       </VStack>
     );
   };
@@ -202,7 +213,11 @@ export default function SandboxScreen() {
         title="Agent Sandbox"
         onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
       />
-      <ScrollView className="flex-1">{body()}</ScrollView>
+      {/* The allocation's number fields: an iOS number pad has no key that
+          closes it, so a drag does. */}
+      <ScrollView className="flex-1" keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
+        {body()}
+      </ScrollView>
 
       <WarningConfirmModal
         open={pendingWarning?.kind === 'host'}

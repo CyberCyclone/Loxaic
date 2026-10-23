@@ -5,6 +5,7 @@ import {
   type SandboxSettings,
   type SandboxSettingsPatch,
 } from '@loxaic/api-client';
+import { describeRequestError } from '@/lib/connection';
 import { useToastHelper } from './useToastHelper';
 
 /** Admin-only sandbox settings (mode/engine/network) with optimistic writes,
@@ -40,15 +41,18 @@ export function useSandboxSettings(token: string | null) {
       // Optimistic per-field merge — a full server round trip (engine probe
       // included) can take a couple seconds and the picker should react
       // immediately; refresh() below reconciles once the real response lands.
-      setSettings((s) => (s ? { ...s, ...patch } : s));
+      // The allocation is merged a level down, as the server merges it: a
+      // patch naming one of its fields leaves the others as they are.
+      setSettings((s) =>
+        s ? { ...s, ...patch, allocation: s.allocation && { ...s.allocation, ...patch.allocation } } : s,
+      );
       try {
         const next = await updateSandboxSettings(patch);
         setSettings(next);
         return next;
       } catch (err) {
         setSettings(previous);
-        const message = err instanceof Error ? err.message : 'Failed to update sandbox settings';
-        showToast(message, 4000);
+        showToast(describeRequestError(err, "Couldn't save the sandbox settings."), 4000);
         throw err;
       }
     },

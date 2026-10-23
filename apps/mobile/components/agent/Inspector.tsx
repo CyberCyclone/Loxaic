@@ -1,5 +1,8 @@
 import { useState } from 'react';
 import { Linking, ScrollView } from 'react-native';
+import { useRouter } from 'expo-router';
+import { SHEET_EXIT_MS } from '@/lib/sheetExit';
+import { inspectorLinkPlan } from '@/lib/sandboxAllocation';
 import { X, Check, Circle, Loader } from 'lucide-react-native';
 import { Switch } from '@/components/ui/switch';
 import { Box } from '@/components/ui/box';
@@ -106,7 +109,7 @@ function InstructionsSection({ workspace }: { workspace: WorkspaceView }) {
  * and has been paused, it also says when it would actually be deleted — the
  * in-app half of the warning that issue #5 will eventually also push.
  */
-function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
+function WorkspaceSection({ workspace, onOpenSandboxes }: { workspace: WorkspaceView; onOpenSandboxes: () => void }) {
   const { retention, sandbox } = workspace;
   const ws = workspace.workspace ?? { kind: 'scratch' as const };
   const paused = sandbox?.status === 'stopped';
@@ -200,6 +203,12 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
           Deleted {formatDeadline(sandbox.reap_at)} unless this conversation is used again.
         </Text>
       )}
+      {/* Every sandbox of yours against your allocation, with Pause (#254). */}
+      <Pressable testID="agent.inspector.workspace.sandboxes" onPress={onOpenSandboxes}>
+        <Text size="2xs" className="text-link">
+          Your sandboxes and allocation
+        </Text>
+      </Pressable>
     </VStack>
   );
 }
@@ -342,6 +351,7 @@ interface InspectorBodyProps {
   git?: GitPanelControls | null;
   onCompact?: () => void;
   busy?: boolean;
+  onOpenSandboxes: () => void;
 }
 
 /**
@@ -393,10 +403,10 @@ function TodoSection({ todos, onRetry }: { todos: TodoView; onRetry?: () => void
   );
 }
 
-function InspectorBody({ todos, onRetryTodos, changedFiles, context, mcp, workspace, git, onCompact, busy }: InspectorBodyProps) {
+function InspectorBody({ todos, onRetryTodos, changedFiles, context, mcp, workspace, git, onCompact, busy, onOpenSandboxes }: InspectorBodyProps) {
   return (
     <VStack space="lg">
-      {workspace && <WorkspaceSection workspace={workspace} />}
+      {workspace && <WorkspaceSection workspace={workspace} onOpenSandboxes={onOpenSandboxes} />}
       {workspace && <InstructionsSection workspace={workspace} />}
       {git && <GitSection git={git} />}
 
@@ -486,7 +496,17 @@ interface InspectorProps {
 }
 
 export function Inspector({ open, onClose, wide, todos, onRetryTodos, changedFiles, context, mcp, workspace, git, onCompact, busy }: InspectorProps) {
+  const router = useRouter();
   if (!open) return null;
+
+  // On a phone the Inspector is a sheet over everything: it goes first, and
+  // the screen opens once it has (#254).
+  const openSandboxes = () => {
+    const plan = inspectorLinkPlan(wide, SHEET_EXIT_MS);
+    if (plan.close) onClose();
+    if (plan.delayMs > 0) setTimeout(() => { router.push('/sandboxes'); }, plan.delayMs);
+    else router.push('/sandboxes');
+  };
 
   if (wide) {
     return (
@@ -506,7 +526,7 @@ export function Inspector({ open, onClose, wide, todos, onRetryTodos, changedFil
             each section shrink below its wrapped-text height instead of
             overflowing, so sections silently render on top of each other. */}
         <ScrollView style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 12 }}>
-          <InspectorBody todos={todos} onRetryTodos={onRetryTodos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} />
+          <InspectorBody todos={todos} onRetryTodos={onRetryTodos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} onOpenSandboxes={openSandboxes} />
         </ScrollView>
       </Box>
     );
@@ -520,7 +540,7 @@ export function Inspector({ open, onClose, wide, todos, onRetryTodos, changedFil
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>
         <ScrollView style={{ width: '100%', flex: 1, minHeight: 0 }} contentContainerStyle={{ width: '100%', padding: 12 }}>
-          <InspectorBody todos={todos} onRetryTodos={onRetryTodos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} />
+          <InspectorBody todos={todos} onRetryTodos={onRetryTodos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} onOpenSandboxes={openSandboxes} />
         </ScrollView>
       </ActionsheetContent>
     </Actionsheet>

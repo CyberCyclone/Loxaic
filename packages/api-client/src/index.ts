@@ -235,6 +235,9 @@ export interface SandboxSettings extends SandboxRetention {
   /** Who may run sandboxes in an image other than Loxaic's own (#253).
    * Absent from a server that predates them. */
   customImages?: CustomImagesPolicy;
+  /** Each user's default sandbox allocation (#254). Absent from a server that
+   * predates allocations. */
+  allocation?: SandboxAllocation;
   /** Fields pinned by an environment variable — render read-only; PATCHing
    * one returns 409. */
   envOverrides: {
@@ -245,6 +248,8 @@ export interface SandboxSettings extends SandboxRetention {
     reapEnabled: boolean;
     reapAfter: boolean;
     customImages?: boolean;
+    /** `allocation.maxRunning`, pinned by SANDBOX_MAX_PER_USER. */
+    maxRunning?: boolean;
   };
   available: boolean;
   reason?: string;
@@ -259,8 +264,30 @@ export type SandboxSettingsPatch = Partial<
   Pick<
     SandboxSettings,
     "mode" | "engine" | "customSocket" | "allowNetwork" | "idleStopMs" | "reapEnabled" | "reapAfterMs" | "customImages"
-  >
+  > & { allocation: Partial<SandboxAllocation> }
 >;
+
+/** What one user's running sandboxes may hold together (#254): their memory
+ * and CPU limits summed, and how many there are. Paused ones hold none. */
+export interface SandboxAllocation {
+  memoryMb: number;
+  cpus: number;
+  maxRunning: number;
+}
+
+/** What a user's running sandboxes hold now. */
+export interface SandboxUsage {
+  running: number;
+  memoryMb: number;
+  cpus: number;
+}
+
+/** A user's allocation, which parts an admin set for them, and their use. */
+export interface UserSandboxAllocation {
+  allocation: SandboxAllocation;
+  overridden: Record<keyof SandboxAllocation, boolean>;
+  used: SandboxUsage;
+}
 
 /** Carries the server's error body so the UI can tell "you typed something
  * invalid" apart from "an admin can't change this — it's pinned by an
@@ -1463,6 +1490,8 @@ export interface AdminUser {
   banned: boolean;
   mustChangePassword: boolean;
   createdAt: string;
+  /** Absent from a server that predates allocations (#254). */
+  sandbox?: UserSandboxAllocation;
 }
 
 /** Newest first, capped server-side; `total` counts every match, so a caller
@@ -1478,6 +1507,24 @@ export async function adminListUsers(q?: string): Promise<{ users: AdminUser[]; 
 export async function adminResetUserPassword(userId: string): Promise<{ temporaryPassword: string }> {
   const res = await authedFetch(`/v1/admin/users/${encodeURIComponent(userId)}/reset-password`, { method: "POST" });
   return (await res.json()) as { temporaryPassword: string };
+}
+
+/** Override one user's sandbox allocation (#254): a value per part, null to
+ * put that part back on the default, absent to leave it. */
+export async function adminSetUserSandboxAllocation(
+  userId: string,
+  patch: Partial<Record<keyof SandboxAllocation, number | null>>,
+): Promise<UserSandboxAllocation> {
+  return adminFetch(`/v1/admin/users/${encodeURIComponent(userId)}/sandbox-allocation`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Put one user back on the default allocation. */
+export async function adminClearUserSandboxAllocation(userId: string): Promise<UserSandboxAllocation> {
+  return adminFetch(`/v1/admin/users/${encodeURIComponent(userId)}/sandbox-allocation`, { method: "DELETE" });
 }
 
 /** Hold a retained conversation past its window, or release it back to it. */
@@ -1529,6 +1576,44 @@ export interface SandboxRow {
    * which case it is kept until the conversation is). Derived server-side from
    * the live policy, so it never advertises a date an admin has since moved. */
   reap_at: string | null;
+}
+
+/** One of the caller's sandboxes as the Sandboxes screen lists it (#254). */
+export interface AllocatedSandbox {
+  id: string;
+  conversation_id: string | null;
+  title: string | null;
+  provider: "container" | "host";
+  status: "running" | "stopped";
+  /** What it holds while running; 0 for a host sandbox, whose resources
+   * nothing enforces. */
+  memory_mb: number;
+  cpus: number;
+  last_used_at: string;
+  /** A run is using it (the chat's own, or a sub-agent's); it cannot be
+   * paused until that ends. */
+  busy: boolean;
+}
+
+export interface MySandboxAllocation {
+  allocation: SandboxAllocation;
+  overridden: Record<keyof SandboxAllocation, boolean>;
+  /** The server-wide default, for "set by an admin" next to it. */
+  default: SandboxAllocation;
+  used: SandboxUsage;
+  sandboxes: AllocatedSandbox[];
+}
+
+export async function getMySandboxAllocation(): Promise<MySandboxAllocation> {
+  const res = await authedFetch("/v1/sandboxes/allocation");
+  return (await res.json()) as MySandboxAllocation;
+}
+
+/** Pause one of the caller's sandboxes to make room in their allocation:
+ * files kept, open terminals and processes ended. Refused (409) while a run
+ * uses it. */
+export async function pauseSandbox(sandboxId: string): Promise<void> {
+  await authedFetch(`/v1/sandboxes/${encodeURIComponent(sandboxId)}/pause`, { method: "POST" });
 }
 
 export async function getSandboxes(conversationId?: string): Promise<SandboxRow[]> {

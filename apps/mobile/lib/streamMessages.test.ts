@@ -555,3 +555,46 @@ describe('a call knows when its result came back, empty or not (#267)', () => {
     expect(applySnapshotToMsgs([], snap())[0]?.tools?.[0].hasResult).toBeUndefined();
   });
 });
+
+describe('a full sandbox allocation reaches the card on every path (#254)', () => {
+  const notice = { kind: 'sandbox_allocation' as const, reason: 'count' as const };
+  const output = 'Could not start a sandbox: You have 1 sandbox running or starting, and your allocation allows 1.';
+  const bashCall = { kind: 'tool_call' as const, call_id: 'c1', tool: 'bash', args: { command: 'ls' } };
+
+  it('from the live result', () => {
+    const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '', tools: [{ tool: 'bash', summary: 'ls', result: '', callId: 'c1' }] }];
+    const [m] = applyEventToMsgs(msgs, { kind: 'tool.result', message_id: 'a1', call_id: 'c1', tool: 'bash', output, ok: false, notice });
+    expect(m.tools?.[0].notice).toEqual(notice);
+  });
+
+  it('from history', () => {
+    const msgs = reconstructMessages([
+      row({ id: 'a1', content: [bashCall] }),
+      row({ id: 't1', authorType: 'tool', lamport: 2, content: [{ kind: 'tool_result', call_id: 'c1', output, ok: false, notice }] }),
+    ]);
+    expect(msgs.find((m) => m.id === 'a1')?.tools?.[0].notice).toEqual(notice);
+  });
+
+  it('from a snapshot', () => {
+    const [m] = applySnapshotToMsgs([], {
+      messages: [
+        {
+          message_id: 'a1',
+          author_type: 'assistant',
+          parent_id: null,
+          text: '',
+          thinking: '',
+          tool_calls: [{ call_id: 'c1', tool: 'bash', args: bashCall.args, output, ok: false, notice }],
+          status: 'complete',
+        },
+      ],
+    } as unknown as StreamSnapshot);
+    expect(m.tools?.[0].notice).toEqual(notice);
+  });
+
+  it('and any other failure carries none', () => {
+    const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '', tools: [{ tool: 'bash', summary: 'ls', result: '', callId: 'c1' }] }];
+    const [m] = applyEventToMsgs(msgs, { kind: 'tool.result', message_id: 'a1', call_id: 'c1', tool: 'bash', output: 'exit 1', ok: false });
+    expect(m.tools?.[0].notice).toBeUndefined();
+  });
+});

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter, type Href } from 'expo-router';
-import { BookOpen, Boxes, Container, GitBranch, HardDrive, Hourglass, Layers, Plug, ScrollText, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
+import { BookOpen, Boxes, Container, Gauge, GitBranch, HardDrive, Hourglass, Layers, Plug, ScrollText, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -436,6 +436,15 @@ export function SettingsModal({
               title="Agent Sandbox"
               subtitle="Where the agent runs tool calls"
               onPress={() => { openScreen('/sandbox'); }}
+            />
+
+            {/* Everyone's own: their allocation, and Pause to make room (#254). */}
+            <SettingsNavRow
+              testID="settings.nav.sandboxes"
+              icon={Gauge}
+              title="Sandboxes"
+              subtitle="Your running sandboxes and allocation"
+              onPress={() => { openScreen('/sandboxes'); }}
             />
 
             {/* Shared images are loaded here by an admin, for everyone. */}
