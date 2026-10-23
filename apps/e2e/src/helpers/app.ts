@@ -7,7 +7,7 @@ import { browser } from '@wdio/globals';
 import { byTestId, closeKeyboard, isVisible, platform, scrollTo, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import path from 'node:path';
-import { BASE_URL } from '../../scripts/standup.ts';
+import { BASE_URL, SANDBOX_HOST_MODE } from '../../scripts/standup.ts';
 import { rmSync } from 'node:fs';
 import { selfContainedDataDir } from '../../scripts/electron-env.ts';
 
@@ -1083,8 +1083,8 @@ export async function resetSandboxSettings(): Promise<void> {
     // force a pause would otherwise leave every later spec's sandbox being
     // stopped out from under it mid-run.
     body: JSON.stringify({
-      mode: 'container',
-      engine: 'auto',
+      // Pinned by the environment in host mode (#320), where it 409s.
+      ...(SANDBOX_HOST_MODE ? {} : { mode: 'container', engine: 'auto' }),
       allowNetwork: false,
       idleStopMs: 4 * 60 * 60 * 1000,
       reapEnabled: true,
@@ -1100,6 +1100,18 @@ export async function resetSandboxSettings(): Promise<void> {
       `[e2e] sandbox settings reset failed (${String(res.status)}): ${await res.text()}`,
     );
   }
+}
+
+/**
+ * Skips a suite (from its `before`) or a case when this run has no container
+ * engine: inside a Loxaic sandbox (#320), where the server under test runs in
+ * host mode. For specs about the engine itself — pulling images, choosing an
+ * engine, a degraded one — never for anything a person does in a chat.
+ */
+export function requiresContainerEngine(ctx: Mocha.Context, why: string): void {
+  if (!SANDBOX_HOST_MODE) return;
+  console.log(`[e2e] skipped in host mode: ${why}`);
+  ctx.skip();
 }
 
 /** The Sandboxes screen (#254), reached from Settings. */

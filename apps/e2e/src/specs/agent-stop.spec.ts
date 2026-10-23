@@ -31,6 +31,7 @@ import {
   signUp,
   startNewAgentRun,
   waitForRunDone,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 const SLOW_TOOL_PROMPT = 'count slowly in the sandbox';
@@ -43,6 +44,7 @@ describe('stopping an agent run', () => {
   });
 
   it('acknowledges the press while a slow command is being killed, and ends the run', async function () {
+    requiresContainerEngine(this, 'a host-mode kill is immediate, so there is no Stopping to see');
     this.timeout(2 * 60_000);
 
     // The acknowledgement — "Stopping…" and the disabled stop control — lasts
@@ -77,6 +79,8 @@ describe('stopping an agent run', () => {
   it('ends a mid-response run', async function () {
     this.timeout(2 * 60_000);
 
+    // Here as well as in the case above, which host mode skips (#320).
+    await goToSurface('agent');
     await startNewAgentRun();
     await sendMessage(SLOW_PROMPT);
     await waitForTextIn('agent.run.status', 'Running');

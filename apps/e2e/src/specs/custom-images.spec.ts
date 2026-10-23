@@ -14,7 +14,7 @@
  * already show; the screens, the chooser and a run in the image are driven
  * there too.
  */
-import { BASE_URL, mockRegistry } from '../../scripts/standup.ts';
+import { BASE_URL, SANDBOX_HOST_MODE, mockRegistry } from '../../scripts/standup.ts';
 import { REGISTRY_PASSWORD, REGISTRY_USERNAME } from '../../scripts/mock-registry.ts';
 import { adminCreds, apiToken, provisionAdmin, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
@@ -49,6 +49,7 @@ import {
   signOut,
   startNewAgentRun,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 const native = () => platform() === 'ios' || platform() === 'android';
@@ -126,7 +127,8 @@ describe('custom sandbox images (#253)', function () {
   let other: Credentials;
   let sharedId = '';
 
-  before(async () => {
+  before(async function () {
+    requiresContainerEngine(this, 'custom images need a container engine and the mock registry');
     Object.assign(registry, mockRegistry());
     await provisionAdmin();
     await resetSandboxSettings();
@@ -135,6 +137,8 @@ describe('custom sandbox images (#253)', function () {
   });
 
   after(async () => {
+    // Mocha runs `after` even when `before` skipped the suite.
+    if (SANDBOX_HOST_MODE) return;
     // Shared rows and logins are deployment-wide; take them out so a later
     // spec, or the next run, starts from none.
     const admin = adminCreds();

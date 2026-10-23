@@ -52,6 +52,7 @@ import {
   userIdFor,
   waitForRunDone,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 
@@ -85,6 +86,9 @@ describe('sandbox allocations (#254)', () => {
   let memberId = '';
   /** Chat A from the first case: an agent chat with a sandbox. */
   let chatWithSandbox = '';
+  /** Chat B, refused for want of room, and A's sandbox, which fills it. */
+  let refusedChat = '';
+  let sandboxA = { id: '' };
 
   before(async () => {
     await provisionAdmin();
@@ -105,7 +109,7 @@ describe('sandbox allocations (#254)', () => {
     await resetSandboxSettings();
   });
 
-  it('refuses a second sandbox, offers the Sandboxes screen, and Pause makes room', async function () {
+  it('refuses a second sandbox and offers the Sandboxes screen', async function () {
     this.timeout(6 * 60_000);
 
     // Chat A takes the one place.
@@ -118,13 +122,15 @@ describe('sandbox allocations (#254)', () => {
     await tap('agent.permission.allow');
     await waitForToolResult(MOCK_BASH_OUTPUT);
     const token = await apiToken(adminCreds());
-    const [sandboxA] = await listSandboxes(token, chatA);
-    expect(sandboxA.status).toBe('running');
+    const [rowA] = await listSandboxes(token, chatA);
+    expect(rowA.status).toBe('running');
+    sandboxA = rowA;
 
     // Chat B's sandbox is refused, and its card says what to do.
     await startNewAgentRun();
     await tap('agent.mode.manual');
     const chatB = await sendInNewRun(adminCreds(), BASH_PROMPT);
+    refusedChat = chatB;
     await waitForVisible('agent.permission.bar');
     await tap('agent.permission.allow');
     const refused = await waitForResult(chatB, (r) => r.ok === false, 'refused call');
@@ -138,8 +144,19 @@ describe('sandbox allocations (#254)', () => {
     await tap(`chat.toolCall.manageSandboxes.${refused}`);
     await waitForFreshText('sandboxes.bar.running', '1 of 1');
     await waitForVisible('sandboxes.full');
-    await waitForVisible(`sandboxes.row.${sandboxA.id}.pause`);
     await shot('sandbox-allocation-full');
+  });
+
+  it('keeps Pause off while a run uses the sandbox, and Pause makes room for the refused chat', async function () {
+    requiresContainerEngine(
+      this,
+      'Pause is offered only for a container: a host-mode sandbox runs on the server itself, and the Sandboxes screen gives it no Pause',
+    );
+    this.timeout(6 * 60_000);
+    const chatA = chatWithSandbox;
+    const chatB = refusedChat;
+    const token = await apiToken(adminCreds());
+    await waitForVisible(`sandboxes.row.${sandboxA.id}.pause`);
 
     // While a run uses A, it cannot be paused: the row says so instead.
     const second = await sendOnSecondSocket(adminCreds(), SLOW_PROMPT, 'agent', chatA);

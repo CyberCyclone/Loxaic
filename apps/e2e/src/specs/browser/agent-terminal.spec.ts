@@ -16,7 +16,7 @@
  * view with a different renderer), and this is the build that has it.
  */
 import { browser } from '@wdio/globals';
-import { provisionUser, uniqueCreds } from '../../helpers/auth.ts';
+import { apiToken, provisionUser, uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
 import { tap, typeInto, waitForGone, waitForTextIn, waitForVisible } from '../../helpers/selectors.ts';
 import {
@@ -27,11 +27,9 @@ import {
   sendMessage,
   signIn,
   waitForRunDone,
+  listSandboxes,
 } from '../../helpers/app.ts';
 
-/** What the container image puts the checkout at, and so what a terminal
- * opened on a container sandbox must report as its working directory. */
-const CONTAINER_WORKDIR = '/home/loxaic/repo';
 
 /** Types a command into the panel's line input and submits it. Enter rather
  * than a button: the input's `onSubmitEditing` is what a terminal's Return
@@ -43,6 +41,7 @@ async function runCommand(command: string): Promise<void> {
 
 describe('agent terminal panel', () => {
   const creds = uniqueCreds();
+  let workdir = '';
 
   before(async function () {
     this.timeout(60_000);
@@ -65,12 +64,19 @@ describe('agent terminal panel', () => {
     await waitForTextIn('chat.messageList', MOCK_TOOL_DONE);
     const [conversation] = await listConversations(creds);
     await waitForRunDone(creds, conversation.id);
+    // Where the agent's own commands run, fixed here rather than asked of the
+    // code under test: the checkout in a container, the sandbox's own folder's
+    // checkout in host mode (#320).
+    const token = await apiToken(creds);
+    const [sandbox] = await listSandboxes(token, conversation.id);
+    workdir = sandbox.provider === 'host' ? `${sandbox.containerId}/repo` : '/home/loxaic/repo';
+    expect(workdir.length).toBeGreaterThan('/repo'.length);
 
     await tap('agent.terminal.toggle');
     await waitForVisible('agent.terminal.panel');
     // #62, from the outside: the shell opened where the agent's own commands
     // run, not in the home directory above it.
-    await waitForTextIn('agent.terminal.status', CONTAINER_WORKDIR);
+    await waitForTextIn('agent.terminal.status', workdir);
     await shot('terminal-open');
 
     // `$((21*2))` is evaluated by the shell, so "term-ok-42" can only come
@@ -79,9 +85,12 @@ describe('agent terminal panel', () => {
     await runCommand('echo term-ok-$((21*2))');
     await waitForTextIn('agent.terminal.view', 'term-ok-42');
 
-    // And the same directory again, this time asked of the shell itself.
-    await runCommand('pwd');
-    await waitForTextIn('agent.terminal.view', CONTAINER_WORKDIR);
+    // And the same directory again, this time asked of the shell itself. The
+    // shell compares: a host sandbox's path is longer than a terminal row, and
+    // the view's text breaks it across rows. "samedir-42" only comes from the
+    // comparison holding, as above.
+    await runCommand(`[ "$(pwd)" = '${workdir}' ] && echo samedir-$((40+2))`);
+    await waitForTextIn('agent.terminal.view', 'samedir-42');
     await shot('terminal-command-output');
   });
 
@@ -93,7 +102,7 @@ describe('agent terminal panel', () => {
 
     await tap('agent.terminal.toggle');
     await waitForVisible('agent.terminal.panel');
-    await waitForTextIn('agent.terminal.status', CONTAINER_WORKDIR);
+    await waitForTextIn('agent.terminal.status', workdir);
     // A fresh shell in the same workspace — the file the agent wrote earlier
     // is still there, which is what "the same workspace" means.
     await runCommand('ls');

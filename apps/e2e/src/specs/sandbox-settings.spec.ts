@@ -8,16 +8,30 @@ import { adminCreds, apiToken, provisionAdmin, uniqueCreds } from '../helpers/au
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { isVisible, waitForVisible } from '../helpers/selectors.ts';
-import { openSandboxSettings, resetSandboxSettings, setSandboxMode, signIn, signOut, signUp } from '../helpers/app.ts';
+import {
+  openSandboxSettings,
+  requiresContainerEngine,
+  resetSandboxSettings,
+  setSandboxMode,
+  signIn,
+  signOut,
+  signUp,
+} from '../helpers/app.ts';
 
 describe('sandbox settings screen', () => {
+  // In the suite's own hook, so the non-admin case below starts signed in
+  // even where the admin case is skipped (host mode, #320).
+  before(async () => {
+    await provisionAdmin();
+    await signIn(adminCreds());
+  });
+
   after(async () => {
     await resetSandboxSettings();
   });
 
-  it('admin sees engine availability and can switch modes through the confirm', async () => {
-    await provisionAdmin();
-    await signIn(adminCreds());
+  it('admin sees engine availability and can switch modes through the confirm', async function () {
+    requiresContainerEngine(this, 'the engine picker and mode switch need a container engine');
     await openSandboxSettings();
 
     // Auto/Docker/Podman/Custom are always rendered (unavailable ones just

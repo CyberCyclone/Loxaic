@@ -33,9 +33,8 @@ import {
   startNewAgentRun,
   waitForRunDone,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
-
-const WORKDIR = '/home/loxaic/repo';
 
 describe('agent workspace: GitHub repository', () => {
   const creds = uniqueCreds();
@@ -75,18 +74,18 @@ describe('agent workspace: GitHub repository', () => {
 
     // The checkout is the fixture, on the branch the chooser named, cut from
     // main — read from disk, not from what any UI said.
-    const head = await execInSandbox(token, sandbox.id, 'git rev-parse --abbrev-ref HEAD', WORKDIR);
+    const head = await execInSandbox(token, sandbox.id, 'git rev-parse --abbrev-ref HEAD');
     expect(head.stdout.trim()).toBe(branch);
-    const file = await execInSandbox(token, sandbox.id, 'cat src/math.js', WORKDIR);
+    const file = await execInSandbox(token, sandbox.id, 'cat src/math.js');
     expect(file.stdout).toContain('export function add');
-    const log = await execInSandbox(token, sandbox.id, 'git log --oneline main', WORKDIR);
+    const log = await execInSandbox(token, sandbox.id, 'git log --oneline main');
     expect(log.stdout).toContain('fixture: bugfix-app');
 
     // And the token is nowhere in the checkout — the invariant sandbox/git.ts
     // exists for, checked where it matters: inside the model's environment.
-    const remote = await execInSandbox(token, sandbox.id, 'git config --get remote.origin.url', WORKDIR);
+    const remote = await execInSandbox(token, sandbox.id, 'git config --get remote.origin.url');
     expect(remote.stdout).not.toContain(VALID_TOKEN);
-    const grep = await execInSandbox(token, sandbox.id, `grep -r ${VALID_TOKEN} .git || echo clean`, WORKDIR);
+    const grep = await execInSandbox(token, sandbox.id, `grep -r ${VALID_TOKEN} .git || echo clean`);
     expect(grep.stdout.trim()).toBe('clean');
 
     // The Inspector names it, and the pill is no longer a control.
@@ -131,7 +130,8 @@ describe('agent workspace: GitHub repository', () => {
     await shot('github-workspace-contents-refused');
   });
 
-  it('refuses GitHub in the chooser when sandboxes have no network, and says why', async () => {
+  it('refuses GitHub in the chooser when sandboxes have no network, and says why', async function () {
+    requiresContainerEngine(this, 'a host-mode sandbox always has the network');
     await patchSandboxSettings({ allowNetwork: false });
     // The agent screen reads /v1/config when it mounts, so leave and return
     // for the chooser to see the changed setting.

@@ -25,8 +25,6 @@ import {
   waitForRunDone,
 } from '../helpers/app.ts';
 
-const WORKDIR = '/home/loxaic/repo';
-
 describe('a new project, built from an empty scratch workspace', () => {
   const creds = uniqueCreds();
 
@@ -52,16 +50,16 @@ describe('a new project, built from an empty scratch workspace', () => {
 
     // The three files, read off disk — each write really happened, not just
     // the tool call that claimed it.
-    const pkg = await execInSandbox(token, sandbox.id, 'cat package.json', WORKDIR);
+    const pkg = await execInSandbox(token, sandbox.id, 'cat package.json');
     expect(pkg.stdout).toContain('"test": "node --test"');
-    const math = await execInSandbox(token, sandbox.id, 'cat src/math.js', WORKDIR);
+    const math = await execInSandbox(token, sandbox.id, 'cat src/math.js');
     expect(math.stdout).toContain('export function add');
-    const test = await execInSandbox(token, sandbox.id, 'cat test/math.test.js', WORKDIR);
+    const test = await execInSandbox(token, sandbox.id, 'cat test/math.test.js');
     expect(test.stdout).toContain("add(2, 3), 5");
 
     // And an independent run of the exact command the scenario's own last
     // step already ran — the test the project ships with genuinely passes.
-    const rerun = await execInSandbox(token, sandbox.id, 'node --test', WORKDIR);
+    const rerun = await execInSandbox(token, sandbox.id, 'node --test');
     expect(rerun.exitCode).toBe(0);
 
     await openInspector();

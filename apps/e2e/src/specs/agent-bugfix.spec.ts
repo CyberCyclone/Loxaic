@@ -33,8 +33,6 @@ import {
   waitForRunDone,
 } from '../helpers/app.ts';
 
-const WORKDIR = '/home/loxaic/repo';
-
 interface RecordedPull {
   number: number;
   owner: string;
@@ -82,13 +80,13 @@ describe('a realistic bugfix task, from clone to pull request', () => {
 
     // The fix is real, read off disk — not inferred from the mock's own
     // account of what it did.
-    const file = await execInSandbox(token, sandbox.id, 'cat src/math.js', WORKDIR);
+    const file = await execInSandbox(token, sandbox.id, 'cat src/math.js');
     expect(file.stdout).toContain('return a + b;');
     expect(file.stdout).not.toContain('return a + b + 1;');
 
     // And the tests genuinely pass now — a second, independent run of the
     // exact command the scenario's own last step already ran.
-    const rerun = await execInSandbox(token, sandbox.id, 'node --test', WORKDIR);
+    const rerun = await execInSandbox(token, sandbox.id, 'node --test');
     expect(rerun.exitCode).toBe(0);
 
     await tap('agent.inspector.toggle');

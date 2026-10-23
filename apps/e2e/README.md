@@ -529,6 +529,9 @@ was found) — harmless, but they are what the crashed sessions leave behind.
 | `E2E_ANDROID_AVD` | — | AVD to boot; otherwise uses the running emulator/device. |
 | `ANDROID_HOME` | Android Studio's default SDK path | Android SDK location. |
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/loxaic` | Test database. |
+| `E2E_SANDBOX_MODE` | — | `host` when running inside a Loxaic sandbox — see "Inside a Loxaic sandbox". |
+| `CHROME_BIN` / `CHROMEDRIVER_BIN` | — | An installed Chrome and chromedriver for the web lane, instead of the ones WebdriverIO downloads. |
+| `E2E_CHROME_NO_SANDBOX` | — | `1` adds `--no-sandbox --disable-dev-shm-usage` to Chrome and Electron, for a container that grants no user namespaces and a 64 MB `/dev/shm`. |
 
 Stand-up and teardown can also be driven on their own, which is handy when iterating on a spec
 and you don't want to pay the start-up cost each time:
@@ -538,6 +541,30 @@ pnpm --filter @loxaic/e2e standup
 E2E_NO_STANDUP=1 pnpm --filter @loxaic/e2e test:web
 pnpm --filter @loxaic/e2e teardown
 ```
+
+## Inside a Loxaic sandbox
+
+The `loxaic-dev` image (#320) runs these suites inside a Loxaic agent chat's own sandbox, where
+there is no container engine. `E2E_SANDBOX_MODE=host` adapts stand-up to that:
+
+- **Postgres:** it must already be running (`loxaic-test pg` in the image); stand-up won't start one with Docker.
+- **The server under test:** it runs its agents' commands in host mode (`SANDBOX_MODE=host`, pinned). The sandbox around the run is the isolation.
+- **Proxy and browser:** the egress proxy listens on loopback, and web_fetch's Chromium runs without its own sandbox (`BROWSER_NO_SANDBOX=1`).
+- **The mock registry:** not started, because it needs Docker.
+
+What host mode cannot have skips, with its reason (`requiresContainerEngine`):
+- **The engine itself:** the custom-image specs (`custom-images`, `custom-images-switch`), and
+  `sandbox-settings`' engine picker and mode switch.
+- **A mode switch:** `sandbox-degraded`, and `sandbox-bash`'s live switch to host mode.
+- **A sandbox without network** (a host sandbox always has it): the no-network cases in
+  `bash-classifier`, `agent-live-mode` and `agent-github-workspace`. Their other cases, where the
+  sandbox has the network, still run.
+- **A container's stop:** `agent-stop`'s "Stopping…" (a host-mode kill is immediate), and
+  `sandbox-allocation`'s Pause (offered for a container only). Its refusal and the Sandboxes
+  screen still run.
+
+Everything else a person does in a chat runs. `E2E_SANDBOX_MODE=host` with `E2E_NO_STANDUP=1`
+checks that the running server is in host mode; with `E2E_SELF_CONTAINED=1` it is refused.
 
 ## Writing a spec
 

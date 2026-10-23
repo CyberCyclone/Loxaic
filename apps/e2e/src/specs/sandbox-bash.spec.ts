@@ -22,7 +22,9 @@ import {
   signIn,
   startNewAgentRun,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
+import { SANDBOX_HOST_MODE } from '../../scripts/standup.ts';
 
 describe('sandbox bash parity', () => {
   before(async () => {
@@ -41,7 +43,7 @@ describe('sandbox bash parity', () => {
     await resetSandboxSettings();
   });
 
-  it('runs an approved bash call in container mode (the default)', async () => {
+  it(`runs an approved bash call in ${SANDBOX_HOST_MODE ? 'host mode (pinned for this run)' : 'container mode (the default)'}`, async () => {
     await goToSurface('agent');
     await tap('agent.mode.manual');
     await sendMessage(BASH_PROMPT);
@@ -49,10 +51,11 @@ describe('sandbox bash parity', () => {
     await waitForVisible('agent.permission.bar');
     await tap('agent.permission.allow');
     await waitForToolResult(MOCK_BASH_OUTPUT);
-    await shot('sandbox-bash-container');
+    await shot(SANDBOX_HOST_MODE ? 'sandbox-bash-host' : 'sandbox-bash-container');
   });
 
-  it('runs the identical flow in host mode after a live switch', async () => {
+  it('runs the identical flow in host mode after a live switch', async function () {
+    requiresContainerEngine(this, 'it switches the sandbox mode, which host mode pins');
     await openSandboxSettings();
     await setSandboxMode('host');
     await shot('sandbox-host-mode-enabled');

@@ -21,6 +21,7 @@ import {
   signIn,
   startNewAgentRun,
   waitForRunDone,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 const ALLOWED = 'make a checked note';
@@ -86,6 +87,7 @@ describe('the auto-mode permission check', () => {
   });
 
   it('runs without a check where the sandbox has no network', async function () {
+    requiresContainerEngine(this, 'a host-mode sandbox always has the network');
     this.timeout(3 * 60_000);
     await resetSandboxSettings();
     const conversationId = await autoRun(ASKED);

@@ -7,7 +7,7 @@
  * loaded through the API; loading one through the screens is
  * custom-images.spec.ts's subject.
  */
-import { BASE_URL, mockRegistry } from '../../scripts/standup.ts';
+import { BASE_URL, SANDBOX_HOST_MODE, mockRegistry } from '../../scripts/standup.ts';
 import { REGISTRY_PASSWORD, REGISTRY_USERNAME } from '../../scripts/mock-registry.ts';
 import { adminCreds, apiToken, provisionAdmin, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
@@ -30,6 +30,7 @@ import {
   startNewAgentRun,
   waitForRunDone,
   waitForToolResult,
+  requiresContainerEngine,
 } from '../helpers/app.ts';
 
 async function api(creds: Pick<Credentials, 'email' | 'password'>, method: string, pathname: string, body?: unknown): Promise<unknown> {
@@ -64,7 +65,8 @@ describe("changing a conversation's image (#253)", function () {
   let conversationId = '';
   let historyBefore: string[] = [];
 
-  before(async () => {
+  before(async function () {
+    requiresContainerEngine(this, 'custom images need a container engine and the mock registry');
     const registry = mockRegistry();
     const admin = await provisionAdmin();
     await resetSandboxSettings();
@@ -84,6 +86,8 @@ describe("changing a conversation's image (#253)", function () {
   });
 
   after(async () => {
+    // Mocha runs `after` even when `before` skipped the suite.
+    if (SANDBOX_HOST_MODE) return;
     const admin = adminCreds();
     await api(admin, 'DELETE', `/v1/admin/images/${sharedId}`).catch(() => undefined);
     const logins = ((await api(admin, 'GET', '/v1/admin/images/logins').catch(() => ({ logins: [] }))) as { logins: { id: string }[] }).logins;
