@@ -322,6 +322,8 @@ describe('custom sandbox images (#253)', function () {
     expect(await isSwitchOn(`images.image.kvm.${sharedId}`)).toBe(false);
     // Off, the image never needs the device: nothing to warn about yet.
     await expectNeverPresent([`images.image.kvm.warning.${sharedId}`]);
+    // Under the switch, below a phone's fold.
+    await scrollTo(`images.image.kvm.risk.${sharedId}`);
     await waitForTextIn(`images.image.kvm.risk.${sharedId}`, 'host kernel');
     await tap(`images.image.kvm.${sharedId}`);
     await waitForSwitch(`images.image.kvm.${sharedId}`, true);
