@@ -85,9 +85,12 @@ describe('agent terminal panel', () => {
     await runCommand('echo term-ok-$((21*2))');
     await waitForTextIn('agent.terminal.view', 'term-ok-42');
 
-    // And the same directory again, this time asked of the shell itself.
-    await runCommand('pwd');
-    await waitForTextIn('agent.terminal.view', workdir);
+    // And the same directory again, this time asked of the shell itself. The
+    // shell compares: a host sandbox's path is longer than a terminal row, and
+    // the view's text breaks it across rows. "samedir-42" only comes from the
+    // comparison holding, as above.
+    await runCommand(`[ "$(pwd)" = '${workdir}' ] && echo samedir-$((40+2))`);
+    await waitForTextIn('agent.terminal.view', 'samedir-42');
     await shot('terminal-command-output');
   });
 
