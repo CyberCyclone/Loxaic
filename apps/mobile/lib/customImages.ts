@@ -132,3 +132,13 @@ export function parseLimitsInput(input: { memoryMb: string; cpus: string; pids: 
   if (!Number.isInteger(pids) || pids < 64 || pids > 32_768) return { ok: false, error: 'Processes must be a whole number from 64 to 32768.' };
   return { ok: true, limits: { memoryMb, cpus, pids } };
 }
+
+/** The line under a shared image's KVM switch (#320) when the server cannot
+ * see /dev/kvm: the switch still saves, since the engine may be on another
+ * machine that has it, but a sandbox will not start where it is missing. */
+export function kvmWarning(visible: boolean | null, on: boolean): string | null {
+  // Only for an image that has it on: one without never needs the device.
+  return on && visible === false
+    ? "This server can't see /dev/kvm. A sandbox from this image won't start unless the Docker host has it."
+    : null;
+}

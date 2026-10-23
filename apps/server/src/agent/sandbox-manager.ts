@@ -642,6 +642,9 @@ async function imageConfigFor(
       ref: digest,
       uid: row.uid,
       gid: row.gid,
+      // A shared image's only: a personal row's limits are always the
+      // defaults above, which never pass a device.
+      ...(limits.kvm ? { kvm: true } : {}),
       ensure: async () => {
         const { sandboxEngine } = await import("../sandbox/container-provider.ts");
         const { docker } = await sandboxEngine();

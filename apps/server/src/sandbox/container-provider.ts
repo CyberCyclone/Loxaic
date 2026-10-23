@@ -174,7 +174,13 @@ export function getContainerProvider(): SandboxProvider {
         network: allowNetwork,
         extraHosts,
         ...(config.image
-          ? { image: { ref: config.image.ref, home: { uid: config.image.uid, gid: config.image.gid } } }
+          ? {
+              image: {
+                ref: config.image.ref,
+                home: { uid: config.image.uid, gid: config.image.gid },
+                ...(config.image.kvm ? { kvm: true } : {}),
+              },
+            }
           : {}),
       });
 

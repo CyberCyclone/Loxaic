@@ -2309,6 +2309,9 @@ export interface ImageLimits {
   memoryMb: number;
   cpus: number;
   pids: number;
+  /** Shared images: pass the host's /dev/kvm through (#320). Absent from a
+   * server that predates it. */
+  kvm?: boolean;
 }
 
 export interface SandboxImage {
@@ -2387,7 +2390,15 @@ export async function deleteRegistryLogin(scope: ImageScope, id: string): Promis
 }
 
 export async function getSandboxImages(scope: ImageScope): Promise<SandboxImage[]> {
-  return (await imageFetch<{ images: SandboxImage[] }>(imagesBase(scope))).images;
+  return (await getSandboxImageList(scope)).images;
+}
+
+/** The list, and for shared images whether the server can see /dev/kvm
+ * (#320; absent from an older server, and for personal images). */
+export async function getSandboxImageList(
+  scope: ImageScope,
+): Promise<{ images: SandboxImage[]; kvm?: { visible: boolean } }> {
+  return imageFetch<{ images: SandboxImage[]; kvm?: { visible: boolean } }>(imagesBase(scope));
 }
 
 /** Adds an image and starts pulling it; poll the list for the outcome. */

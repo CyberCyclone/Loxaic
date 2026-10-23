@@ -17,6 +17,7 @@ Custom sandbox images (#253): registry logins (`logins.ts`), image rows and thei
 ## Running a stranger's image
 
 - Override `Entrypoint` (`tail -f /dev/null`) and `Healthcheck` (`NONE`) and keep the image's user and `ENV`; never drop `CapDrop: ALL` or `no-new-privileges` for one.
+- The only device a sandbox gets is `/dev/kvm`, from a shared image's admin-set `limits.kvm` (#320); never pass another device, a capability or a socket, and never let a personal image or a request set it.
 - Make `/home/loxaic/repo` with `putArchive` before start, owned by the uid:gid the check found; Docker otherwise creates a missing `WorkingDir` owned by root.
 - Refuse an image carrying `loxaic.*` labels: a container inherits them, and `loxaic.executor` hides it from the orphan sweep.
 - Keep `check.ts`'s required list in step with what the tools run unconditionally (the exec wrapper, the file tools, checkpoints, instruction and skill reads); a missing tool breaks a run silently.

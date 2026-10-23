@@ -188,7 +188,7 @@ describe("the policy", () => {
     expect((await call(alice, "POST", "/v1/admin/images", { reference: "ubuntu" })).status).toBe(403);
     const added = await call(admin, "POST", "/v1/admin/images", { reference: "ubuntu", limits: { memoryMb: 2048, cpus: 2, pids: 500 } });
     expect(added.status).toBe(200);
-    expect(added.body.limits).toEqual({ memoryMb: 2048, cpus: 2, pids: 500 });
+    expect(added.body.limits).toEqual({ memoryMb: 2048, cpus: 2, pids: 500, kvm: false });
     await __waitForPull(added.body.id as string);
   });
 
@@ -197,6 +197,33 @@ describe("the policy", () => {
     const res = await call(alice, "POST", "/v1/images/mine", { reference: "ubuntu" });
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/container sandbox/);
+  });
+
+  it("refuses a shared image's limits, KVM included, while the policy blocks shared images, but not a rename (#320)", async () => {
+    const row = await readyImage(null, "Dormant");
+    process.env.SANDBOX_CUSTOM_IMAGES = "personal";
+    expect((await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { kvm: true } })).status).toBe(403);
+    expect((await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { memoryMb: 4096 } })).status).toBe(403);
+    expect((await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { label: "Renamed" })).status).toBe(200);
+    const stored = await db.query.sandboxImages.findFirst({ where: eq(sandboxImages.id, row.id) });
+    expect((stored?.limits as { kvm?: boolean } | null)?.kvm).not.toBe(true);
+  });
+
+  it("merges a shared image's limits in the database, so the KVM switch and the sizes never undo each other (#320)", async () => {
+    process.env.SANDBOX_CUSTOM_IMAGES = "shared";
+    const row = await readyImage(null, "Crossed");
+    await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { kvm: true } });
+    // Open connections first, so the two writes really overlap.
+    await Promise.all(Array.from({ length: 8 }, () => db.select({ id: user.id }).from(user).where(eq(user.id, admin))));
+    for (let i = 0; i < 5; i++) {
+      await Promise.all([
+        call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { kvm: false } }),
+        call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { memoryMb: 4096 + i } }),
+      ]);
+      const stored = await db.query.sandboxImages.findFirst({ where: eq(sandboxImages.id, row.id) });
+      expect(stored?.limits).toEqual({ memoryMb: 4096 + i, cpus: 1, pids: 100, kvm: false });
+      await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { kvm: true } });
+    }
   });
 
   it("bounds a shared image's limits and keeps them off personal images", async () => {

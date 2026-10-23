@@ -158,7 +158,15 @@ export interface CreateSandboxConfig {
    * `ensure` makes sure it is on the engine — pulling it again, with the
    * row's own login, if it was pruned. Absent: Loxaic's own image.
    */
-  image?: { ref: string; uid: number; gid: number; ensure: () => Promise<void> };
+  image?: {
+    ref: string;
+    uid: number;
+    gid: number;
+    ensure: () => Promise<void>;
+    /** Pass the host's /dev/kvm through (#320): a shared image an admin
+     * allowed it for. */
+    kvm?: boolean;
+  };
   limits?: {
     memory?: number; // bytes
     cpu?: number;    // nano CPUs (container provider only)

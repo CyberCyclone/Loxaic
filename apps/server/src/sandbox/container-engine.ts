@@ -17,7 +17,7 @@ import { SandboxGoneError } from "./errors.ts";
 import { StringDecoder } from "node:string_decoder";
 import { pack } from "tar-fs";
 import { pack as tarPack } from "tar-stream";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -831,6 +831,82 @@ export interface CreateContainerOptions {
 export interface CustomImage {
   ref: string;
   home?: { uid: number; gid: number };
+  /** Pass the host's /dev/kvm through (#320). */
+  kvm?: boolean;
+}
+
+/**
+ * The group to add for /dev/kvm (`GroupAdd`), from the device as this process
+ * sees it. The device keeps the host's ownership inside the container (usually
+ * root:kvm, mode 660), so the image's user can open it only as a member of
+ * that group. None when the device is open to everyone anyway, and never gid 0:
+ * a device owned by root's group gets no group, rather than root's.
+ */
+export function kvmGroupFor(device: { gid: number; mode: number } | null): number | null {
+  if (!device || device.gid === 0) return null;
+  const openToAll = (device.mode & 0o006) === 0o006;
+  return openToAll ? null : device.gid;
+}
+
+/** `kvmGroupFor` the device here. Null when this process cannot see it (a
+ * server in a container of its own, or an engine on another machine): the
+ * container is then made without a group, and a device the image's user cannot
+ * open is the Android lane's own check to report (infra/docker/dev). */
+export function kvmGroup(): number | null {
+  try {
+    const { gid, mode } = statSync("/dev/kvm");
+    return kvmGroupFor({ gid, mode });
+  } catch {
+    return null;
+  }
+}
+
+/** Whether this process can see /dev/kvm: what the admin's KVM switch warns
+ * about. A server whose engine is elsewhere can be wrong both ways; the
+ * container's own start is the real answer (KvmMissingError). */
+export function kvmVisible(): boolean {
+  return existsSync("/dev/kvm");
+}
+
+/** The engine's refusal of /dev/kvm, in words: the host has none, or the
+ * engine may not pass it (a rootless one, say). The engine's own error is the
+ * `cause`. */
+export class KvmMissingError extends Error {
+  readonly reason: "missing" | "refused";
+  constructor(reason: "missing" | "refused", options?: { cause?: unknown }) {
+    super(
+      reason === "missing"
+        ? "This image needs KVM (hardware virtualisation), and this Docker host has no /dev/kvm. " +
+            "An admin can turn KVM off for the image, or run sandboxes on a host that has it."
+        : "This image needs KVM (hardware virtualisation), and this container engine may not pass /dev/kvm " +
+            "into a container (a rootless engine cannot). An admin can turn KVM off for the image, or run " +
+            "sandboxes on an engine that can.",
+      options,
+    );
+    this.name = "KvmMissingError";
+    this.reason = reason;
+  }
+}
+
+/**
+ * What the engine said about /dev/kvm, if anything: only its own errors about
+ * adding that device count. Docker: `error gathering device information while
+ * adding custom device "/dev/kvm": no such file or directory`; Podman: `stat
+ * /dev/kvm: no such file or directory`, or a permission error when rootless.
+ */
+export function kvmRefusal(err: unknown): "missing" | "refused" | null {
+  const message = err instanceof Error ? err.message : String(err);
+  const about = /(adding custom device "\/dev\/kvm"|stat \/dev\/kvm|"\/dev\/kvm"):\s*/i.exec(message);
+  if (!about) return null;
+  const rest = message.slice(about.index + about[0].length);
+  if (/^no such file or directory/i.test(rest)) return "missing";
+  if (/^(operation not permitted|permission denied)/i.test(rest)) return "refused";
+  return null;
+}
+
+function kvmError(err: unknown): unknown {
+  const refusal = kvmRefusal(err);
+  return refusal ? new KvmMissingError(refusal, { cause: err }) : err;
 }
 
 /**
@@ -847,6 +923,11 @@ export async function createSandboxContainer(
 ): Promise<SandboxHandle> {
   const custom = opts.image;
   const env = [...(opts.env ?? []), ...(custom?.home ? [`HOME=${CONTAINER_ROOT}`] : [])];
+  // The one device a sandbox can be given, and only from a shared image an
+  // admin allowed it for (images/AGENTS.md). Opening it needs no capability,
+  // so CapDrop and no-new-privileges below stay exactly as they are.
+  const kvm = custom?.kvm === true;
+  const kvmGid = kvm ? kvmGroup() : null;
   const container = await docker.createContainer({
     Image: custom ? custom.ref : sandboxImage(),
     ...(env.length > 0 ? { Env: env } : {}),
@@ -912,12 +993,22 @@ export async function createSandboxContainer(
       //   capabilities durable rather than a starting position.
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges"],
+      ...(kvm
+        ? {
+            Devices: [{ PathOnHost: "/dev/kvm", PathInContainer: "/dev/kvm", CgroupPermissions: "rwm" }],
+            ...(kvmGid !== null ? { GroupAdd: [String(kvmGid)] } : {}),
+          }
+        : {}),
     },
     Labels: {
       "loxaic.user": opts.userId,
       "loxaic.sandbox": uuid(),
       ...opts.labels,
     },
+  }).catch((err: unknown) => {
+    // Docker may refuse a device it cannot find when the container is made,
+    // or only when it starts (below), depending on the engine.
+    throw kvm ? kvmError(err) : err;
   });
   // Removed if it never gets going: no handle is returned to destroy it, no
   // row claims it, and only the next boot's orphan sweep would find it. A
@@ -930,7 +1021,7 @@ export async function createSandboxContainer(
     await container.start();
   } catch (err) {
     await container.remove({ force: true, v: true }).catch(() => undefined);
-    throw err;
+    throw kvm ? kvmError(err) : err;
   }
   return makeHandle(docker, container.id);
 }
