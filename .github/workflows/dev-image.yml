@@ -1,0 +1,80 @@
+name: Dev image
+
+# loxaic-dev (#320): the custom sandbox image for developing Loxaic inside a
+# Loxaic agent chat. Built on the sandbox image, checked by its own selftest
+# under the restrictions Loxaic gives every sandbox, and pushed to GHCR from
+# `dev` only. A pull request that touches it builds and checks it, and pushes
+# nothing.
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - infra/docker/sandbox.Dockerfile
+      - infra/docker/sandbox/**
+      - infra/docker/dev/**
+      - .github/workflows/dev-image.yml
+  push:
+    branches: [dev]
+    paths:
+      - infra/docker/sandbox.Dockerfile
+      - infra/docker/sandbox/**
+      - infra/docker/dev/**
+      - .github/workflows/dev-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One build per branch at a time. A newer push to a pull request supersedes an
+# older one; a publish from dev is never cancelled halfway through its pushes.
+concurrency:
+  group: dev-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Two jobs that do the same build, so that only the one that pushes holds
+  # `packages: write`, and only on dev: a pull request's job never has it.
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build and selftest
+        run: infra/docker/dev/ci-build.sh
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build and selftest
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          image=ghcr.io/cybercyclone/loxaic-dev
+          TAGS="loxaic-dev:local,$image:sha-${SHA::12},$image:latest" infra/docker/dev/ci-build.sh
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push
+        env:
+          SHA: ${{ github.sha }}
+        # The immutable tag first: :latest never names an image that has no
+        # :sha- tag to roll back to.
+        run: |
+          image=ghcr.io/cybercyclone/loxaic-dev
+          docker push "$image:sha-${SHA::12}"
+          docker push "$image:latest"
