@@ -422,10 +422,12 @@ async function routerFetch(pathname: string, init: RequestInit = {}, timeoutMs =
   if (!ep) throw new Error(routerUnavailableReason());
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, timeoutMs);
+  // A caller's own signal (a Stop) ends the request too, as the timeout does.
+  const signal = init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
   try {
     return await fetch(`${ep.nativeRoot}${pathname}`, {
       ...init,
-      signal: controller.signal,
+      signal,
       headers: {
         ...(init.body ? { "content-type": "application/json" } : {}),
         ...(ep.apiKey ? { Authorization: `Bearer ${ep.apiKey}` } : {}),
@@ -525,10 +527,11 @@ export async function slotAction(
   action: "save" | "restore",
   file: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ tokens: number; bytes: number; ms: number }> {
   const res = await routerFetch(
     `/slots/${String(slot)}?action=${action}`,
-    { method: "POST", body: JSON.stringify({ model: routerModelName(id), filename: file }) },
+    { method: "POST", body: JSON.stringify({ model: routerModelName(id), filename: file }), ...(signal ? { signal } : {}) },
     timeoutMs,
   );
   const text = await res.text().catch(() => "");
@@ -726,14 +729,26 @@ async function builtinRunsActive(): Promise<number> {
  * reload keeps the router's old list, so nothing was unloaded and the models
  * held to be loaded again are owed nothing — kept, a later, unrelated reload
  * would load them, maybe after an admin had unloaded one. */
-async function reloadNow(): Promise<boolean> {
+async function reloadNow(): Promise<boolean | "deferred"> {
   const unloading = new Map(unloadingOnReload);
   unloadingOnReload.clear();
   const store = unloading.size > 0 ? await import("./slot-store.ts") : null;
-  for (const [id, { loadedIdentity }] of unloading) {
-    // Before the reload, which is what unloads them; only when what they load
-    // with next computes the same cache (a YaRN stage never does).
-    if (store && loadedIdentity && loadedIdentity === getCacheIdentity(id)) await store.saveModel(id, loadedIdentity);
+  if (store) {
+    const deadline = Date.now() + RELOAD_SAVE_BUDGET_MS;
+    for (const [id, { loadedIdentity }] of unloading) {
+      // Before the reload, which is what unloads them; only when what they
+      // load with next computes the same cache (a YaRN stage never does).
+      if (loadedIdentity && loadedIdentity === getCacheIdentity(id)) await store.saveModel(id, loadedIdentity, { deadline });
+    }
+    // Saving takes time, and a reply may have started on one of these models
+    // meanwhile: reloading now would cut it off, which is what deferring is
+    // for. Wait for it as before (the next pass saves again, newer caches
+    // included).
+    if ((await builtinRunsActive()) > 0) {
+      for (const [id, entry] of unloading) if (!unloadingOnReload.has(id)) unloadingOnReload.set(id, entry);
+      scheduleDeferredReload();
+      return "deferred";
+    }
   }
   try {
     const res = await routerFetch("/models?reload=1", {}, 10_000);
@@ -898,6 +913,7 @@ async function syncPresetNow(opts: SyncOptions): Promise<SyncResult> {
   }
   // A refused reload unloaded nothing, so nothing is being loaded again.
   const reloaded = await reloadNow();
+  if (reloaded === "deferred") return { deferred: true, reloading };
   return { deferred: false, reloading: reloaded ? reloading : [] };
 }
 
@@ -946,6 +962,7 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   if (process.env.LOXAIC_FAKE_HELP_OMIT) env.LOXAIC_FAKE_HELP_OMIT = process.env.LOXAIC_FAKE_HELP_OMIT;
   if (process.env.LOXAIC_FAKE_RESTORE_MS) env.LOXAIC_FAKE_RESTORE_MS = process.env.LOXAIC_FAKE_RESTORE_MS;
   if (process.env.LOXAIC_FAKE_SLOT_FAIL) env.LOXAIC_FAKE_SLOT_FAIL = process.env.LOXAIC_FAKE_SLOT_FAIL;
+  if (process.env.LOXAIC_FAKE_SAVE_MS) env.LOXAIC_FAKE_SAVE_MS = process.env.LOXAIC_FAKE_SAVE_MS;
   return env;
 }
 
@@ -1382,6 +1399,8 @@ function chosenDevices(devices: RuntimeDevice[]): string[] {
 /** How long saving the slots may hold up a restart, and a shutdown (which a
  * service manager will not wait long for). */
 const RESTART_SAVE_BUDGET_MS = 120_000;
+/** How long saving may hold up a settings reload, which an admin's Save waits on. */
+const RELOAD_SAVE_BUDGET_MS = 120_000;
 const SHUTDOWN_SAVE_BUDGET_MS = 30_000;
 
 let ensuring: Promise<void> | null = null;

@@ -821,7 +821,10 @@ export type PromptCacheLossReason =
   | "unload"
   | "evicted"
   | "crash"
-  | "device_lost";
+  | "device_lost"
+  /** Reloaded, and the save that would have kept it was skipped for lack of
+   * disk space on the server. */
+  | "no_disk";
 
 /**
  * What a conversation's next turn on a model will find
@@ -836,7 +839,15 @@ export type PromptCacheView =
   | { state: "none" }
   | { state: "warm" }
   | { state: "saved"; tokens: number }
-  | { state: "lost"; reason: PromptCacheLossReason; tokens: number; reread_seconds: number | null };
+  | {
+      state: "lost";
+      reason: PromptCacheLossReason;
+      tokens: number;
+      reread_seconds: number | null;
+      /** `no_disk` only: what the save needed and what was free, in bytes. */
+      need_bytes?: number;
+      free_bytes?: number;
+    };
 
 /** A backend's own account of how far prompt evaluation has got. */
 export type ContextStageStep = "waiting" | "reloading" | "rereading" | "applied" | "failed";

@@ -139,7 +139,7 @@ export async function applyStageChange(opts: {
   /** Re-read the caller's conversation after the load, reporting the
    * backend's progress. Supplied by a stage run that has the conversation's
    * request shape; failures are the caller's to swallow. */
-  warm?: (signal: AbortSignal, onProgress: (p: PromptProgress) => void) => Promise<void>;
+  warm?: (signal: AbortSignal, onProgress: (p: PromptProgress) => void) => Promise<unknown>;
   /** The wait for the whole backend, as the run registry reports it (#282):
    * `onQueued` with each place in line, `onWaitEnded` once the wait is over,
    * admitted or not. Without them a thread-list row said "Running" for a

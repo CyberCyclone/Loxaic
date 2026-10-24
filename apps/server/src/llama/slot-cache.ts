@@ -171,6 +171,9 @@ export interface Manifest {
   model: string;
   identity: string;
   entries: SavedEntry[];
+  /** Bytes a save of this model took per token, last measured: what the next
+   * save's disk check asks for. Kept here so it outlives a restart. */
+  bytesPerToken?: number;
 }
 
 /** Saved state is conversation content: kept only this long. */
@@ -199,7 +202,39 @@ export function parseManifest(text: string): Manifest | null {
       typeof e.saveMs === "number" &&
       typeof e.savedAt === "number",
   );
-  return { version: 1, model: m.model, identity: m.identity, entries };
+  const perToken = typeof m.bytesPerToken === "number" && m.bytesPerToken > 0 ? m.bytesPerToken : undefined;
+  return { version: 1, model: m.model, identity: m.identity, entries, ...(perToken ? { bytesPerToken: perToken } : {}) };
+}
+
+// ── How much disk a save needs ──────────────────────────────────────────────
+
+/** Free disk a save must leave behind. */
+export const DISK_MARGIN_BYTES = 2 * 1024 ** 3;
+
+/** Per token, when neither a measurement nor the model's shape is known: above
+ * anything measured on Pheonix (11–36 KB). */
+export const FALLBACK_BYTES_PER_TOKEN = 64 * 1024;
+
+/**
+ * What saving `tokens` of a model is expected to take: by the last measured
+ * save when there is one, else by the model's own cache shape — its KV cache
+ * for that many tokens and one sequence's recurrent state, which is what
+ * llama.cpp writes — else the fallback.
+ */
+export function estimatedSaveBytes(
+  tokens: number,
+  known: { measuredPerToken?: number | null; shape?: { kvBytes: number; recurrentBytes: number } | null },
+): number {
+  if (known.measuredPerToken && known.measuredPerToken > 0) return Math.ceil(tokens * known.measuredPerToken);
+  if (known.shape && known.shape.kvBytes > 0) return known.shape.kvBytes + known.shape.recurrentBytes;
+  return tokens * FALLBACK_BYTES_PER_TOKEN;
+}
+
+/** A save skipped for want of disk: what it needed, what was free. */
+export interface DiskSkip {
+  at: number;
+  needBytes: number;
+  freeBytes: number;
 }
 
 /** The entries still worth keeping: not expired, and for a conversation that
@@ -247,6 +282,8 @@ export interface CacheStateInput {
   saved: { tokens: number } | null;
   /** The newest unload of `model` this server caused or saw. */
   lastReload: ReloadEvent | null;
+  /** This conversation's save, skipped for lack of disk, if it was. */
+  diskSkip?: DiskSkip | null;
   /** When this server started: every child process is newer than that. */
   bootAt: number;
   /** Tokens per second this model evaluates prompts at, when known. */
@@ -271,10 +308,11 @@ export function promptCacheState(input: CacheStateInput): PromptCacheView {
         : null;
   if (!reload) return { state: "warm" };
   const rate = input.prefillRate;
-  return {
-    state: "lost",
-    reason: reload.reason,
-    tokens: turn.tokens,
-    reread_seconds: rate && rate > 0 ? Math.round(turn.tokens / rate) : null,
-  };
+  const reread_seconds = rate && rate > 0 ? Math.round(turn.tokens / rate) : null;
+  // The skip is the reason only when it was this turn's cache it failed to keep.
+  const skip = input.diskSkip && input.diskSkip.at >= turn.at ? input.diskSkip : null;
+  if (skip) {
+    return { state: "lost", reason: "no_disk", tokens: turn.tokens, reread_seconds, need_bytes: skip.needBytes, free_bytes: skip.freeBytes };
+  }
+  return { state: "lost", reason: reload.reason, tokens: turn.tokens, reread_seconds };
 }

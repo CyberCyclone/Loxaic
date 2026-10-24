@@ -77,6 +77,20 @@ describe('promptCacheBanner', () => {
     expect(promptCacheBanner(input({ view: { ...lost, reason: 'context_stage', reread_seconds: null } }))?.text).toMatch(/210k tokens\.$/);
   });
 
+  it('says it was the disk when the save was skipped for want of it, with the figures', () => {
+    const skipped: PromptCacheView = { ...lost, reason: 'no_disk', need_bytes: 3.1 * 1024 ** 3, free_bytes: 300 * 1024 ** 2 };
+    expect(promptCacheBanner(input({ view: skipped }))?.text).toBe(
+      "Flash-Next was reloaded, and the server didn't have the disk space to keep this conversation's prompt cache " +
+        '(it needed about 3.1 GB, and 300 MB was free). Your next message re-reads all 210k tokens (about 12 min).',
+    );
+    // Small figures stay themselves, never rounded up into each other.
+    expect(promptCacheBanner(input({ view: { ...skipped, need_bytes: 832 * 1024, free_bytes: 1 } }))?.text).toContain(
+      '(it needed about 832 KB, and 1 B was free)',
+    );
+    // An older server's no_disk carries no figures: the sentence still stands.
+    expect(promptCacheBanner(input({ view: { ...lost, reason: 'no_disk' } }))?.text).toMatch(/disk space to keep this conversation's prompt cache\. Your next/);
+  });
+
   it('says nothing when the cache is not certainly gone, or the re-read is short', () => {
     for (const view of [null, { state: 'none' }, { state: 'warm' }, { state: 'saved', tokens: 210_000 }] as (PromptCacheView | null)[]) {
       expect(promptCacheBanner(input({ view })), JSON.stringify(view)).toBeNull();

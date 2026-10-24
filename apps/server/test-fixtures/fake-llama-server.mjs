@@ -269,15 +269,22 @@ function isPrefix(a, b) {
   return a.length <= b.length && a.every((m, i) => m === b[i]);
 }
 
-/** The slot a request lands in, and what it reuses: the slot holding a prefix
- * of it, else an empty one, else the first. */
-function takeSlot(id, msgs) {
+/** What slot `s` gives back to a request for `msgs`. */
+function reuseOf(s, msgs) {
+  if (!s || !isPrefix(s.msgs, msgs)) return 0;
+  return !s.generated ? s.tokens : s.restored ? 0 : s.promptTokens;
+}
+
+/** The slot a request lands in, and what it reuses: the one it names
+ * (`id_slot`, as llama.cpp honours it), else the slot holding a prefix of it,
+ * else an empty one, else the first. */
+function takeSlot(id, msgs, wanted) {
   const slots = slotsOf(id);
+  if (Number.isInteger(wanted) && wanted >= 0 && wanted < slots.length) return { index: wanted, cached: reuseOf(slots[wanted], msgs) };
   for (let i = 0; i < slots.length; i++) {
     const s = slots[i];
     if (!s || !isPrefix(s.msgs, msgs)) continue;
-    const cached = !s.generated ? s.tokens : s.restored ? 0 : s.promptTokens;
-    return { index: i, cached };
+    return { index: i, cached: reuseOf(s, msgs) };
   }
   const empty = slots.findIndex((s) => s === null);
   return { index: empty >= 0 ? empty : 0, cached: 0 };
@@ -567,6 +574,10 @@ const server = createServer(async (req, res) => {
     // server estimates a restore's progress from the save's time).
     const restoreMs = Number(process.env.LOXAIC_FAKE_RESTORE_MS ?? 0);
     if (action === "save") {
+      // `LOXAIC_FAKE_SAVE_MS`: a save that takes time, as a big one does, so a
+      // test can start a reply while it runs.
+      const saveMs = Number(process.env.LOXAIC_FAKE_SAVE_MS ?? 0);
+      if (saveMs > 0) await new Promise((r) => setTimeout(r, saveMs));
       const s = slots[index];
       const state = s ? { msgs: s.msgs, promptTokens: s.promptTokens, tokens: s.tokens, generated: s.generated } : null;
       // A real save is megabytes per thousand tokens; padded so a restore has
@@ -575,7 +586,10 @@ const server = createServer(async (req, res) => {
       const text = JSON.stringify({ state, pad: "x".repeat((s?.tokens ?? 0) * 64) });
       writeFileSync(file, text);
       logEvent({ event: "slot-save", model: id, slot: index, tokens: s?.tokens ?? 0, file: filename });
-      return json(res, 200, { id_slot: index, filename, n_saved: s?.tokens ?? 0, n_written: Buffer.byteLength(text), timings: { save_ms: Math.max(restoreMs, 1) } });
+      // `LOXAIC_FAKE_SLOT_FAIL=drift`: the slot held something else by the
+      // time it was written (another request took it), so its count is off.
+      const drift = process.env.LOXAIC_FAKE_SLOT_FAIL === "drift" ? 5 : 0;
+      return json(res, 200, { id_slot: index, filename, n_saved: (s?.tokens ?? 0) + drift, n_written: Buffer.byteLength(text), timings: { save_ms: Math.max(restoreMs, 1) } });
     }
     if (action === "restore") {
       let text;
@@ -613,7 +627,7 @@ const server = createServer(async (req, res) => {
     // Which slot it runs in and what that slot gives back, as llama.cpp's
     // `cache_n` (see slotState); the slot takes this request once it ends.
     const msgs = (body.messages ?? []).map((m) => JSON.stringify(m));
-    const { index: slotIndex, cached } = takeSlot(body.model, msgs);
+    const { index: slotIndex, cached } = takeSlot(body.model, msgs, body.id_slot);
     const cacheN = Math.min(cached, Math.max(promptSize(body) - 1, 0));
     // What the thinking level became on the wire, so a test can tell the level
     // picked in the composer reached the backend, in llama.cpp's own fields.
@@ -621,6 +635,9 @@ const server = createServer(async (req, res) => {
       event: "chat",
       model: body.model,
       cache_n: cacheN,
+      // The slot it was told to run in (`id_slot`), as the warm-up before a
+      // save names it.
+      id_slot: Number.isInteger(body.id_slot) ? body.id_slot : null,
       reasoning_effort: body.reasoning_effort ?? null,
       chat_template_kwargs: body.chat_template_kwargs ?? null,
       // What the request reported costing, and how it ended, so a test can see
@@ -646,6 +663,11 @@ const server = createServer(async (req, res) => {
           n_ctx: nCtx,
         },
       });
+    }
+    // A warm-up (`max_tokens: 1`) of a conversation whose last user message
+    // says "fail my warm-up" is refused, as a backend can refuse one.
+    if (body.max_tokens === 1 && /fail my warm-up/i.test(said([...(body.messages ?? [])].reverse().find((m) => m.role === "user")))) {
+      return json(res, 500, { error: { code: 500, message: "the warm-up was refused" } });
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
     // "lose the device": the GPU is reset part-way through reading the prompt,

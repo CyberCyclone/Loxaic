@@ -1,12 +1,15 @@
-import { createHash } from "node:crypto";
-import { chmod, mkdir, readdir, readFile, readlink, rename, statfs, unlink, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { chmod, mkdir, readdir, readFile, readlink, rename, stat, statfs, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { and, db, desc, eq, gt, inArray, isNotNull, isNull, sql } from "@loxaic/db";
 import { conversations, messages, usageRecords } from "@loxaic/db/schema";
 import type { ContentBlock } from "@loxaic/types";
 import { prefillRate } from "../inference/prefill-rate.ts";
 import { slotSaveDir } from "./paths.ts";
+import { listServableModels, rowMeta } from "./catalog.ts";
+import { activeStageIndex, settingsForStage } from "./context-stages.ts";
 import { childOnPort } from "./residency.ts";
+import { DEFAULT_UBATCH, shapeCost } from "./shape.ts";
 import {
   childPortFor,
   getCacheIdentity,
@@ -24,7 +27,10 @@ import {
   usesNear,
   parseManifest,
   promptCacheState,
+  DISK_MARGIN_BYTES,
+  estimatedSaveBytes,
   SAVED_TTL_MS,
+  type DiskSkip,
   type Manifest,
   type PromptCacheView,
   type ReloadEvent,
@@ -48,13 +54,12 @@ import {
  * llama.cpp creates its files with the umask, so they are tightened after.
  */
 
-/** Free disk a save must leave behind. */
-const DISK_MARGIN_BYTES = 2 * 1024 ** 3;
-/** A save's size before one has been measured for the model: more than any
- * model on Pheonix needs per token (Qwen3.6-35B-A3B measured ~13 KiB). */
-const DEFAULT_BYTES_PER_TOKEN = 64 * 1024;
 const SAVE_TIMEOUT_MS = 120_000;
 const WARM_TIMEOUT_MS = 5 * 60_000;
+/** Below this much time left before a pass's deadline, no further save starts. */
+const MIN_STEP_MS = 2_000;
+/** A file no manifest names is a save still being written for this long. */
+const ORPHAN_GRACE_MS = 60 * 60_000;
 /** A restore reads at disk speed; this bounds a stuck one. */
 const RESTORE_TIMEOUT_MS = 5 * 60_000;
 const PROGRESS_EVERY_MS = 500;
@@ -67,7 +72,37 @@ const bootAt = Date.now();
 const reloads = new Map<string, ReloadEvent>();
 /** Every model's child went with the router (a crash, a restart). */
 let routerGone: ReloadEvent | null = null;
-const bytesPerToken = new Map<string, number>();
+/** Saves skipped for want of disk, by model then conversation: what the
+ * composer's banner says instead of "reloaded". Bounded per model. */
+const diskSkips = new Map<string, Map<string, DiskSkip>>();
+const MAX_SKIPS_PER_MODEL = 200;
+/** The newest skip per model, for the admin's Host models card; cleared by
+ * that model's next save that worked. */
+const lastDiskSkip = new Map<string, DiskSkip>();
+
+function recordDiskSkip(model: string, conversationIds: string[], skip: DiskSkip): void {
+  let byConv = diskSkips.get(model);
+  if (!byConv) {
+    byConv = new Map();
+    diskSkips.set(model, byConv);
+  }
+  for (const id of conversationIds) {
+    byConv.delete(id);
+    if (byConv.size >= MAX_SKIPS_PER_MODEL) {
+      const oldest = byConv.keys().next();
+      if (!oldest.done) byConv.delete(oldest.value);
+    }
+    byConv.set(id, skip);
+  }
+  lastDiskSkip.set(model, skip);
+}
+
+/** The newest save skipped for want of disk, across models, while it stands. */
+export function slotCacheDiskWarning(): { at: number; model: string; needBytes: number; freeBytes: number; dir: string } | null {
+  let newest: { model: string; skip: DiskSkip } | null = null;
+  for (const [model, skip] of lastDiskSkip) if (!newest || skip.at > newest.skip.at) newest = { model, skip };
+  return newest ? { at: newest.skip.at, model: newest.model, needBytes: newest.skip.needBytes, freeBytes: newest.skip.freeBytes, dir: slotSaveDir() } : null;
+}
 /** When each conversation was last re-read into a model with no turn of its
  * own (a context-stage switch's warm-up), by `model|conversation`. */
 const warmedAt = new Map<string, number>();
@@ -113,11 +148,13 @@ async function readManifest(model: string): Promise<Manifest | null> {
 
 async function writeManifest(m: Manifest): Promise<void> {
   const target = manifestPath(m.model);
-  if (m.entries.length === 0) {
+  // An empty one is kept only for its measured size, which the next save uses.
+  if (m.entries.length === 0 && !m.bytesPerToken) {
     await unlink(target).catch(() => undefined);
     return;
   }
-  const tmp = `${target}.${String(process.pid)}.tmp`;
+  // Per write, not per process: two writers sharing a name would splice.
+  const tmp = `${target}.${String(process.pid)}-${randomBytes(4).toString("hex")}.tmp`;
   await writeFile(tmp, JSON.stringify(m), { mode: 0o600 });
   await rename(tmp, target);
 }
@@ -158,6 +195,14 @@ function lastReloadOf(model: string): ReloadEvent | null {
   return !own || routerGone.at > own.at ? routerGone : own;
 }
 
+/** Whether `model`'s process has gone since `at`: a saved entry is only worth
+ * restoring then. One saved for an unload that was refused, or a reload that
+ * was put off, still has its live cache in the slot it came from. A save from
+ * before this server started always qualifies. */
+function reloadedSince(model: string, at: number): boolean {
+  return at < bootAt || (lastReloadOf(model)?.at ?? 0) >= at;
+}
+
 // ── Saving ──────────────────────────────────────────────────────────────────
 
 interface Use {
@@ -194,7 +239,8 @@ async function lastUserTexts(ids: string[]): Promise<Map<string, string>> {
   const rows = await db
     .selectDistinctOn([messages.conversationId], { conversationId: messages.conversationId, content: messages.content })
     .from(messages)
-    .where(and(inArray(messages.conversationId, ids), eq(messages.authorType, "user")))
+    // A message a rewind removed is not what the slot's prompt ends with.
+    .where(and(inArray(messages.conversationId, ids), eq(messages.authorType, "user"), isNull(messages.deletedAt)))
     .orderBy(messages.conversationId, desc(messages.lamport), desc(messages.createdAt));
   return new Map(
     rows.map((r) => [
@@ -204,7 +250,33 @@ async function lastUserTexts(ids: string[]): Promise<Map<string, string>> {
   );
 }
 
+/** What a save of `tokens` of `model` is expected to take (slot-cache.ts):
+ * the manifest's measured figure, else the model's cache shape at its current
+ * stage's cache types. */
+async function expectedBytes(model: string, tokens: number, measuredPerToken: number | undefined): Promise<number> {
+  if (measuredPerToken) return estimatedSaveBytes(tokens, { measuredPerToken });
+  const row = (await listServableModels()).find((r) => r.id === model);
+  const shape = row ? rowMeta(row).shape : null;
+  if (!row || !shape) return estimatedSaveBytes(tokens, {});
+  const settings = settingsForStage(row, activeStageIndex(row));
+  const cost = shapeCost(shape, {
+    ctx: tokens,
+    slots: 1,
+    ubatch: typeof settings.ubatchSize === "number" ? settings.ubatchSize : DEFAULT_UBATCH,
+    cacheTypeK: String(settings.cacheTypeK ?? "f16"),
+    cacheTypeV: String(settings.cacheTypeV ?? "f16"),
+    flashAttention: settings.flashAttention !== "off",
+  });
+  return estimatedSaveBytes(tokens, { shape: cost });
+}
+
 async function freeBytes(dir: string): Promise<number | null> {
+  // Tests only: a file holding the free bytes to report, read at call time.
+  const fake = process.env.LOXAIC_SLOT_FREE_FILE;
+  if (fake) {
+    const text = await readFile(fake, "utf8").catch(() => null);
+    if (text !== null && Number.isFinite(Number(text.trim()))) return Number(text.trim());
+  }
   try {
     const s = await statfs(dir);
     return s.bavail * s.bsize;
@@ -213,22 +285,34 @@ async function freeBytes(dir: string): Promise<number | null> {
   }
 }
 
-/** Warm `conversationId` on `model`: send its history ending in its last reply,
- * so the slot holds exactly what its next turn extends (slot-cache.ts).
- * False when it could not be (no shape since this server started, or another
- * model's). */
-async function warm(conversationId: string, model: string): Promise<boolean> {
+/**
+ * Warm `conversationId` in slot `slotId` of `model`: send its history ending in
+ * its last reply, so the slot holds exactly what its next turn extends
+ * (slot-cache.ts). Resolves to the prompt's size, or null when it could not
+ * be warmed (no shape since this server started, another model's, out of
+ * time, stopped). Throws only what the request itself throws.
+ */
+async function warm(conversationId: string, model: string, slotId: number, timeoutMs: number, signal?: AbortSignal): Promise<number | null> {
   const { lastRequestShape } = await import("../streams/runs/request-shape.ts");
-  if (lastRequestShape(conversationId)?.model !== model) return false;
+  if (lastRequestShape(conversationId)?.model !== model) return null;
   const { warmer } = await import("../streams/runs/stageRun.ts");
   const controller = new AbortController();
-  const timer = setTimeout(() => { controller.abort(); }, WARM_TIMEOUT_MS);
+  const timer = setTimeout(() => { controller.abort(); }, timeoutMs);
+  const both = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
   try {
-    await warmer(conversationId, model)(controller.signal, () => undefined);
-    return !controller.signal.aborted;
+    const tokens = await warmer(conversationId, model, { slotId })(both, () => undefined);
+    return both.aborted ? null : tokens;
   } finally {
     clearTimeout(timer);
   }
+}
+
+export interface SaveOptions {
+  /** When the whole pass must be over (epoch ms): each warm-up and save is
+   * cut to what is left. */
+  deadline?: number;
+  /** The caller's: a Stop ends the pass where it is. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -237,18 +321,19 @@ async function warm(conversationId: string, model: string): Promise<boolean> {
  * Never throws: a failed save only means a re-read later. `deadline` bounds the
  * whole pass (a shutdown cannot wait for minutes).
  */
-export async function saveModel(model: string, identity: string, deadline = Number.POSITIVE_INFINITY): Promise<void> {
+export async function saveModel(model: string, identity: string, opts: SaveOptions = {}): Promise<void> {
   if (!slotCacheEnabled()) return;
+  const deadline = opts.deadline ?? Number.POSITIVE_INFINITY;
   await withModel(model, async () => {
     try {
-      await saveLocked(model, identity, deadline);
+      await saveLocked(model, identity, deadline, opts.signal);
     } catch (err) {
       console.error(`[llama] could not save ${model}'s caches: ${err instanceof Error ? err.message : String(err)}`);
     }
   });
 }
 
-async function saveLocked(model: string, identity: string, deadline: number): Promise<void> {
+async function saveLocked(model: string, identity: string, deadline: number, signal?: AbortSignal): Promise<void> {
   const slots = await routerSlots(model);
   if (!slots) return;
   const uses = await recentUses(model);
@@ -262,48 +347,105 @@ async function saveLocked(model: string, identity: string, deadline: number): Pr
   const kept = previous?.identity === identity ? previous.entries : [];
   if (previous && previous.identity !== identity) for (const e of previous.entries) await removeFile(e.file);
   const entries = new Map(kept.map((e) => [e.conversationId, e]));
-  const order = [...matched.values()].sort(
-    (a, b) => (uses.find((u) => u.conversationId === b)?.at ?? 0) - (uses.find((u) => u.conversationId === a)?.at ?? 0),
-  );
-  for (const conversationId of order) {
-    if (Date.now() > deadline) break;
-    if (!(await warm(conversationId, model))) continue;
-    const after = await routerSlots(model);
-    const slot = after
-      ?.filter((s) => s.task != null && !s.busy)
-      .sort((a, b) => (b.task ?? 0) - (a.task ?? 0))
-      .at(0);
-    if (!slot?.tokens) continue;
-    const need = slot.tokens * (bytesPerToken.get(model) ?? DEFAULT_BYTES_PER_TOKEN) + DISK_MARGIN_BYTES;
-    const free = await freeBytes(dir);
-    if (free !== null && free < need) {
-      console.warn(`[llama] not saving ${model}'s cache for ${conversationId}: ${String(Math.round(free / 1024 ** 3))} GB free`);
-      break;
-    }
-    const file = `${modelKey(model)}-${conversationId}.bin`;
-    try {
-      const saved = await slotAction(model, slot.id, "save", file, Math.min(SAVE_TIMEOUT_MS, Math.max(deadline - Date.now(), 1_000)));
-      await chmod(path.join(dir, file), 0o600);
-      if (saved.tokens <= 0) {
-        await removeFile(file);
-        continue;
+  let perToken = previous?.identity === identity ? previous.bytesPerToken : undefined;
+  let savedAny = false;
+  const atOf = (id: string) => uses.find((u) => u.conversationId === id)?.at ?? 0;
+  // Newest first: if time runs out, the conversation most likely continued
+  // next is the one that was kept.
+  const order = [...matched].sort(([, a], [, b]) => atOf(b) - atOf(a));
+  const left = () => deadline - Date.now();
+  try {
+    for (const [i, [slotId, conversationId]] of order.entries()) {
+      if (signal?.aborted || left() < MIN_STEP_MS) break;
+      try {
+        const kept = await saveOne(model, slotId, conversationId, dir, perToken, left, signal);
+        if (kept === "no-disk") {
+          // This one and every one after it: the disk will not have grown.
+          const skip = diskSkipsNow.at(-1);
+          if (skip) recordDiskSkip(model, order.slice(i).map(([, c]) => c), skip);
+          break;
+        }
+        if (kept) {
+          entries.set(conversationId, kept);
+          if (kept.bytes > 0) perToken = Math.ceil(kept.bytes / kept.tokens);
+          savedAny = true;
+        }
+      } catch (err) {
+        // One conversation's failure (a warm-up the backend refused) costs that
+        // conversation alone; the others are still saved and recorded.
+        console.warn(`[llama] could not save ${model}'s cache for ${conversationId}: ${err instanceof Error ? err.message : String(err)}`);
       }
-      if (saved.bytes > 0) bytesPerToken.set(model, Math.ceil(saved.bytes / saved.tokens));
-      entries.set(conversationId, {
-        conversationId,
-        file,
-        tokens: saved.tokens,
-        bytes: saved.bytes,
-        saveMs: saved.ms,
-        savedAt: Date.now(),
-      });
-      console.log(`[llama] saved ${model}'s cache for ${conversationId}: ${String(saved.tokens)} tokens, ${String(Math.round(saved.bytes / 1024 ** 2))} MiB in ${String(Math.round(saved.ms))} ms`);
-    } catch (err) {
-      await removeFile(file);
-      console.warn(`[llama] could not save ${model}'s cache for ${conversationId}: ${err instanceof Error ? err.message : String(err)}`);
     }
+  } finally {
+    diskSkipsNow.length = 0;
+    if (savedAny) lastDiskSkip.delete(model);
+    // Always written: files saved before a failure must be in it, or the
+    // sweep deletes them as orphans.
+    await writeManifest({ version: 1, model, identity, entries: [...entries.values()], ...(perToken ? { bytesPerToken: perToken } : {}) });
   }
-  await writeManifest({ version: 1, model, identity, entries: [...entries.values()] });
+}
+
+/** The disk check's last refusal within the pass under way (the lock is held). */
+const diskSkipsNow: DiskSkip[] = [];
+
+/**
+ * Warm and save one conversation's slot. Resolves to its entry, null when
+ * nothing was kept, or "no-disk" when the disk is too full for it.
+ */
+async function saveOne(
+  model: string,
+  slotId: number,
+  conversationId: string,
+  dir: string,
+  perToken: number | undefined,
+  left: () => number,
+  signal?: AbortSignal,
+): Promise<SavedEntry | "no-disk" | null> {
+  const warmed = await warm(conversationId, model, slotId, Math.min(WARM_TIMEOUT_MS, left()), signal);
+  if (warmed === null || signal?.aborted || left() < MIN_STEP_MS) return null;
+  // The slot must hold exactly the warm-up: idle, at its size. Another
+  // conversation's request that took it in the meantime is never saved as
+  // this one's.
+  const slot = (await routerSlots(model))?.find((s) => s.id === slotId);
+  if (!slot || slot.busy || !slot.tokens || Math.abs(slot.tokens - warmed) > 1) return null;
+  const expectedTokens = slot.tokens;
+  const expected = await expectedBytes(model, expectedTokens, perToken);
+  const free = await freeBytes(dir);
+  if (free !== null && free < expected + DISK_MARGIN_BYTES) {
+    diskSkipsNow.push({ at: Date.now(), needBytes: expected, freeBytes: free });
+    console.warn(
+      `[llama] not saving ${model}'s caches: one needs about ${String(Math.round(expected / 1024 ** 2))} MiB ` +
+        `and ${String(Math.round(free / 1024 ** 2))} MiB is free, less the ${String(Math.round(DISK_MARGIN_BYTES / 1024 ** 3))} GB kept spare`,
+    );
+    return "no-disk";
+  }
+  const file = `${modelKey(model)}-${conversationId}.bin`;
+  try {
+    const saved = await slotAction(model, slotId, "save", file, Math.min(SAVE_TIMEOUT_MS, Math.max(left(), 1_000)), signal);
+    await chmod(path.join(dir, file), 0o600);
+    // What was written must be what was warmed: a request that took the slot
+    // between the check above and the save is someone else's conversation.
+    if (saved.tokens <= 0 || saved.tokens !== expectedTokens) {
+      await removeFile(file);
+      return null;
+    }
+    console.log(
+      `[llama] saved ${model}'s cache for ${conversationId}: ${String(saved.tokens)} tokens, ` +
+        `${String(Math.round(saved.bytes / 1024 ** 2))} MiB in ${String(Math.round(saved.ms))} ms`,
+    );
+    return { conversationId, file, tokens: saved.tokens, bytes: saved.bytes, saveMs: saved.ms, savedAt: Date.now() };
+  } catch (err) {
+    await removeFile(file);
+    // llama.cpp says only "Unable to save slot"; a disk that is now short of
+    // what the file needed is the likely why, and is said as that.
+    const after = await freeBytes(dir);
+    if (after !== null && after < expected) {
+      diskSkipsNow.push({ at: Date.now(), needBytes: expected, freeBytes: after });
+      console.warn(`[llama] ran out of disk saving ${model}'s cache for ${conversationId}`);
+      return "no-disk";
+    }
+    throw err;
+  }
 }
 
 /** Save every loaded model before the router stops (a restart, a shutdown). */
@@ -313,7 +455,7 @@ export async function saveLoadedModels(deadline: number): Promise<void> {
   for (const [id, s] of statuses) {
     if (s.value !== "loaded") continue;
     const identity = getCacheIdentity(id);
-    if (identity) await saveModel(id, identity, deadline);
+    if (identity) await saveModel(id, identity, { deadline });
   }
 }
 
@@ -377,9 +519,20 @@ export async function* restoreConversation(
   if (!manifest || !entry) return;
   if (manifest.identity !== getCacheIdentity(model)) {
     // Loaded with something the cache was not computed under: every entry
-    // is useless, not just this one.
-    for (const e of manifest.entries) await removeFile(e.file);
-    await writeManifest({ ...manifest, entries: [] });
+    // is useless, not just this one. Read again under the lock: a save may
+    // have written since.
+    await withModel(model, async () => {
+      const current = await readManifest(model);
+      if (!current || current.identity === getCacheIdentity(model)) return;
+      for (const e of current.entries) await removeFile(e.file);
+      await writeManifest({ ...current, entries: [] });
+    });
+    return;
+  }
+  if (!reloadedSince(model, entry.savedAt)) {
+    // Never unloaded after all: the live cache is still in its slot, and a
+    // copy would only take room beside it.
+    await withModel(model, () => dropEntry(model, conversationId));
     return;
   }
   const base = { tokens: entry.tokens, bytesTotal: entry.bytes };
@@ -439,7 +592,9 @@ async function restoreLocked(
     // Read through a call: the checker takes the property to stay as last
     // tested, and cannot see the restore settling during the await.
     const finished = () => reading.finished;
-    const restore = slotAction(model, free.id, "restore", entry.file, RESTORE_TIMEOUT_MS).finally(() => { reading.finished = true; });
+    // The turn's signal: a Stop frees this model's queue at once rather than
+    // after the read (llama.cpp may still finish it into the slot).
+    const restore = slotAction(model, free.id, "restore", entry.file, RESTORE_TIMEOUT_MS, signal).finally(() => { reading.finished = true; });
     while (!finished()) {
       await Promise.race([restore.catch(() => undefined), new Promise((r) => setTimeout(r, PROGRESS_EVERY_MS))]);
       if (finished()) break;
@@ -495,8 +650,9 @@ export async function conversationCacheView(conversationId: string, model: strin
     lastTurn: last ? { model: last.model, tokens: last.tokens, at: Math.max(last.at.getTime(), last.model === model ? warmed : 0) } : null,
     model,
     hostModel,
-    saved: entry ? { tokens: entry.tokens } : null,
+    saved: entry && reloadedSince(model, entry.savedAt) ? { tokens: entry.tokens } : null,
     lastReload: lastReloadOf(model),
+    diskSkip: diskSkips.get(model)?.get(conversationId) ?? null,
     bootAt,
     prefillRate: prefillRate(model),
   });
@@ -507,10 +663,12 @@ export async function conversationCacheView(conversationId: string, model: strin
 /**
  * Delete what nobody will restore: files no manifest names, entries past the
  * TTL or for conversations that are gone, and every set whose identity no
- * longer matches its model. Runs at boot and after each reload.
+ * longer matches its model. Runs at boot, after each preset write and hourly.
+ * Each manifest is rewritten under its model's lock, so a save under way is
+ * never written over; an unnamed file is a save still being written until it
+ * is an hour old.
  */
 export async function sweepSlotCache(): Promise<void> {
-  // Again every hour, so an entry's TTL holds on a server nobody reconfigures.
   sweeper ??= setInterval(() => { void sweepSlotCache().catch(() => undefined); }, SWEEP_EVERY_MS).unref();
   const dir = slotSaveDir();
   let names: string[];
@@ -519,34 +677,71 @@ export async function sweepSlotCache(): Promise<void> {
   } catch {
     return;
   }
-  const manifests = names.filter((n) => n.endsWith(".json"));
   const keep = new Set<string>();
-  for (const name of manifests) {
-    const m = parseManifest(await readFile(path.join(dir, name), "utf8").catch(() => ""));
-    if (!m || `${modelKey(m.model)}.json` !== name) {
+  for (const name of names.filter((n) => n.endsWith(".json"))) {
+    const found = parseManifest(await readFile(path.join(dir, name), "utf8").catch(() => ""));
+    if (!found || `${modelKey(found.model)}.json` !== name) {
       await unlink(path.join(dir, name)).catch(() => undefined);
       continue;
     }
-    const ids = m.entries.map((e) => e.conversationId);
-    const existing = ids.length
-      ? new Set(
-          (await db
-            .select({ id: conversations.id })
-            .from(conversations)
-            .where(and(inArray(conversations.id, ids), isNull(conversations.deletedAt)))).map((r) => r.id),
-        )
-      : new Set<string>();
-    const identity = getCacheIdentity(m.model);
-    // No identity: the model is not in the preset (disabled, deleted, or the
-    // runtime is not up yet) — kept for the TTL, judged when it can be.
-    const valid = identity === null || identity === m.identity;
-    const live = valid ? liveEntries(m.entries, Date.now(), (id) => existing.has(id)) : [];
-    for (const e of m.entries) if (!live.includes(e)) await removeFile(e.file);
-    await writeManifest({ ...m, entries: live });
-    for (const e of live) keep.add(e.file);
+    await withModel(found.model, async () => {
+      const m = await readManifest(found.model);
+      if (!m) return;
+      const ids = m.entries.map((e) => e.conversationId);
+      const existing = ids.length
+        ? new Set(
+            (await db
+              .select({ id: conversations.id })
+              .from(conversations)
+              .where(and(inArray(conversations.id, ids), isNull(conversations.deletedAt)))).map((r) => r.id),
+          )
+        : new Set<string>();
+      const identity = getCacheIdentity(m.model);
+      // No identity: the model is not in the preset (disabled, deleted, or the
+      // runtime is not up yet) — kept for the TTL, judged when it can be.
+      const valid = identity === null || identity === m.identity;
+      const live = valid ? liveEntries(m.entries, Date.now(), (id) => existing.has(id)) : [];
+      for (const e of m.entries) if (!live.includes(e)) await removeFile(e.file);
+      await writeManifest({ ...m, entries: live });
+      for (const e of live) keep.add(e.file);
+    });
   }
   for (const name of names) {
-    if (name.endsWith(".bin") && !keep.has(name)) await unlink(path.join(dir, name)).catch(() => undefined);
+    if (!name.endsWith(".bin") || keep.has(name)) continue;
+    const at = await stat(path.join(dir, name)).then((st) => st.mtimeMs, () => null);
+    if (at !== null && Date.now() - at > ORPHAN_GRACE_MS) await unlink(path.join(dir, name)).catch(() => undefined);
+  }
+}
+
+/**
+ * A conversation was deleted or erased: its saved caches go now, not at the
+ * next sweep. They hold its whole prompt as tokens, which read back as text.
+ */
+export async function forgetConversationCaches(conversationIds: readonly string[]): Promise<void> {
+  if (conversationIds.length === 0) return;
+  const ids = new Set(conversationIds);
+  let names: string[];
+  try {
+    names = await readdir(slotSaveDir());
+  } catch {
+    return;
+  }
+  for (const name of names.filter((n) => n.endsWith(".json"))) {
+    const found = parseManifest(await readFile(path.join(slotSaveDir(), name), "utf8").catch(() => ""));
+    if (!found?.entries.some((e) => ids.has(e.conversationId))) continue;
+    await withModel(found.model, async () => {
+      const m = await readManifest(found.model);
+      if (!m) return;
+      for (const e of m.entries) if (ids.has(e.conversationId)) await removeFile(e.file);
+      await writeManifest({ ...m, entries: m.entries.filter((e) => !ids.has(e.conversationId)) });
+    });
+  }
+  // A save in progress names its file after the conversation; the sweep's
+  // grace would otherwise keep it an hour.
+  for (const name of names) {
+    if (name.endsWith(".bin") && [...ids].some((id) => name.endsWith(`-${id}.bin`))) {
+      await unlink(path.join(slotSaveDir(), name)).catch(() => undefined);
+    }
   }
 }
 
@@ -557,6 +752,7 @@ export function __resetSlotStoreForTest(): void {
   reloads.clear();
   warmedAt.clear();
   routerGone = null;
-  bytesPerToken.clear();
+  diskSkips.clear();
+  lastDiskSkip.clear();
   claimed.clear();
 }

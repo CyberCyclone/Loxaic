@@ -204,6 +204,13 @@ export interface StreamOptions {
    * one, and by anything that is not a conversation's next turn.
    */
   conversationId?: string;
+  /**
+   * llama.cpp's `id_slot`: run in exactly this slot. Only the warm-up before a
+   * slot is saved sets it (llama/slot-store.ts), so the slot it then saves is
+   * the one it warmed — never another conversation's that happened to run
+   * last.
+   */
+  slotId?: number;
 }
 
 /**
@@ -922,6 +929,7 @@ async function* liveStream(
   // never gets a field it would refuse, whatever the caller believed.
   if (options.reportProgress && provider.preset === null) body.return_progress = true;
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
+  if (options.slotId !== undefined && provider.preset === null) body.id_slot = options.slotId;
   // Merged last but never over the fields above: none of them is a thinking
   // field, and thinkingFields only ever produces those.
   for (const [k, v] of Object.entries(options.thinking ?? {})) if (!(k in body)) body[k] = v;

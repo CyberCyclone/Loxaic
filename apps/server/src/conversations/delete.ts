@@ -221,6 +221,14 @@ function detachedCleanup(
     await destroyConversationSandboxes(id).catch((err: unknown) => {
       log.warn({ err, conversationId: id }, "failed to destroy sandboxes for a deleted conversation");
     });
+    // A host model's saved KV caches (llama/slot-store.ts) hold the whole
+    // prompt as tokens: they go now, not at the next hourly sweep. Beside the
+    // rest, not ahead of it: nothing below waits on them.
+    void import("../llama/slot-store.ts")
+      .then((m) => m.forgetConversationCaches([id, ...childIds]))
+      .catch((err: unknown) => {
+        log.warn({ err, conversationId: id }, "failed to delete saved prompt caches for a deleted conversation");
+      });
     // Its browser (#281) and the logins in it go with it; a sub-agent's are
     // its own conversations' and go with those.
     for (const browserConvId of [id, ...(opts?.childIds ?? [])]) {

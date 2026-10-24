@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,9 +16,19 @@ import { invalidateLocalModelCache } from "../catalog.ts";
 import { __resetStageSwitchForTest } from "../context-stage-switch.ts";
 import { presetPath, slotSaveDir } from "../paths.ts";
 import { routerModelName } from "../preset.ts";
-import { __resetRoomForTest, requestUnload } from "../room.ts";
+import { deleteConversation } from "../../conversations/delete.ts";
+import { UnloadRefusedError, __resetRoomForTest, requestUnload } from "../room.ts";
 import { __resetRouterForTest, __setHardwareForTest, ensureRuntime, routerModelStatuses, syncPreset, waitForModelStatus } from "../router.ts";
-import { __resetSlotStoreForTest, conversationCacheView, recordWarmed, sweepSlotCache } from "../slot-store.ts";
+import {
+  __resetSlotStoreForTest,
+  conversationCacheView,
+  recordWarmed,
+  restoreConversation,
+  saveModel,
+  slotCacheDiskWarning,
+  sweepSlotCache,
+} from "../slot-store.ts";
+import { getCacheIdentity } from "../router.ts";
 
 /**
  * A conversation's KV cache kept across a reload, end to end on the fake
@@ -37,7 +47,17 @@ const userId = `test-slot-store-${uuid()}`;
 const convIds: string[] = [];
 const HW_GPU = { platform: "linux" as const, arch: "x64", gpus: [], flavour: "vulkan" as const, reason: null, ramBytes: 16 * 1024 ** 3 };
 
-interface Logged { event: string; model: string; slot?: number; tokens?: number; file?: string; reason?: string }
+interface Logged {
+  event: string;
+  model: string;
+  slot?: number;
+  tokens?: number;
+  file?: string;
+  reason?: string;
+  id_slot?: number | null;
+  last_role?: string | null;
+  last_user?: string;
+}
 function logged(): Logged[] {
   if (!existsSync(loadLog)) return [];
   return readFileSync(loadLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Logged);
@@ -58,6 +78,8 @@ beforeAll(async () => {
   vi.stubEnv("LOXAIC_FAKE_DEVICES", "FAKE0: Fake GPU (24576 MiB, 24000 MiB free)");
   vi.stubEnv("LOXAIC_FAKE_SLOT_FAIL", "");
   vi.stubEnv("LOXAIC_FAKE_RESTORE_MS", "0");
+  vi.stubEnv("LOXAIC_FAKE_SAVE_MS", "0");
+  vi.stubEnv("LOXAIC_SLOT_FREE_FILE", path.join(dir, "free-bytes"));
   vi.stubEnv("MOCK_INFERENCE", "false");
   vi.stubEnv("LLAMA_MODE", "managed");
   vi.stubEnv("INFERENCE_MAX_CONCURRENT_RUNS", "2");
@@ -97,9 +119,11 @@ beforeAll(async () => {
 afterAll(async () => {
   for (const id of convIds) {
     await db.delete(messages).where(eq(messages.conversationId, id));
-    await db.delete(usageRecords).where(eq(usageRecords.conversationId, id));
     await db.delete(conversations).where(eq(conversations.id, id));
   }
+  // By user, not conversation: an erased conversation's usage rows survive it
+  // with no conversation to find them by.
+  await db.delete(usageRecords).where(eq(usageRecords.userId, userId));
   await db.delete(user).where(eq(user.id, userId));
   __resetStageSwitchForTest();
   __resetSchedulerForTest();
@@ -271,9 +295,231 @@ describe("a host model reloaded with settings that keep its cache", () => {
     const m = JSON.parse(readFileSync(manifest, "utf8")) as { entries: { savedAt: number }[] };
     for (const entry of m.entries) entry.savedAt = 0;
     writeFileSync(manifest, JSON.stringify(m));
+    // A file no manifest names: an old one is an orphan, a new one a save
+    // still being written.
     writeFileSync(path.join(slotSaveDir(), "orphan.bin"), "x");
+    const old = new Date(Date.now() - 2 * 60 * 60_000);
+    utimesSync(path.join(slotSaveDir(), "orphan.bin"), old, old);
+    writeFileSync(path.join(slotSaveDir(), "being-written.bin"), "x");
     await sweepSlotCache();
-    expect(binFiles()).toEqual([]);
+    expect(binFiles()).toEqual(["being-written.bin"]);
+    unlinkSync(path.join(slotSaveDir(), "being-written.bin"));
     expect((await routerModelStatuses()).get(model)?.value).toBe("unloaded");
+  });
+});
+
+/** The fake reads its environment at spawn: restart it with `env` set. */
+async function fakeWith(env: Record<string, string>, fn: () => Promise<void>): Promise<void> {
+  for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+  await __resetRouterForTest();
+  await ensureRuntime();
+  try {
+    await fn();
+  } finally {
+    for (const k of Object.keys(env)) vi.stubEnv(k, k === "LOXAIC_FAKE_SLOT_FAIL" ? "" : "0");
+    await __resetRouterForTest();
+    await ensureRuntime();
+  }
+}
+
+/** The settings the earlier cases leave the model at, cache type included:
+ * a case below changes only the setting it is about. */
+const SAME_CACHE = { ctxSize: 8192, parallel: 2, kvUnified: true, cacheTypeK: "q4_0" };
+
+const manifestJson = (): { entries: { conversationId: string }[]; bytesPerToken?: number } | null => {
+  const file = existsSync(slotSaveDir()) ? readdirSync(slotSaveDir()).find((x) => x.endsWith(".json")) : undefined;
+  return file ? (JSON.parse(readFileSync(path.join(slotSaveDir(), file), "utf8")) as never) : null;
+};
+
+describe("when a save cannot be made", () => {
+  const freeFile = () => path.join(dir, "free-bytes");
+
+  it("a disk too full skips it, and the conversation and the admin are told why", async () => {
+    const c = await conversation();
+    await runToEnd(c, "a conversation the disk cannot hold");
+    writeFileSync(freeFile(), "1");
+    try {
+      const from = logged().length;
+      await reloadedWith({ ...SAME_CACHE, temperature: 0.5 });
+      expect(mine(from).some((e) => e.event === "slot-save")).toBe(false);
+      const view = await conversationCacheView(c, model, true);
+      expect(view).toMatchObject({ state: "lost", reason: "no_disk", free_bytes: 1 });
+      expect(view.state === "lost" ? view.need_bytes : 0).toBeGreaterThan(0);
+      expect(slotCacheDiskWarning()).toMatchObject({ model, freeBytes: 1 });
+    } finally {
+      unlinkSync(freeFile());
+    }
+    // Room again: the next save works, records its measured size, and the
+    // admin's warning goes.
+    await runToEnd(c, "and now there is room");
+    await reloadedWith({ ...SAME_CACHE, temperature: 0.6 });
+    expect(await conversationCacheView(c, model, true)).toMatchObject({ state: "saved" });
+    expect(slotCacheDiskWarning()).toBeNull();
+    expect(manifestJson()?.bytesPerToken).toBeGreaterThan(0);
+    // Kept on disk, so a restarted server sizes its first save by it.
+    __resetSlotStoreForTest();
+    expect(manifestJson()?.bytesPerToken).toBeGreaterThan(0);
+    await runToEnd(c, "use it");
+  });
+
+  it("warms the very slot it saves, named to llama.cpp", async () => {
+    const c = await conversation();
+    await runToEnd(c, "name my slot");
+    const from = logged().length;
+    await reloadedWith({ ...SAME_CACHE, temperature: 0.7 });
+    const events = mine(from);
+    const save = events.find((e) => e.event === "slot-save" && (e.file ?? "").includes(c));
+    const warm = events.find((e) => e.event === "chat" && e.last_role === "assistant" && e.last_user === "name my slot");
+    expect(save).toBeDefined();
+    expect(warm?.id_slot).toBe(save?.slot);
+    await runToEnd(c, "done");
+  });
+
+  it("keeps nothing when the slot held something else by the time it was written", async () => {
+    const c = await conversation();
+    await fakeWith({ LOXAIC_FAKE_SLOT_FAIL: "drift" }, async () => {
+      await runToEnd(c, "drifting");
+      const from = logged().length;
+      await reloadedWith({ ...SAME_CACHE, temperature: 0.8 });
+      expect(mine(from).some((e) => e.event === "slot-save" && (e.file ?? "").includes(c))).toBe(true);
+      expect(binFiles().some((f) => f.includes(c))).toBe(false);
+      expect(await conversationCacheView(c, model, true)).toMatchObject({ state: "lost" });
+    });
+  });
+
+  it("one conversation whose warm-up fails costs that one alone", async () => {
+    const a = await conversation();
+    const b = await conversation();
+    await runToEnd(a, "an ordinary one");
+    await runToEnd(b, "fail my warm-up");
+    await reloadedWith({ ...SAME_CACHE, temperature: 0.9 });
+    // b was newer, so warmed first, and refused; a was still saved after it.
+    expect(await conversationCacheView(a, model, true)).toMatchObject({ state: "saved" });
+    expect(await conversationCacheView(b, model, true)).toMatchObject({ state: "lost" });
+    expect(manifestJson()?.entries.map((e) => e.conversationId)).toContain(a);
+    await runToEnd(a, "done");
+  });
+
+  it("matches a slot by its conversation's live messages, never one a rewind removed", async () => {
+    const x = await conversation();
+    const y = await conversation();
+    await runToEnd(x, "otter facts please");
+    await runToEnd(y, "beaver facts please");
+    // Both turns cost the same; x also has a newer user message a rewind took.
+    await db.insert(messages).values({
+      id: uuid(),
+      conversationId: x,
+      authorType: "user",
+      origin: "server",
+      lamport: 1_000_000,
+      content: [{ kind: "text", text: "a message that was rewound away" }] as ContentBlock[],
+      status: "complete",
+      deletedAt: new Date(),
+      createdAt: new Date(),
+    });
+    const from = logged().length;
+    await reloadedWith({ ...SAME_CACHE, temperature: 1.0 });
+    const saved = mine(from).filter((e) => e.event === "slot-save").map((e) => e.file ?? "");
+    expect(saved.some((f) => f.includes(x))).toBe(true);
+    expect(saved.some((f) => f.includes(y))).toBe(true);
+  });
+
+  it("stops at its deadline, however long a save takes", async () => {
+    const c = await conversation();
+    await fakeWith({ LOXAIC_FAKE_SAVE_MS: "5000" }, async () => {
+      await runToEnd(c, "a slow save");
+      const identity = getCacheIdentity(model);
+      expect(identity).not.toBeNull();
+      // The fake's warm-up alone takes about four seconds: each step is cut to
+      // what is left, so the pass ends at its deadline, not after it.
+      const started = Date.now();
+      const from = logged().length;
+      await saveModel(model, identity ?? "", { deadline: Date.now() + 2_500 });
+      expect(Date.now() - started).toBeLessThan(3_500);
+      // It did start: the warm-up went out, and was cut off.
+      expect(mine(from).some((e) => e.event === "chat" && e.last_role === "assistant")).toBe(true);
+      expect(binFiles().some((f) => f.includes(c))).toBe(false);
+    });
+  }, 40_000);
+});
+
+describe("a save never cuts a reply off", () => {
+  it("an Unload is refused when a reply starts while the caches are saved", async () => {
+    const quiet = await conversation();
+    const busy = await conversation();
+    await fakeWith({ LOXAIC_FAKE_SAVE_MS: "1500" }, async () => {
+      await runToEnd(quiet, "saved while someone asks");
+      await runToEnd(busy, "a first turn");
+      const from = logged().length;
+      const unloading = requestUnload(model, false);
+      await new Promise((r) => setTimeout(r, 400));
+      await startChatRun({ userId, content: "take your time 6000", model, conversationId: busy });
+      await expect(unloading).rejects.toBeInstanceOf(UnloadRefusedError);
+      expect(mine(from).some((e) => e.event === "unload")).toBe(false);
+      while (getRunByConversation(busy)) await new Promise((r) => setTimeout(r, 50));
+      expect((await routerModelStatuses()).get(model)?.value).toBe("loaded");
+      // Never unloaded, so what was saved is not offered back: the live cache
+      // is still there, and the next turn uses it as it is.
+      expect(await conversationCacheView(quiet, model, true)).toEqual({ state: "warm" });
+      const next = logged().length;
+      await runToEnd(quiet, "still here");
+      expect(mine(next).some((e) => e.event === "slot-restore")).toBe(false);
+    });
+  }, 60_000);
+
+  it("a settings reload waits for a reply that started while the caches were saved", async () => {
+    const quiet = await conversation();
+    const busy = await conversation();
+    await fakeWith({ LOXAIC_FAKE_SAVE_MS: "1500" }, async () => {
+      await runToEnd(quiet, "saved before a reload");
+      await runToEnd(busy, "a first turn too");
+      await setSettings({ ...SAME_CACHE, temperature: 1.1 });
+      const syncing = syncPreset({ restoreLoaded: true });
+      await new Promise((r) => setTimeout(r, 400));
+      await startChatRun({ userId, content: "take your time 6000", model, conversationId: busy });
+      const { deferred } = await syncing;
+      expect(deferred).toBe(true);
+      // The reply ends whole, and only then is the model reloaded.
+      const from = logged().length;
+      while (getRunByConversation(busy)) await new Promise((r) => setTimeout(r, 50));
+      const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, busy) });
+      expect(rows.filter((r) => r.authorType === "assistant").sort((p, q) => q.lamport - p.lamport)[0].status).toBe("complete");
+      expect(mine(from).some((e) => e.event === "unload")).toBe(false);
+      const deadline = Date.now() + 30_000;
+      while (!logged().slice(from).some((e) => e.event === "unload" && e.model === name) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      expect(logged().slice(from).some((e) => e.event === "unload" && e.model === name)).toBe(true);
+      await waitForModelStatus(model, "loaded", 10_000);
+    });
+  }, 60_000);
+});
+
+describe("a deleted conversation and a stopped turn", () => {
+  it("deleting a conversation removes its saved cache at once", async () => {
+    const c = await conversation();
+    await runToEnd(c, "forget me");
+    await requestUnload(model, false);
+    expect(binFiles().some((f) => f.includes(c))).toBe(true);
+    await deleteConversation(c, { warn: () => undefined });
+    const deadline = Date.now() + 20_000;
+    while (binFiles().some((f) => f.includes(c)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    expect(binFiles().some((f) => f.includes(c))).toBe(false);
+    expect(manifestJson()?.entries.some((e) => e.conversationId === c) ?? false).toBe(false);
+  });
+
+  it("a Stop ends a restore at once", async () => {
+    const c = await conversation();
+    await fakeWith({ LOXAIC_FAKE_RESTORE_MS: "6000" }, async () => {
+      await runToEnd(c, "stop my restore");
+      await requestUnload(model, false);
+      const controller = new AbortController();
+      const started = Date.now();
+      setTimeout(() => { controller.abort(); }, 1500);
+      const steps: string[] = [];
+      for await (const p of restoreConversation(model, c, controller.signal)) steps.push(p.step);
+      expect(Date.now() - started).toBeLessThan(4_000);
+      expect(steps.at(-1)).toBe("failed");
+    });
   });
 });

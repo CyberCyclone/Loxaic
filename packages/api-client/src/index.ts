@@ -520,6 +520,17 @@ export interface LocalRuntimeView {
    * (amdgpu on Linux, Vulkan runtime), or null where it cannot be read.
    * Absent from an older server. */
   gpuJobLimit?: GpuJobLimit | null;
+  /** The newest reload whose prompt caches were not saved for lack of disk
+   * space, until a later save works; null when none. Absent from an older
+   * server. */
+  slotCacheDisk?: {
+    at: number;
+    model: string;
+    modelName: string;
+    needBytes: number;
+    freeBytes: number;
+    dir: string;
+  } | null;
 }
 
 /** amdgpu's `lockup_timeout` for compute jobs: `computeMs` null means no

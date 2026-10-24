@@ -81,6 +81,7 @@ import {
   syncPreset,
   unloadModel,
 } from "../llama/router.ts";
+import { slotCacheDiskWarning } from "../llama/slot-store.ts";
 import {
   addCustomBuild,
   getLlamaMode,
@@ -199,8 +200,14 @@ async function fullView() {
   const rows = await listLocalModelRows();
   const statuses = await routerModelStatuses();
   const placements = await placementsFor(rows, statuses);
+  // A reload whose prompt caches were not saved for want of disk: the admin is
+  // the one who can free it.
+  const disk = slotCacheDiskWarning();
   return {
-    runtime: runtimeView(),
+    runtime: {
+      ...runtimeView(),
+      slotCacheDisk: disk ? { ...disk, modelName: rows.find((r) => r.id === disk.model)?.displayName ?? disk.model } : null,
+    },
     settings: getLocalModelsSettings(),
     models: rows.map((r) => modelView(r, statuses, placements)),
     freeDiskBytes: await freeDiskBytes(),

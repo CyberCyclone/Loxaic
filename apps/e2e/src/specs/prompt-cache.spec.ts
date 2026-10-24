@@ -12,11 +12,23 @@
  * (`LOXAIC_FAKE_RESTORE_MS` in standup.ts), so the pill can be watched; "fill
  * the context" makes a conversation big enough (80% of 16K) for the banner.
  */
+import { rmSync, writeFileSync } from 'node:fs';
 import { browser } from '@wdio/globals';
-import { provisionAdmin, provisionUser, uniqueCreds } from '../helpers/auth.ts';
+import { adminCreds, provisionAdmin, provisionUser, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, platform, tap, waitForAbsent, waitForTextIn, waitForVisible, waitForGone } from '../helpers/selectors.ts';
-import { listConversations, selectThread, sendMessage, signIn, startNewThread, waitForComposerReady, waitForRunDone } from '../helpers/app.ts';
+import { byTestId, isVisible, platform, scrollTo, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible, waitForGone } from '../helpers/selectors.ts';
+import {
+  listConversations,
+  openSettings,
+  selectThread,
+  sendMessage,
+  signIn,
+  signOut,
+  startNewThread,
+  waitForComposerReady,
+  waitForRunDone,
+} from '../helpers/app.ts';
+import { SLOT_FREE_FILE } from '../../scripts/standup.ts';
 import { adminApi, downloadTinyModel, patchModel, putModelAtStage, removeMockModels, routerEvents, routerName, type RouterEvent } from '../helpers/hostModels.ts';
 
 const K = 1024;
@@ -25,6 +37,22 @@ const SETTINGS = { ctxSize: 16 * K };
 // would cover the conversation, and on iOS nothing behind it can be read. The
 // one case about that modal turns asking back on.
 const STAGES = { enabled: true, whoMayChange: 'everyone', whenFull: 'extend', stages: [{ ctxSize: 64 * K }] };
+
+/**
+ * Send, and on Android make sure it went: with the idle wait off (see
+ * `before`), a tap can land before the button is enabled, and the text sits in
+ * the composer. Only then is it tapped again, so nothing is sent twice.
+ */
+async function send(text: string): Promise<void> {
+  await sendMessage(text);
+  if (platform() !== 'android') return;
+  for (let i = 0; i < 3; i++) {
+    await browser.pause(1500);
+    const left = await byTestId('composer.input').getText().catch(() => '');
+    if (left !== text) return;
+    await tap('composer.send');
+  }
+}
 
 async function pickModel(id: string): Promise<void> {
   await tap('composer.model');
@@ -113,7 +141,7 @@ describe('the prompt cache across a host-model reload', () => {
   it('a settings change that keeps the cache: the next turn loads it back, with the pill', async function () {
     this.timeout(4 * 60_000);
     await startNewThread();
-    await sendMessage('please fill the context');
+    await send('please fill the context');
     await waitForTextIn('chat.messageList', 'Hello from');
     await dismissStageDialog();
     const conversation = await newestConversation();
@@ -132,7 +160,7 @@ describe('the prompt cache across a host-model reload', () => {
     expect(await isVisible('chat.promptCache.banner')).toBe(false);
 
     const before = routerEvents().length;
-    await sendMessage('and once more');
+    await send('and once more');
     await waitForTextIn('chat.promptCache.pill.label', 'Loading cached context', 30_000);
     await shot('prompt-cache-loading');
     // A second reply in a thread: the first "Hello from" is scrolled off, and a
@@ -150,7 +178,7 @@ describe('the prompt cache across a host-model reload', () => {
   it('an Unload and Load keep it too', async function () {
     this.timeout(4 * 60_000);
     await startNewThread();
-    await sendMessage('please fill the context again');
+    await send('please fill the context again');
     await waitForTextIn('chat.messageList', 'Hello from');
     await dismissStageDialog();
     const conversation = await newestConversation();
@@ -160,7 +188,7 @@ describe('the prompt cache across a host-model reload', () => {
     expect(res.ok).toBe(true);
     await waitForEvent(from, model, (e) => e.event === 'slot-save' && (e.file ?? '').includes(conversation), 'the slot saved');
 
-    await sendMessage('still there?');
+    await send('still there?');
     await waitForTextIn('chat.promptCache.pill.label', 'Loading cached context', 60_000);
     await waitForRunDone(alice, conversation);
     const chat = await waitForEvent(from, model, (e) => e.event === 'chat' && e.last_user === 'still there?', 'the turn');
@@ -171,7 +199,7 @@ describe('the prompt cache across a host-model reload', () => {
     this.timeout(5 * 60_000);
     // A long conversation at the standard stage...
     await startNewThread();
-    await sendMessage('please fill the context, the long one');
+    await send('please fill the context, the long one');
     await waitForTextIn('chat.messageList', 'Hello from');
     await dismissStageDialog();
     const long = await newestConversation();
@@ -179,7 +207,7 @@ describe('the prompt cache across a host-model reload', () => {
     // ...and the modal that offers a larger stage says what it costs everyone.
     await patchModel(model, { contextStages: { ...STAGES, whenFull: 'compact' } });
     await startNewThread();
-    await sendMessage('please fill the context too');
+    await send('please fill the context too');
     // It opens once the reply is in, over it.
     await waitForVisible('context.stageModal', 60_000);
     await waitForTextIn('context.stageModal.cacheRebuilt', 'prompt cache is rebuilt');
@@ -200,7 +228,7 @@ describe('the prompt cache across a host-model reload', () => {
     await shot('prompt-cache-lost-banner');
 
     const before = routerEvents().length;
-    await sendMessage('carry on');
+    await send('carry on');
     await waitForAbsent('chat.promptCache.banner', 30_000);
     await waitForRunDone(alice, long);
     const chat = await waitForEvent(before, model, (e) => e.event === 'chat' && e.last_user === 'carry on', 'the turn');
@@ -211,11 +239,11 @@ describe('the prompt cache across a host-model reload', () => {
   it('a conversation no reload touched shows neither', async function () {
     this.timeout(3 * 60_000);
     await startNewThread();
-    await sendMessage('please fill the context, quietly');
+    await send('please fill the context, quietly');
     await waitForTextIn('chat.messageList', 'Hello from');
     await dismissStageDialog();
     const before = routerEvents().length;
-    await sendMessage('take your time 2000 and answer again');
+    await send('take your time 2000 and answer again');
     await waitForVisible('chat.status', 30_000);
     expect(await isVisible('chat.promptCache.pill')).toBe(false);
     // Once the reply has ended, when the composer asks again: still nothing.
@@ -228,4 +256,39 @@ describe('the prompt cache across a host-model reload', () => {
     expect(chat.cache_n).toBeGreaterThan(0);
   });
 
+
+  it('a disk too full to keep the cache: the conversation says so, and so does the admin\'s Host models card', async function () {
+    this.timeout(5 * 60_000);
+    await startNewThread();
+    await send('please fill the context, with no room to keep it');
+    await waitForTextIn('chat.messageList', 'Hello from');
+    await dismissStageDialog();
+    const conversation = await newestConversation();
+
+    // The server sees one free byte where saved caches go.
+    writeFileSync(SLOT_FREE_FILE, '1');
+    try {
+      const from = routerEvents().length;
+      await patchModel(model, { loadSettings: { ...SETTINGS, temperature: 0.55 } });
+      await waitForEvent(from, model, (e) => e.event === 'unload', 'the reload');
+      expect(eventsSince(from, model).some((e) => e.event === 'slot-save')).toBe(false);
+    } finally {
+      rmSync(SLOT_FREE_FILE, { force: true });
+    }
+
+    await relaunch();
+    await selectThread(conversation);
+    await waitForTextIn('chat.promptCache.banner.text', "didn't have the disk space", 30_000);
+    await shot('prompt-cache-no-disk-banner');
+
+    // The admin is the one who can free the disk, and is told so.
+    await signOut();
+    await signIn(adminCreds());
+    await openSettings();
+    await scrollTo('settings.nav.localModels');
+    await tap('settings.nav.localModels');
+    await waitForVisible('localModels.runtime');
+    await waitForFreshText('localModels.runtime.slotCacheDisk.message', "Prompt caches weren't saved", 30_000);
+    await shot('prompt-cache-no-disk-admin');
+  });
 });

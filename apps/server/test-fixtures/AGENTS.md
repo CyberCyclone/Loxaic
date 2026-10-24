@@ -26,5 +26,5 @@ Fixtures for server tests and the e2e lane: the fake llama.cpp router (`fake-lla
 - `LOXAIC_FAKE_REJECT_KEY`: refuse a key Loxaic always writes.
 - `LOXAIC_FAKE_RELOAD_FAIL` / `LOXAIC_FAKE_UNLOAD_STUCK`: while the named file exists, reloads are refused / unloads never take.
 - `LOXAIC_FAKE_LOAD_MS`: make a load take time.
-- `LOXAIC_FAKE_RESTORE_MS`: a slot restore reads over that long (and its save reports it as its time). `LOXAIC_FAKE_SLOT_FAIL=save|restore`: that slot action fails.
-- Server side: `LLAMA_DISCARD_WAIT_MS` shortens discard waits; `LOXAIC_AMDGPU_PARAMS_DIR` (plus a `modinfo` file) stands in for sysfs; `LOXAIC_TEST_HTTP_BUILDS=1` allows loopback http builds.
+- `LOXAIC_FAKE_RESTORE_MS`: a slot restore reads over that long (and its save reports it as its time). `LOXAIC_FAKE_SAVE_MS`: a save takes that long. `LOXAIC_FAKE_SLOT_FAIL=save|restore|drift`: that slot action fails, or a save reports a different size (another request took the slot). A warm-up whose last user message says "fail my warm-up" is refused.
+- Server side: `LOXAIC_SLOT_FREE_FILE` names a file whose number, while it exists, is the free disk saved prompt caches see; `LLAMA_DISCARD_WAIT_MS` shortens discard waits; `LOXAIC_AMDGPU_PARAMS_DIR` (plus a `modinfo` file) stands in for sysfs; `LOXAIC_TEST_HTTP_BUILDS=1` allows loopback http builds.

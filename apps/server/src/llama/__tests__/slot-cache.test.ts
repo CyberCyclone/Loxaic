@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   CACHE_NEUTRAL_KEYS,
+  FALLBACK_BYTES_PER_TOKEN,
   SAVED_TTL_MS,
   cacheIdentity,
   estimatedBytes,
+  estimatedSaveBytes,
   fdinfoPos,
   liveEntries,
   matchSlots,
@@ -95,6 +97,13 @@ describe("parseManifest", () => {
     expect(parseManifest(JSON.stringify({ version: 2, model: "m", identity: "i", entries: [] }))).toBeNull();
   });
 
+  it("keeps the measured size per token, and drops a nonsense one", () => {
+    const base = { version: 1, model: "m", identity: "i", entries: [] };
+    expect(parseManifest(JSON.stringify({ ...base, bytesPerToken: 17_000 }))?.bytesPerToken).toBe(17_000);
+    expect(parseManifest(JSON.stringify({ ...base, bytesPerToken: -1 }))?.bytesPerToken).toBeUndefined();
+    expect(parseManifest(JSON.stringify({ ...base, bytesPerToken: "x" }))?.bytesPerToken).toBeUndefined();
+  });
+
   it("drops an entry whose file name could reach outside the slot directory", () => {
     for (const file of ["../x.bin", "a/b.bin", "", "x y.bin"]) {
       expect(parseManifest(JSON.stringify({ version: 1, model: "m", identity: "i", entries: [{ ...entry, file }] }))?.entries, file).toEqual([]);
@@ -121,6 +130,21 @@ describe("restore progress", () => {
     expect(estimatedBytes(1000, 2000, 1000)).toBe(500);
     expect(estimatedBytes(1000, 2000, 10_000)).toBe(950);
     expect(estimatedBytes(0, 2000, 1000)).toBe(0);
+  });
+});
+
+describe("estimatedSaveBytes", () => {
+  it("goes by the last measured save first", () => {
+    expect(estimatedSaveBytes(180_000, { measuredPerToken: 17_000, shape: { kvBytes: 1, recurrentBytes: 1 } })).toBe(3_060_000_000);
+  });
+
+  it("else by the model's own cache: its KV for those tokens and one sequence's recurrent state", () => {
+    expect(estimatedSaveBytes(180_000, { shape: { kvBytes: 2_900_000_000, recurrentBytes: 80_000_000 } })).toBe(2_980_000_000);
+  });
+
+  it("else by a figure above anything measured", () => {
+    expect(estimatedSaveBytes(1000, {})).toBe(1000 * FALLBACK_BYTES_PER_TOKEN);
+    expect(estimatedSaveBytes(1000, { shape: { kvBytes: 0, recurrentBytes: 5 } })).toBe(1000 * FALLBACK_BYTES_PER_TOKEN);
   });
 });
 
@@ -154,6 +178,18 @@ describe("promptCacheState", () => {
       reread_seconds: 500,
     });
     expect(promptCacheState(input({ lastReload: { at: 6000, reason: "unload" }, prefillRate: null }))).toMatchObject({ reread_seconds: null });
+  });
+
+  it("says the disk was why when this turn's save was skipped for it", () => {
+    expect(
+      promptCacheState(input({ lastReload: { at: 6000, reason: "settings" }, diskSkip: { at: 5900, needBytes: 3e9, freeBytes: 1e9 } })),
+    ).toEqual({ state: "lost", reason: "no_disk", tokens: 200_000, reread_seconds: 500, need_bytes: 3e9, free_bytes: 1e9 });
+    // A skip before this turn was about an earlier one: the reload is the why.
+    expect(
+      promptCacheState(input({ lastReload: { at: 6000, reason: "settings" }, diskSkip: { at: 4000, needBytes: 3e9, freeBytes: 1e9 } })),
+    ).toMatchObject({ reason: "settings" });
+    // And a skip with no reload since the turn changes nothing: still loaded.
+    expect(promptCacheState(input({ diskSkip: { at: 5900, needBytes: 3e9, freeBytes: 1e9 } }))).toEqual({ state: "warm" });
   });
 
   it("is lost when the last turn ran before this server started", () => {

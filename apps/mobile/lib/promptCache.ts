@@ -1,4 +1,5 @@
 import type { PromptCacheLossReason, PromptCacheStatus, PromptCacheView, PromptProgress, StreamEventKind } from '@loxaic/api-client';
+import { formatBytes } from './localModels';
 import { formatTokens } from './promptStats';
 
 /**
@@ -72,7 +73,9 @@ const LOSS: Record<PromptCacheLossReason, string> = {
   evicted: 'to make room for another model',
   crash: 'after llama.cpp stopped unexpectedly',
   device_lost: 'after its GPU was reset',
+  no_disk: 'with new settings',
 };
+
 
 function formatDuration(seconds: number): string {
   if (seconds < 60) return `${String(Math.max(1, Math.round(seconds)))} s`;
@@ -109,10 +112,19 @@ export function promptCacheBanner(input: {
   const key = `${input.conversationId}|${view.reason}|${String(view.tokens)}`;
   if (input.dismissed.has(key)) return null;
   const eta = view.reread_seconds != null && view.reread_seconds > 0 ? ` (about ${formatDuration(view.reread_seconds)})` : '';
+  const rereads = `Your next message re-reads all ${formatTokens(view.tokens)} tokens${eta}.`;
+  if (view.reason === 'no_disk') {
+    const figures =
+      view.need_bytes != null && view.free_bytes != null
+        ? ` (it needed about ${formatBytes(view.need_bytes)}, and ${formatBytes(view.free_bytes)} was free)`
+        : '';
+    return {
+      key,
+      text: `${input.modelName} was reloaded, and the server didn't have the disk space to keep this conversation's prompt cache${figures}. ${rereads}`,
+    };
+  }
   return {
     key,
-    text:
-      `${input.modelName} was reloaded ${LOSS[view.reason]} since this conversation's last reply, so its prompt cache is gone. ` +
-      `Your next message re-reads all ${formatTokens(view.tokens)} tokens${eta}.`,
+    text: `${input.modelName} was reloaded ${LOSS[view.reason]} since this conversation's last reply, so its prompt cache is gone. ${rereads}`,
   };
 }
