@@ -13,6 +13,7 @@ import {
   progressPercent,
   runtimeHeadline,
   setDraft,
+  slotCacheDiskWarning,
   standardCtx,
   stageErrors,
   suggestStages,
@@ -46,6 +47,23 @@ describe('CPU warnings', () => {
     const w = cpuWarning(rt({ gpuAvailable: false, devices: [], activeDevices: [] }));
     expect(w.title).toBe('Run models on the CPU?');
     expect(w.confirm).toMatch(/small models only/);
+  });
+});
+
+describe('prompt caches not saved for want of disk', () => {
+  it('says which model, what was needed and what was free', () => {
+    const w = slotCacheDiskWarning(
+      rt({ slotCacheDisk: { at: 1, model: 'm', modelName: 'Flash-Next', needBytes: 3.1 * 1024 ** 3, freeBytes: 1.2 * 1024 ** 3, dir: '/d' } }),
+    );
+    expect(w).toBe(
+      "Prompt caches weren't saved when Flash-Next reloaded: one needed about 3.1 GB, and 1.2 GB was free on the server " +
+        '(2 GB is always kept spare). Until there is room, every conversation on a reloaded model re-reads in full on its next turn.',
+    );
+  });
+
+  it('says nothing when there is no skip, or the server is too old to say', () => {
+    expect(slotCacheDiskWarning(rt({ slotCacheDisk: null }))).toBeNull();
+    expect(slotCacheDiskWarning(rt({}))).toBeNull();
   });
 });
 

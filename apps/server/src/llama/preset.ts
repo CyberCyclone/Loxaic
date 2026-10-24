@@ -34,6 +34,9 @@ export interface PresetGlobals {
   options?: OptionList | null;
   /** The admin's options for every model, written to `[*]`. */
   extraOptions?: readonly ExtraOption[];
+  /** Where llama.cpp writes saved slots (slot-store.ts): Loxaic's own
+   * directory, never an admin's (`slot-save-path` is reserved). */
+  slotSavePath?: string | null;
 }
 
 /** A value that can sit on the right of `key = value` without breaking the
@@ -128,6 +131,7 @@ export function renderPreset(rows: LocalModelRow[], globals: PresetGlobals): str
     "jinja = true",
   ];
   if (globals.placementLog) out.push("log-verbosity = 4");
+  if (globals.slotSavePath) out.push(`slot-save-path = ${safeValue(globals.slotSavePath)}`);
   if (globals.devices === "none") out.push("device = none", "n-gpu-layers = 0");
   else if (globals.devices && globals.devices.length > 0) out.push(`device = ${globals.devices.join(",")}`);
   out.push(...extraOptionLines(globals.extraOptions, globals.options ?? null).lines);

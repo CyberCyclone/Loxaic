@@ -15,7 +15,7 @@ import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import type { ContextStagesState } from '@/hooks/useContextStages';
 import { useServerReachable } from '@/lib/connection';
 import { describeFit } from '@/lib/localModels';
-import { chatStage, formatExtraMemory, othersWarning, stageLabel } from '@/lib/contextStages';
+import { chatStage, formatExtraMemory, othersWarning, STAGE_CACHE_REBUILT, stageLabel } from '@/lib/contextStages';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 /**
@@ -120,7 +120,7 @@ export function ContextSettingsSheet({ stages }: { stages: ContextStagesState })
               </Text>
             )}
             <Text size="2xs" className="text-muted-foreground">
-              Extended stages use YaRN, which stretches the model's positions to reach a longer context. It applies to every conversation on this model while it is on, and slightly lowers quality on short prompts.
+              {`Extended stages use YaRN, which stretches the model's positions to reach a longer context. It applies to every conversation on this model while it is on, and slightly lowers quality on short prompts. ${STAGE_CACHE_REBUILT}`}
             </Text>
           </VStack>
         </ModalBody>

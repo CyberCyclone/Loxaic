@@ -547,6 +547,17 @@ export interface LocalRuntimeView {
    * (amdgpu on Linux, Vulkan runtime), or null where it cannot be read.
    * Absent from an older server. */
   gpuJobLimit?: GpuJobLimit | null;
+  /** The newest reload whose prompt caches were not saved for lack of disk
+   * space, until a later save works; null when none. Absent from an older
+   * server. */
+  slotCacheDisk?: {
+    at: number;
+    model: string;
+    modelName: string;
+    needBytes: number;
+    freeBytes: number;
+    dir: string;
+  } | null;
 }
 
 /** amdgpu's `lockup_timeout` for compute jobs: `computeMs` null means no
@@ -1166,6 +1177,13 @@ export async function getContextStage(model: string, conversationId?: string | n
   const q = new URLSearchParams({ model });
   if (conversationId) q.set("conversation_id", conversationId);
   return (await authedFetch(`/v1/models/context-stage?${q.toString()}`)).json() as Promise<ContextStageInfo>;
+}
+
+/** What a conversation's next turn on `model` will find of its KV cache —
+ * for the banner above the composer when a reload took it. */
+export async function getPromptCache(conversationId: string, model: string): Promise<PromptCacheView> {
+  const q = new URLSearchParams({ model });
+  return (await authedFetch(`/v1/conversations/${encodeURIComponent(conversationId)}/prompt-cache?${q.toString()}`)).json() as Promise<PromptCacheView>;
 }
 
 export interface RequestContextStageResult {
@@ -2797,6 +2815,10 @@ export type {
   ContextStageStep,
   ContextStageReason,
   ModelContextStage,
+  PromptCacheStatus,
+  PromptCacheStep,
+  PromptCacheView,
+  PromptCacheLossReason,
   TimeoutBasis,
   LoopSensitivity,
   CompactionStats,
@@ -2817,7 +2839,7 @@ export type {
   PermissionCheckNote,
   ToolPermission,
 } from "@loxaic/types";
-import type { MySkills, PaletteSkill, ServerMessage, SkillInput, StepsDecision, SubAgentLive, UserSkill } from "@loxaic/types";
+import type { MySkills, PaletteSkill, PromptCacheView, ServerMessage, SkillInput, StepsDecision, SubAgentLive, UserSkill } from "@loxaic/types";
 export {
   commandQuery, parseCommand, isValidSkillName, SKILL_NAME_MAX,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,

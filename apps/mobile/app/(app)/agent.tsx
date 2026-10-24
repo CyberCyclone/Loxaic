@@ -58,6 +58,8 @@ import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { RewindModal } from '@/components/chat/RewindModal';
 import { useRewindRetry, type ComposerSeed } from '@/hooks/useRewindRetry';
 import { isServerConvId } from '@/lib/streamMessages';
+import { usePromptCache } from '@/hooks/usePromptCache';
+import { PromptCacheBanner } from '@/components/chat/PromptCacheBanner';
 import { useSession } from '@/lib/session';
 import { useSettings } from '@/hooks/useSettings';
 import { useThinkingChoice } from '@/hooks/useThinkingChoice';
@@ -95,6 +97,7 @@ export default function AgentScreen() {
     runStatus,
     loadingModel,
     promptStats,
+    promptCache,
     responseStartedAt,
     pendingApproval,
     pendingCheckin,
@@ -187,6 +190,16 @@ export default function AgentScreen() {
   thinkingRef.current = thinking.level;
 
   const context = useContextUsage(activeRun?.msgs, selectedModel ? getWindow(selectedModel) : null);
+
+  // See chat.tsx: a reload that took this run's prompt cache, said first.
+  const selectedInfo = models.find((m) => m.id === selectedModel);
+  const cacheNotice = usePromptCache({
+    conversationId: activeId && isServerConvId(activeId) ? activeId : null,
+    model: selectedModel || undefined,
+    modelName: selectedModel ? getName(selectedModel) : 'The model',
+    running: busy,
+    modelKey: `${String(selectedInfo?.loaded)}|${String(selectedInfo?.loaded_context_tokens)}|${String(selectedInfo?.context_stage?.active)}`,
+  });
   // One instance for the composer's `+` menu, the context popup and the
   // Inspector. Read by the session at send time; see its `pendingMcp`.
   const mcp = useMcpSwitches(token, activeId, 'agent', promotion);
@@ -579,6 +592,7 @@ export default function AgentScreen() {
                     pendingCheckin={pendingCheckin}
                     history={history}
                     stageCard={stageCard}
+                    promptCache={promptCache}
                     actions={rewind.actions}
                     onAllow={() => {
                       if (pendingApproval) handleApprove(pendingApproval.callId);
@@ -622,6 +636,9 @@ export default function AgentScreen() {
                   onPress={() => { setChooserOpen(true); }}
                 />
               </HStack>
+              {cacheNotice.banner && !pendingCheckin && !pendingApproval && (
+                <PromptCacheBanner banner={cacheNotice.banner} onDismiss={() => { if (cacheNotice.banner) cacheNotice.dismiss(cacheNotice.banner.key); }} />
+              )}
               <Composer
                 onSend={(text, attachments) => {
                   // See chat.tsx — an optimistic local reorder.

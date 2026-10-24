@@ -216,6 +216,18 @@ export function gpuJobLimitWarning(rt: LocalRuntimeView): { message: string; fix
   };
 }
 
+/** The Host models card's warning when a reload could not keep the prompt
+ * caches for want of disk, or null. */
+export function slotCacheDiskWarning(rt: LocalRuntimeView): string | null {
+  const d = rt.slotCacheDisk;
+  if (!d) return null;
+  return (
+    `Prompt caches weren't saved when ${d.modelName} reloaded: one needed about ${formatBytes(d.needBytes)}, ` +
+    `and ${formatBytes(d.freeBytes)} was free on the server (2 GB is always kept spare). Until there is room, ` +
+    'every conversation on a reloaded model re-reads in full on its next turn.'
+  );
+}
+
 /** How often to ask the server while something is moving, and while nothing is. */
 export function pollIntervalMs(view: LocalModelsView | null): number {
   if (!view) return 1000;

@@ -32,6 +32,12 @@ export function runtimeDir(): string {
   return path.join(llamaDir(), "runtime");
 }
 
+/** Saved KV caches (slot-store.ts): llama.cpp's `slot-save-path`. Every file
+ * in it is conversation content — the directory is 0700 and each file 0600. */
+export function slotSaveDir(): string {
+  return path.join(llamaDir(), "slots");
+}
+
 /** The preset file the router reads. The only file admin input reaches the
  * router through — see load-settings.ts. */
 export function presetPath(): string {

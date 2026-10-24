@@ -11,6 +11,7 @@ import { listServableModels } from "../llama/catalog.ts";
 import { afterDiscard, discardFailed, discardLostModel, ensureRoom, trackRequest } from "../llama/room.ts";
 import { describeLoadFailure, isLoadFailure } from "../llama/load-failure.ts";
 import { describeDeviceLoss, isDeviceLost } from "../llama/device-lost.ts";
+import { restoreConversation, type CacheProgress } from "../llama/slot-store.ts";
 import { gpuJobLimit } from "../llama/gpu-job-limit.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
 import { backendErrorFields, ContextOverflowError, isContextOverflow, type BackendErrorFields } from "./context-overflow.ts";
@@ -150,6 +151,9 @@ export type StreamEvent =
   /** The backend's own prompt-evaluation progress — only ever sent when
    * `reportProgress` asked for it, and only before the first output. */
   | { type: "progress"; progress: PromptProgress }
+  /** A saved KV cache going back in before the request (llama/slot-store.ts):
+   * only for a host model, and only with `conversationId`. */
+  | { type: "cache"; cache: CacheProgress }
   | { type: "done"; result: CompletionResult };
 
 export interface StreamOptions {
@@ -193,6 +197,20 @@ export interface StreamOptions {
    * llama.cpp, which renders the level into the system prompt.
    */
   thinking?: Record<string, unknown>;
+  /**
+   * The conversation this request continues. With it, a host model first gets
+   * back the conversation's KV cache if one was saved across a reload
+   * (llama/slot-store.ts). Left out by the stage warm-up, which is what makes
+   * one, and by anything that is not a conversation's next turn.
+   */
+  conversationId?: string;
+  /**
+   * llama.cpp's `id_slot`: run in exactly this slot. Only the warm-up before a
+   * slot is saved sets it (llama/slot-store.ts), so the slot it then saves is
+   * the one it warmed — never another conversation's that happened to run
+   * last.
+   */
+  slotId?: number;
 }
 
 /**
@@ -247,6 +265,11 @@ export async function* streamCompletion(
     // would reach the dead process the discard is removing.
     await afterDiscard(upstreamModel, options.signal);
     await ensureRoom(upstreamModel, options.signal);
+    if (options.conversationId) {
+      for await (const cache of restoreConversation(upstreamModel, options.conversationId, options.signal)) {
+        yield { type: "cache", cache };
+      }
+    }
     yield* liveStream(provider, routerModelName(upstreamModel), messages, options);
   } catch (err) {
     // The GPU was reset under the model: its process will never answer again,
@@ -906,6 +929,7 @@ async function* liveStream(
   // never gets a field it would refuse, whatever the caller believed.
   if (options.reportProgress && provider.preset === null) body.return_progress = true;
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
+  if (options.slotId !== undefined && provider.preset === null) body.id_slot = options.slotId;
   // Merged last but never over the fields above: none of them is a thinking
   // field, and thinkingFields only ever produces those.
   for (const [k, v] of Object.entries(options.thinking ?? {})) if (!(k in body)) body[k] = v;
