@@ -16,9 +16,11 @@ import {
   type HardwareGuess,
   type RuntimeDevice,
 } from "./hardware.ts";
-import { presetPath, routerLogPath } from "./paths.ts";
+import { presetPath, routerLogPath, slotSaveDir } from "./paths.ts";
 import { foldPlacementLine, newPlacementTracker, type RawPlacement } from "./placement.ts";
 import { carriesPrompt, lineSplitter, openRouterLog, type RouterLog } from "./router-log.ts";
+import { activeStageIndex } from "./context-stages.ts";
+import { cacheIdentity, type ReloadReason } from "./slot-cache.ts";
 import { lostDevice } from "./device-lost.ts";
 import { gpuJobLimit, gpuJobLimitView, refreshGpuJobLimit, type GpuJobLimitView } from "./gpu-job-limit.ts";
 import {
@@ -420,10 +422,12 @@ async function routerFetch(pathname: string, init: RequestInit = {}, timeoutMs =
   if (!ep) throw new Error(routerUnavailableReason());
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, timeoutMs);
+  // A caller's own signal (a Stop) ends the request too, as the timeout does.
+  const signal = init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
   try {
     return await fetch(`${ep.nativeRoot}${pathname}`, {
       ...init,
-      signal: controller.signal,
+      signal,
       headers: {
         ...(init.body ? { "content-type": "application/json" } : {}),
         ...(ep.apiKey ? { Authorization: `Bearer ${ep.apiKey}` } : {}),
@@ -478,6 +482,82 @@ export async function routerModelProps(
   } catch {
     return null;
   }
+}
+
+export interface RouterSlot {
+  id: number;
+  /** Tokens it holds; null when it has never run a task. */
+  tokens: number | null;
+  busy: boolean;
+  /** Its newest task's id: the slot a request just used has the highest. */
+  task: number | null;
+  /** Its last prompt as llama.cpp renders it back: conversation content, to
+   * be read and dropped by whoever asked (slot-store.ts), never kept. */
+  text: string | null;
+}
+
+/** A loaded model's slots (slot-store.ts), or null when it cannot be asked. */
+export async function routerSlots(id: string): Promise<RouterSlot[] | null> {
+  try {
+    const res = await routerFetch(`/slots?model=${encodeURIComponent(routerModelName(id))}&autoload=false`, {}, 10_000);
+    if (!res.ok) return null;
+    const body = (await res.json()) as unknown;
+    if (!Array.isArray(body)) return null;
+    return (body as { id?: unknown; n_prompt_tokens?: unknown; is_processing?: unknown; id_task?: unknown; prompt?: unknown }[]).flatMap((s) =>
+      typeof s.id === "number"
+        ? [{
+            id: s.id,
+            tokens: typeof s.n_prompt_tokens === "number" ? s.n_prompt_tokens : null,
+            busy: s.is_processing === true,
+            task: typeof s.id_task === "number" ? s.id_task : null,
+            text: typeof s.prompt === "string" ? s.prompt : null,
+          }]
+        : [],
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Save or restore one slot of a loaded model to or from `file` in the slot
+ * directory. Resolves to llama.cpp's answer, or throws with its words. */
+export async function slotAction(
+  id: string,
+  slot: number,
+  action: "save" | "restore",
+  file: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ tokens: number; bytes: number; ms: number }> {
+  const res = await routerFetch(
+    `/slots/${String(slot)}?action=${action}`,
+    { method: "POST", body: JSON.stringify({ model: routerModelName(id), filename: file }), ...(signal ? { signal } : {}) },
+    timeoutMs,
+  );
+  const text = await res.text().catch(() => "");
+  let body: Record<string, unknown> = {};
+  try {
+    body = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    // not JSON
+  }
+  if (!res.ok) {
+    const message = (body.error as { message?: string } | undefined)?.message ?? text;
+    throw new Error(message.slice(0, 300) || `llama.cpp refused to ${action} the slot (HTTP ${String(res.status)})`);
+  }
+  const timings = (body.timings ?? {}) as Record<string, unknown>;
+  const num = (v: unknown) => (typeof v === "number" ? v : 0);
+  return action === "save"
+    ? { tokens: num(body.n_saved), bytes: num(body.n_written), ms: num(timings.save_ms) }
+    : { tokens: num(body.n_restored), bytes: num(body.n_read), ms: num(timings.restore_ms) };
+}
+
+/** The port the child serving host model `id` listens on, from the router's
+ * own "spawning server instance" line; null when it is not known. */
+export function childPortFor(id: string): number | null {
+  const name = routerModelName(id);
+  for (const [port, n] of placements.ports) if (n === name) return port;
+  return null;
 }
 
 export async function unloadModel(id: string): Promise<void> {
@@ -540,6 +620,14 @@ let lastReloadError: string | null = null;
  * once the router has re-read the preset (which unloads them). Held across a
  * deferred reload — that is when `reloadPendingFor` says so. */
 const restoreAfterReload = new Set<string>();
+/** What each model's section was rendered from, beside `lastSections`: the
+ * rest of its cache identity (slot-cache.ts). */
+let lastStages = new Map<string, number>();
+let lastGlobalLines: string[] = [];
+/** Loaded models the next reload unloads, with why — and, for those whose
+ * cache identity it keeps, the identity they were loaded with: saved just
+ * before the reload goes out (slot-store.ts). */
+const unloadingOnReload = new Map<string, { reason: ReloadReason; loadedIdentity: string | null }>();
 
 /** A loaded model's new settings are waiting for a run to end. */
 export function reloadPendingFor(id: string): boolean {
@@ -554,6 +642,32 @@ function endDeferredReload(): void {
   if (reloadTimer) clearInterval(reloadTimer);
   reloadTimer = null;
   restoreAfterReload.clear();
+  unloadingOnReload.clear();
+}
+
+/** Whether host-model caches are saved across reloads: managed mode only —
+ * the attached sidecar's filesystem is not this server's to write into. */
+export function slotCacheEnabled(): boolean {
+  return getLlamaMode() === "managed";
+}
+
+/** The build a cache was computed by: its install and its archive's hash. */
+function buildIdentity(): string | null {
+  const r = st.runtime;
+  return r ? `${r.key}:${r.sha256 ?? ""}` : null;
+}
+
+function identityFor(section: string | undefined, stage: number | undefined, globalLines: readonly string[]): string | null {
+  const build = buildIdentity();
+  if (section === undefined || stage === undefined || !build) return null;
+  return cacheIdentity({ section: section.split("\n"), globalLines, build, stage });
+}
+
+/** What a saved cache of host model `id` must match to go back in, as the
+ * preset stands now (slot-cache.ts); null when the model is not in it or no
+ * build is running. */
+export function getCacheIdentity(id: string): string | null {
+  return identityFor(lastSections.get(id), lastStages.get(id), lastGlobalLines);
 }
 
 function presetGlobals(): PresetGlobals {
@@ -562,6 +676,7 @@ function presetGlobals(): PresetGlobals {
     placementLog: getLlamaMode() === "managed" && verifiedLogs(),
     options: currentOptions(),
     extraOptions: getRouterExtraOptions(),
+    slotSavePath: slotCacheEnabled() ? slotSaveDir() : null,
   };
 }
 
@@ -614,7 +729,27 @@ async function builtinRunsActive(): Promise<number> {
  * reload keeps the router's old list, so nothing was unloaded and the models
  * held to be loaded again are owed nothing — kept, a later, unrelated reload
  * would load them, maybe after an admin had unloaded one. */
-async function reloadNow(): Promise<boolean> {
+async function reloadNow(): Promise<boolean | "deferred"> {
+  const unloading = new Map(unloadingOnReload);
+  unloadingOnReload.clear();
+  const store = unloading.size > 0 ? await import("./slot-store.ts") : null;
+  if (store) {
+    const deadline = Date.now() + RELOAD_SAVE_BUDGET_MS;
+    for (const [id, { loadedIdentity }] of unloading) {
+      // Before the reload, which is what unloads them; only when what they
+      // load with next computes the same cache (a YaRN stage never does).
+      if (loadedIdentity && loadedIdentity === getCacheIdentity(id)) await store.saveModel(id, loadedIdentity, { deadline });
+    }
+    // Saving takes time, and a reply may have started on one of these models
+    // meanwhile: reloading now would cut it off, which is what deferring is
+    // for. Wait for it as before (the next pass saves again, newer caches
+    // included).
+    if ((await builtinRunsActive()) > 0) {
+      for (const [id, entry] of unloading) if (!unloadingOnReload.has(id)) unloadingOnReload.set(id, entry);
+      scheduleDeferredReload();
+      return "deferred";
+    }
+  }
   try {
     const res = await routerFetch("/models?reload=1", {}, 10_000);
     if (!res.ok) {
@@ -625,6 +760,10 @@ async function reloadNow(): Promise<boolean> {
       return false;
     }
     lastReloadError = null;
+    for (const [id, { reason }] of unloading) {
+      store?.recordReload(id, reason);
+      store?.forgetClaims(id);
+    }
   } catch (err) {
     // No router yet: it reads the file when it starts, with nothing loaded.
     lastReloadError = null;
@@ -693,6 +832,9 @@ export interface SyncOptions {
   /** Load models again that were loaded when their sections changed. An
    * admin's write wants this; a context-stage switch loads for itself. */
   restoreLoaded?: boolean;
+  /** Why a loaded model this write changes is unloaded, for the composer's
+   * "prompt cache gone" banner. Defaults to a settings change. */
+  reason?: ReloadReason;
 }
 
 /**
@@ -721,7 +863,12 @@ async function syncPresetNow(opts: SyncOptions): Promise<SyncResult> {
   const rows = await listServableModels();
   const globals = presetGlobals();
   const sections = sectionsById(rows, globals);
+  // llama.cpp refuses a `slot-save-path` that is not a directory.
+  if (globals.slotSavePath) await (await import("./slot-store.ts")).ensureSlotDir();
   await writePreset(renderPreset(rows, globals));
+  const stages = new Map(rows.map((r) => [r.id, activeStageIndex(r)]));
+  const globalLines = extraOptionLines(globals.extraOptions, globals.options ?? null).lines;
+  const before = { sections: lastSections, stages: lastStages, globalLines: lastGlobalLines };
 
   // A section that changed *or disappeared* makes the router unload that model
   // on reload — disabling or deleting a model mid-run would cut the run off.
@@ -730,6 +877,10 @@ async function syncPresetNow(opts: SyncOptions): Promise<SyncResult> {
     ...[...lastSections.keys()].filter((id) => !sections.has(id)),
   ];
   lastSections = sections;
+  lastStages = stages;
+  lastGlobalLines = globalLines;
+  // Saved caches whose model changed under them, or that outlived their TTL.
+  if (slotCacheEnabled()) void import("./slot-store.ts").then((m) => m.sweepSlotCache()).catch(() => undefined);
   if (!routerEndpoint()) return { deferred: false, reloading: [] };
 
   let reloading: string[] = [];
@@ -745,6 +896,16 @@ async function syncPresetNow(opts: SyncOptions): Promise<SyncResult> {
       reloading = loaded.filter((id) => sections.has(id));
       for (const id of reloading) restoreAfterReload.add(id);
     }
+    for (const id of loaded) {
+      const was = identityFor(before.sections.get(id), before.stages.get(id), before.globalLines);
+      // A deferred reload already waiting keeps the identity the process was
+      // loaded with: only the first write after a load knows it.
+      const pending = unloadingOnReload.get(id);
+      unloadingOnReload.set(id, {
+        reason: opts.reason ?? pending?.reason ?? "settings",
+        loadedIdentity: pending ? pending.loadedIdentity : was,
+      });
+    }
     if (loaded.length > 0 && (await builtinRunsActive()) > 0) {
       scheduleDeferredReload();
       return { deferred: true, reloading };
@@ -752,6 +913,7 @@ async function syncPresetNow(opts: SyncOptions): Promise<SyncResult> {
   }
   // A refused reload unloaded nothing, so nothing is being loaded again.
   const reloaded = await reloadNow();
+  if (reloaded === "deferred") return { deferred: true, reloading };
   return { deferred: false, reloading: reloaded ? reloading : [] };
 }
 
@@ -798,6 +960,9 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   if (process.env.LOXAIC_FAKE_RELOAD_FAIL) env.LOXAIC_FAKE_RELOAD_FAIL = process.env.LOXAIC_FAKE_RELOAD_FAIL;
   if (process.env.LOXAIC_FAKE_UNLOAD_STUCK) env.LOXAIC_FAKE_UNLOAD_STUCK = process.env.LOXAIC_FAKE_UNLOAD_STUCK;
   if (process.env.LOXAIC_FAKE_HELP_OMIT) env.LOXAIC_FAKE_HELP_OMIT = process.env.LOXAIC_FAKE_HELP_OMIT;
+  if (process.env.LOXAIC_FAKE_RESTORE_MS) env.LOXAIC_FAKE_RESTORE_MS = process.env.LOXAIC_FAKE_RESTORE_MS;
+  if (process.env.LOXAIC_FAKE_SLOT_FAIL) env.LOXAIC_FAKE_SLOT_FAIL = process.env.LOXAIC_FAKE_SLOT_FAIL;
+  if (process.env.LOXAIC_FAKE_SAVE_MS) env.LOXAIC_FAKE_SAVE_MS = process.env.LOXAIC_FAKE_SAVE_MS;
   return env;
 }
 
@@ -1143,6 +1308,7 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
     st.port = null;
     st.apiKey = null;
     if (st.stopping) return;
+    void import("./slot-store.ts").then((m) => { m.recordRouterGone("crash"); });
     const why = explainRouterExit(logTail.slice(-40), code, signal);
     console.error(`[llama] router stopped: ${why}`);
     if (chosen && !cameUp) {
@@ -1230,6 +1396,13 @@ function chosenDevices(devices: RuntimeDevice[]): string[] {
   return chosen.length > 0 ? chosen : defaultDevices(devices);
 }
 
+/** How long saving the slots may hold up a restart, and a shutdown (which a
+ * service manager will not wait long for). */
+const RESTART_SAVE_BUDGET_MS = 120_000;
+/** How long saving may hold up a settings reload, which an admin's Save waits on. */
+const RELOAD_SAVE_BUDGET_MS = 120_000;
+const SHUTDOWN_SAVE_BUDGET_MS = 30_000;
+
 let ensuring: Promise<void> | null = null;
 /** A restart asked for while an attempt was already running, run once that
  * one ends — shared by every caller who asks in the meantime. */
@@ -1282,6 +1455,14 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   if (!opts.restart && (st.state === "running" || st.state === "starting") && st.child) return;
   if (opts.restart) {
     fastFails = 0;
+    // A restart keeps the build unless the selection changed it, and every
+    // model's cache identity with it: save what the slots hold first. One that
+    // does change the build fails the identity check at restore and is dropped.
+    if (st.child) {
+      const store = await import("./slot-store.ts");
+      await store.saveLoadedModels(Date.now() + RESTART_SAVE_BUDGET_MS);
+      store.recordRouterGone("restart");
+    }
     await stopChild();
     if (restart) restart.phase = "starting";
     // A deliberate Restart re-detects: the error it may be answering says
@@ -1495,6 +1676,9 @@ export async function stopLocalRuntime(): Promise<void> {
   if (attachTimer) clearInterval(attachTimer);
   attachTimer = null;
   endDeferredReload();
+  // A shutdown is usually an update or a reboot: the next start loads the same
+  // build, and a saved conversation goes back in at its next turn.
+  if (st.child) await (await import("./slot-store.ts")).saveLoadedModels(Date.now() + SHUTDOWN_SAVE_BUDGET_MS).catch(() => undefined);
   await stopChild();
 }
 

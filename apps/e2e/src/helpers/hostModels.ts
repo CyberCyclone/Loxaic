@@ -105,6 +105,13 @@ export interface RouterEvent {
    * the start of its last user message. */
   last_role?: string | null;
   last_user?: string;
+  /** On a "chat" event: what the request reused from the slot it ran in
+   * (llama.cpp's `cache_n`). */
+  cache_n?: number;
+  /** On a "slot-save"/"slot-restore" event: the file (it carries the
+   * conversation's id) and how many tokens it held. */
+  file?: string;
+  tokens?: number;
 }
 
 export function routerEvents(): RouterEvent[] {

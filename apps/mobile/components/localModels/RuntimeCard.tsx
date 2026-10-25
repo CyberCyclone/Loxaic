@@ -27,7 +27,7 @@ import {
   type ServerProblem,
 } from '@/lib/extraOptions';
 import { AdminSettingsError } from '@loxaic/api-client';
-import { cpuWarning, formatBytes, gpuJobLimitWarning, restartHeadline, runtimeHeadline } from '@/lib/localModels';
+import { cpuWarning, formatBytes, gpuJobLimitWarning, restartHeadline, runtimeHeadline, slotCacheDiskWarning } from '@/lib/localModels';
 import { bundledNewerNote, changeVersionControl, offersRevert, versionLabel } from '@/lib/runtimeVersions';
 import { useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -85,6 +85,7 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
   }, [savedOptionsKey]);
   const warning = cpuWarning(runtime);
   const jobLimit = gpuJobLimitWarning(runtime);
+  const cacheDisk = slotCacheDiskWarning(runtime);
   const restarting = Boolean(runtime.restart);
   const busy = restarting || runtime.state === 'installing' || runtime.state === 'starting' || runtime.state === 'not-installed';
   // Ticks the elapsed time while a restart is under way, and only then.
@@ -174,6 +175,15 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
               {jobLimit.fix}
             </Text>
           </VStack>
+        </HStack>
+      )}
+
+      {cacheDisk && (
+        <HStack testID="localModels.runtime.slotCacheDisk" space="xs" className="mt-2 items-start rounded-md bg-warning/15 p-2">
+          <Icon as={TriangleAlert} size="xs" className="mt-0.5 text-warning" />
+          <Text testID="localModels.runtime.slotCacheDisk.message" size="xs" className="min-w-0 flex-1 text-foreground">
+            {cacheDisk}
+          </Text>
         </HStack>
       )}
 

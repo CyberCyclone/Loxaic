@@ -22,6 +22,7 @@ import {
   type StreamSnapshot,
   type PermissionMode,
   type StepsDecision,
+  type PromptCacheStatus,
   type PromptStats,
 } from '@loxaic/api-client';
 import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
@@ -50,6 +51,7 @@ import {
 } from '@/lib/agentRunState';
 import { followsTurnStarted, isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, retrySend, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
+import { foldPromptCache } from '@/lib/promptCache';
 import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
 import { useToastHelper } from './useToastHelper';
@@ -72,6 +74,9 @@ interface StreamState {
   loadingModel: boolean;
   /** See useChatSession's StreamState. */
   promptStats: PromptStats | null;
+  /** A saved KV cache going back in before the request (lib/promptCache.ts),
+   * until the reply's first output. */
+  promptCache?: PromptCacheStatus | null;
   responseStartedAt: number;
   model: string;
 }
@@ -580,11 +585,12 @@ export function useAgentSession(
             ...prev,
             [convId]:
               prev[convId]?.streamId === event.stream_id
-                ? { ...prev[convId], promptStats: event.snapshot.prompt_stats ?? null }
+                ? { ...prev[convId], promptStats: event.snapshot.prompt_stats ?? null, promptCache: event.snapshot.prompt_cache ?? null }
                 : {
                     streamId: event.stream_id,
                     loadingModel: false,
                     promptStats: event.snapshot.prompt_stats ?? null,
+                    promptCache: event.snapshot.prompt_cache ?? null,
                     // From the run's real start — see lib/runStart.ts.
                     responseStartedAt: localRunStart(event.started_at, event.server_now),
                     model: assistantMsg?.model ?? '',
@@ -629,14 +635,15 @@ export function useAgentSession(
           const current = prev[convId];
           if (current?.streamId !== event.stream_id) return prev;
           const promptStats = foldPromptStats(current.promptStats, event.event);
+          const promptCache = foldPromptCache(current.promptCache ?? null, event.event);
           // The same rule chat uses. This used to be a hand-kept list of clear
           // points (iteration, deltas, measured progress), so a request that
           // loaded the model and answered with tool calls alone left "Loading
           // model…" up for the whole approval wait that followed.
           const loadingModel = loadingAfter(current.loadingModel, event.event);
-          return promptStats === current.promptStats && loadingModel === current.loadingModel
+          return promptStats === current.promptStats && loadingModel === current.loadingModel && promptCache === (current.promptCache ?? null)
             ? prev
-            : { ...prev, [convId]: { ...current, promptStats, loadingModel } };
+            : { ...prev, [convId]: { ...current, promptStats, loadingModel, promptCache } };
         });
 
         const inner = event.event;
@@ -1253,6 +1260,7 @@ export function useAgentSession(
     stopping,
     loadingModel: activeStream?.loadingModel ?? false,
     promptStats: activeStream?.promptStats ?? null,
+    promptCache: activeStream?.promptCache ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
     pendingCheckin,

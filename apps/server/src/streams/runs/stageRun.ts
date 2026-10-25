@@ -46,10 +46,11 @@ function emitter(producer: StreamProducer) {
  * shape is this model's — any other front would warm nothing the next turn
  * uses.
  */
-export function warmer(convId: string, model: string) {
-  return async (signal: AbortSignal, onProgress: (p: PromptProgress) => void): Promise<void> => {
+export function warmer(convId: string, model: string, opts: { slotId?: number } = {}) {
+  /** Resolves to the prompt's size as the backend counted it, or null. */
+  return async (signal: AbortSignal, onProgress: (p: PromptProgress) => void): Promise<number | null> => {
     const shape = lastRequestShape(convId);
-    if (shape?.model !== model) return;
+    if (shape?.model !== model) return null;
     // Dynamic, as compaction does: the engine imports this module.
     const { loadHistory } = await import("./engine.ts");
     const history = await loadHistory(convId);
@@ -61,10 +62,12 @@ export function warmer(convId: string, model: string) {
     const started = Date.now();
     let reports = 0;
     let last: PromptProgress | null = null;
+    let promptTokens: number | null = null;
     for await (const event of streamCompletion(model, messages, {
       tools: shape.tools,
       signal,
       maxTokens: 1,
+      ...(opts.slotId !== undefined ? { slotId: opts.slotId } : {}),
       thinking: shape.thinking,
       // Always asked for. A stage only exists on the built-in llama.cpp
       // router, which reports progress; reading that off the model list asked
@@ -76,14 +79,18 @@ export function warmer(convId: string, model: string) {
         reports++;
         last = event.progress;
         onProgress(event.progress);
+      } else if (event.type === "done") {
+        promptTokens = event.result.usage.prompt_tokens;
       }
     }
+    if (!signal.aborted) (await import("../../llama/slot-store.ts")).recordWarmed(model, convId);
     // One line per re-read, so a pill that sat at one figure can be told apart
     // from a backend that stopped reporting.
     console.log(
       `[llama] ${model}: re-read ${String(messages.length)} messages in ${String(Math.round((Date.now() - started) / 1000))} s, ` +
         `${String(reports)} progress report(s)${last ? `, last ${String(last.processed_tokens)}/${String(last.total_tokens)} tokens` : ""}`,
     );
+    return promptTokens;
   };
 }
 

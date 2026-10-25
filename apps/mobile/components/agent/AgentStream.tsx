@@ -1,4 +1,4 @@
-import type { PromptStats } from '@loxaic/api-client';
+import type { PromptCacheStatus, PromptStats } from '@loxaic/api-client';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Box } from '@/components/ui/box';
@@ -34,6 +34,8 @@ interface AgentStreamProps {
   history?: MessageHistory | null;
   /** The latest step of a context-stage switch in this run. */
   stageCard?: StageCard | null;
+  /** A saved KV cache going back in before the reply. */
+  promptCache?: PromptCacheStatus | null;
   /** Rewind and Retry — see MessageList. */
   actions?: MessageActions | null;
   onAllow: () => void;
@@ -60,6 +62,7 @@ export function AgentStream({
   pendingCheckin,
   history,
   stageCard,
+  promptCache,
   actions = null,
   onAllow,
   onAllowAlways,
@@ -104,6 +107,7 @@ export function AgentStream({
           queuePosition={queuePosition}
           history={history}
           stageCard={stageCard}
+          promptCache={promptCache}
           actions={actions}
         />
       </Box>

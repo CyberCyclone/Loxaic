@@ -18,6 +18,7 @@ import {
   type ServerMessage,
   type AttachmentRef,
   type StepsDecision,
+  type PromptCacheStatus,
   type PromptStats,
   type Conversation as ApiConversation,
 } from '@loxaic/api-client';
@@ -36,6 +37,7 @@ import { useToastHelper } from './useToastHelper';
 import { approvalStreamId, toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { followsTurnStarted, isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, retrySend, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
+import { foldPromptCache } from '@/lib/promptCache';
 import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
 import { localRunStart } from '@/lib/runStart';
@@ -69,6 +71,9 @@ interface StreamState {
   /** What the in-flight model request is evaluating — size, reuse, ETA —
    * from just before it is sent until its first output. */
   promptStats: PromptStats | null;
+  /** A saved KV cache going back in before the request (lib/promptCache.ts),
+   * until the reply's first output. */
+  promptCache?: PromptCacheStatus | null;
   responseStartedAt: number;
   model: string;
 }
@@ -782,11 +787,12 @@ export function useChatSession(
             ...prev,
             [convId]:
               prev[convId]?.streamId === event.stream_id
-                ? { ...prev[convId], promptStats: event.snapshot.prompt_stats ?? null }
+                ? { ...prev[convId], promptStats: event.snapshot.prompt_stats ?? null, promptCache: event.snapshot.prompt_cache ?? null }
                 : {
                     streamId: event.stream_id,
                     loadingModel: false,
                     promptStats: event.snapshot.prompt_stats ?? null,
+                    promptCache: event.snapshot.prompt_cache ?? null,
                     // `run.queued` is only re-emitted when the queue moves, so
                     // a client that (re)connects while its run sits at a stable
                     // position hears nothing further until the run ahead ends —
@@ -845,6 +851,7 @@ export function useChatSession(
                   // loaded model evaluating the prompt can report.
                   loadingModel: loadingAfter(prev[convId].loadingModel, event.event),
                   promptStats: foldPromptStats(prev[convId].promptStats, event.event),
+                  promptCache: foldPromptCache(prev[convId].promptCache ?? null, event.event),
                   // Cleared by anything that is not itself a queue update:
                   // every other event means the run is past the queue, and a
                   // stale position would keep claiming otherwise.
@@ -1457,6 +1464,7 @@ export function useChatSession(
     stopping: activeId !== null && stoppingConvId === activeId,
     loadingModel: activeStream?.loadingModel ?? false,
     promptStats: activeStream?.promptStats ?? null,
+    promptCache: activeStream?.promptCache ?? null,
     queuePosition: activeStream?.queuePosition ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,

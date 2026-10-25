@@ -139,7 +139,7 @@ export async function applyStageChange(opts: {
   /** Re-read the caller's conversation after the load, reporting the
    * backend's progress. Supplied by a stage run that has the conversation's
    * request shape; failures are the caller's to swallow. */
-  warm?: (signal: AbortSignal, onProgress: (p: PromptProgress) => void) => Promise<void>;
+  warm?: (signal: AbortSignal, onProgress: (p: PromptProgress) => void) => Promise<unknown>;
   /** The wait for the whole backend, as the run registry reports it (#282):
    * `onQueued` with each place in line, `onWaitEnded` once the wait is over,
    * admitted or not. Without them a thread-list row said "Running" for a
@@ -204,7 +204,7 @@ export async function applyStageChange(opts: {
     console.log(
       `[llama] ${row.id}: context stage ${String(before)} → ${String(now)} (${opts.reason}${opts.byUserId ? `, by ${opts.byUserId}` : ", automatic"})`,
     );
-    await syncPreset();
+    await syncPreset({ reason: "context_stage" });
     await invalidateModelList();
 
     if (routerEndpoint()) {
@@ -270,7 +270,7 @@ export async function applyStageChange(opts: {
  * section and the listing agree again. */
 async function putBack(modelId: string, stage: number): Promise<void> {
   await updateLocalModelRow(modelId, { activeStage: stage });
-  await syncPreset();
+  await syncPreset({ reason: "context_stage" });
   await invalidateModelList();
 }
 

@@ -35,6 +35,8 @@ import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { RewindModal } from '@/components/chat/RewindModal';
 import { useRewindRetry, type ComposerSeed } from '@/hooks/useRewindRetry';
 import { isServerConvId } from '@/lib/streamMessages';
+import { usePromptCache } from '@/hooks/usePromptCache';
+import { PromptCacheBanner } from '@/components/chat/PromptCacheBanner';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
 import { useThinkingChoice } from '@/hooks/useThinkingChoice';
@@ -67,6 +69,7 @@ export default function ChatScreen() {
     runStatus,
     loadingModel,
     promptStats,
+    promptCache,
     queuePosition,
     responseStartedAt,
     pendingApproval,
@@ -138,6 +141,17 @@ export default function ChatScreen() {
   thinkingRef.current = thinking.level;
 
   const context = useContextUsage(activeConv?.msgs, selectedModel ? getWindow(selectedModel) : null);
+
+  // A reload that took this conversation's prompt cache, said before the
+  // next message pays for it.
+  const selectedInfo = models.find((m) => m.id === selectedModel);
+  const cacheNotice = usePromptCache({
+    conversationId: activeId && isServerConvId(activeId) ? activeId : null,
+    model: selectedModel || undefined,
+    modelName: selectedModel ? getName(selectedModel) : 'The model',
+    running: streaming,
+    modelKey: `${String(selectedInfo?.loaded)}|${String(selectedInfo?.loaded_context_tokens)}|${String(selectedInfo?.context_stage?.active)}`,
+  });
 
   const readOnlyReason =
     activeConv && !canEdit(activeConv)
@@ -319,6 +333,7 @@ export default function ChatScreen() {
             model={selectedModel ? getName(selectedModel) : undefined}
             history={history}
             stageCard={stageCard}
+            promptCache={promptCache}
             actions={rewind.actions}
           />
         ) : (
@@ -340,6 +355,9 @@ export default function ChatScreen() {
             onAnswer={() => { handleSteps('answer'); }}
             onStop={handleStop}
           />
+        )}
+        {cacheNotice.banner && !pendingCheckin && (
+          <PromptCacheBanner banner={cacheNotice.banner} onDismiss={() => { if (cacheNotice.banner) cacheNotice.dismiss(cacheNotice.banner.key); }} />
         )}
         <Composer
           onMenuOpenChange={setPlusMenuOpen}

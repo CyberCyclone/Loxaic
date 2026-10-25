@@ -630,6 +630,13 @@ export type StreamEventKind =
    */
   | ({ kind: "context.stage" } & ContextStageStatus)
   /**
+   * This conversation's KV cache, saved when its host model was reloaded, is
+   * going back into the model before the request (apps/server/src/llama/
+   * slot-store.ts) — the in-chat "Loading cached context" pill. Folded into
+   * the snapshot as the latest step until the reply's first output.
+   */
+  | ({ kind: "prompt.cache" } & PromptCacheStatus)
+  /**
    * This run is waiting for an inference slot, and is `position` places from
    * the front (1 = next to run).
    *
@@ -805,6 +812,58 @@ export interface PromptStats {
   progress?: PromptProgress;
 }
 
+export type PromptCacheStep = "restoring" | "restored" | "failed";
+
+export interface PromptCacheStatus {
+  message_id: string;
+  step: PromptCacheStep;
+  /** Tokens of the conversation the saved cache holds. */
+  tokens: number;
+  bytes_total: number;
+  bytes_done: number;
+  /** `bytes_done` is elapsed time against how long the save took, not what
+   * was read: say "about". */
+  estimated: boolean;
+  /** Server epoch ms the restore began. */
+  started_at: number;
+}
+
+/** Why a host model's process went, taking the conversations' caches in it. */
+export type PromptCacheLossReason =
+  | "settings"
+  | "context_stage"
+  | "restart"
+  | "unload"
+  | "evicted"
+  | "crash"
+  | "device_lost"
+  /** Reloaded, and the save that would have kept it was skipped for lack of
+   * disk space on the server. */
+  | "no_disk";
+
+/**
+ * What a conversation's next turn on a model will find
+ * (`GET /v1/conversations/:id/prompt-cache?model=`):
+ * - `none`: not a host model, no turn yet, or the last turn used another model.
+ * - `warm`: the process that read it is still up — a claim of nothing more.
+ * - `saved`: kept across a reload; it goes back in at the next turn.
+ * - `lost`: the process that held it is gone, so the next turn re-reads all of
+ *   it. `reread_seconds` from this model's recent prompt rate, or null.
+ */
+export type PromptCacheView =
+  | { state: "none" }
+  | { state: "warm" }
+  | { state: "saved"; tokens: number }
+  | {
+      state: "lost";
+      reason: PromptCacheLossReason;
+      tokens: number;
+      reread_seconds: number | null;
+      /** `no_disk` only: what the save needed and what was free, in bytes. */
+      need_bytes?: number;
+      free_bytes?: number;
+    };
+
 /** A backend's own account of how far prompt evaluation has got. */
 export type ContextStageStep = "waiting" | "reloading" | "rereading" | "applied" | "failed";
 /**
@@ -878,6 +937,8 @@ export interface StreamSnapshot {
    * client reconnecting fifteen minutes into prompt evaluation is told what
    * is being evaluated, not just that something is. */
   prompt_stats?: PromptStats;
+  /** The latest step of this run's saved-cache restore, if it made one. */
+  prompt_cache?: PromptCacheStatus;
   /** Present while the run is parked at a step check-in waiting for an answer.
    * Both surfaces carry it — chat and agent share one tool loop. */
   pending_checkin?: {

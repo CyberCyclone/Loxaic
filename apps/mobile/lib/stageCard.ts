@@ -103,6 +103,7 @@ export function stageCardLabel(card: Pick<StageCard, 'status' | 'stepSince'>, no
 /** A second line, when the step has something more to say. */
 export function stageCardDetail(status: ContextStageStatus): string | null {
   if (status.step === 'applied' && status.message) return status.message;
+  if (status.step === 'reloading') return 'Rebuilding the prompt cache: the conversation is re-read once the model is back.';
   if (status.step === 'applied' && status.auto && status.reason === 'new-conversation') {
     return 'A new conversation starts without YaRN, which costs every reply a little quality.';
   }

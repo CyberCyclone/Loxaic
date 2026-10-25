@@ -67,7 +67,9 @@ describe('the pill says what is happening', () => {
       'Another conversation still needs this much context.',
     );
     expect(stageCardDetail(status({ step: 'applied', auto: true, reason: 'new-conversation', to_stage: 0 }))).toMatch(/without YaRN/);
-    expect(stageCardDetail(status({ step: 'reloading' }))).toBeNull();
+    // A reload takes every conversation's prompt cache with it.
+    expect(stageCardDetail(status({ step: 'reloading' }))).toMatch(/Rebuilding the prompt cache/);
+    expect(stageCardDetail(status({ step: 'waiting' }))).toBeNull();
   });
 });
 

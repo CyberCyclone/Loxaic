@@ -204,6 +204,9 @@ export const FAKE_AMDGPU_DIR = path.join(RUN_DIR, 'amdgpu');
 /** While this file exists, the fake router's unloads do not take, as a child
  * holding a lost GPU may not exit (device-lost.spec.ts). */
 export const FAKE_UNLOAD_STUCK_FILE = path.join(RUN_DIR, 'unload-stuck');
+/** While it exists, the free disk the server sees for saved prompt caches, in
+ * bytes (apps/server/src/llama/slot-store.ts): "1" makes every save too big. */
+export const SLOT_FREE_FILE = path.join(RUN_DIR, 'slot-free-bytes');
 /** What the fake router's loaded models hold of its GPU, for its device
  * listing (a separate process) to report as used. */
 const FAKE_VRAM_STATE = path.join(RUN_DIR, 'fake-vram.json');
@@ -440,6 +443,7 @@ async function ensureServer(): Promise<void> {
   rmSync(FAKE_AMDGPU_DIR, { recursive: true, force: true });
   mkdirSync(FAKE_AMDGPU_DIR, { recursive: true });
   rmSync(FAKE_UNLOAD_STUCK_FILE, { force: true });
+  rmSync(SLOT_FREE_FILE, { force: true });
   mkdirSync(UPLOADS_DIR, { recursive: true });
   const { email: adminEmail } = writeAdminCreds();
   // The git server first, because the mock GitHub API hands out its URLs as
@@ -557,6 +561,7 @@ async function ensureServer(): Promise<void> {
       LOXAIC_FAKE_ROUTER_LOG: FAKE_ROUTER_LOG,
       LOXAIC_AMDGPU_PARAMS_DIR: FAKE_AMDGPU_DIR,
       LOXAIC_FAKE_UNLOAD_STUCK: FAKE_UNLOAD_STUCK_FILE,
+      LOXAIC_SLOT_FREE_FILE: SLOT_FREE_FILE,
       // A stuck unload is given up on after three seconds, not thirty.
       LLAMA_DISCARD_WAIT_MS: '3000',
       LOXAIC_FAKE_DEVICES: 'FAKE0: E2E Fake GPU (24576 MiB, 24000 MiB free)',
@@ -566,6 +571,9 @@ async function ensureServer(): Promise<void> {
       // A load that takes a moment, as a real one does, so a context-stage
       // switch can be watched reloading (context-stages.spec.ts).
       LOXAIC_FAKE_LOAD_MS: '4000',
+      // A saved KV cache read back over three seconds, so the "Loading cached
+      // context" pill can be watched (prompt-cache.spec.ts).
+      LOXAIC_FAKE_RESTORE_MS: '3000',
       // The wait between one person's context switches (30 s in production,
       // see llama/context-stage-switch.ts) would turn every spec that moves a
       // model's stage twice as the same user into a refusal. The cooldown has

@@ -1,4 +1,4 @@
-import type { PromptStats } from '@loxaic/api-client';
+import type { PromptCacheStatus, PromptStats } from '@loxaic/api-client';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { FlatList, Platform, type ListRenderItemInfo, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Box } from '@/components/ui/box';
@@ -6,11 +6,13 @@ import { Pressable } from '@/components/ui/pressable';
 import { Spinner } from '@/components/ui/spinner';
 import { Text } from '@/components/ui/text';
 import { ContextStageCard } from './ContextStageCard';
+import { PromptCacheCard } from './PromptCacheCard';
 import { Message } from './Message';
 import { TypingIndicator } from './TypingIndicator';
 import type { Conversation, Message as MessageType } from '@/lib/types';
 import { useServerReachable } from '@/lib/connection';
 import { isStageActive, type StageCard } from '@/lib/stageCard';
+import { promptCacheActive } from '@/lib/promptCache';
 import { canRewind, isContextFailure, retryIndex } from '@/lib/rewind';
 import { isEmptyGenerating, liveCounterStart, typingIndicatorFor } from '@/lib/liveTimer';
 
@@ -35,6 +37,8 @@ interface MessageListProps {
   history?: MessageHistory | null;
   /** The latest step of a context-stage switch in this thread. */
   stageCard?: StageCard | null;
+  /** A saved KV cache going back in before the reply (lib/promptCache.ts). */
+  promptCache?: PromptCacheStatus | null;
   /** The list's own testID. `chat.messageList` unless a screen shows a second
    * list at once — a sub-agent's panel over its parent's thread — where two
    * with one id would make every selector on it ambiguous. */
@@ -75,7 +79,7 @@ export interface MessageHistory {
  * there, and following a live response is a scroll to zero rather than a chase
  * after a moving, half-measured target.
  */
-export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history, stageCard, testID = 'chat.messageList', actions = null }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history, stageCard, promptCache, testID = 'chat.messageList', actions = null }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
   const reachable = useServerReachable();
@@ -181,7 +185,11 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   // that decides whether the reply has a row, and a tool-only reply has one
   // while the run can still be queued behind it — see typingIndicatorFor.
   const showTyping =
-    pending && !isStageActive(stageCard ?? null) && typingIndicatorFor(lastMsg, { queuePosition, loadingModel });
+    pending &&
+    !isStageActive(stageCard ?? null) &&
+    // Nor while a saved cache is read back: nothing is being evaluated yet.
+    !promptCacheActive(promptCache) &&
+    typingIndicatorFor(lastMsg, { queuePosition, loadingModel });
   // While the empty placeholder is represented by the typing indicator, don't
   // *also* render it as its own contentless row — that produced two stacked
   // "S" rows for the same in-flight response.
@@ -247,9 +255,10 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
       // Inverted, so the header renders at the visual bottom — directly below
       // the newest message, which is where the typing indicator belongs.
       ListHeaderComponent={
-        stageCard || showTyping ? (
+        stageCard || promptCache || showTyping ? (
           <Box className="mx-auto w-full max-w-[820px]">
             {stageCard ? <ContextStageCard card={stageCard} /> : null}
+            {pending && promptCache ? <PromptCacheCard status={promptCache} /> : null}
             {showTyping && counterSince !== null ? (
               <TypingIndicator
                 loadingModel={loadingModel}
