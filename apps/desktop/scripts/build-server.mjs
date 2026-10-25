@@ -6,10 +6,10 @@
 //   resources/server/drizzle/    migrations copy for MIGRATIONS_DIR
 // Run via `pnpm --filter @loxaic/desktop build:server`.
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, rmSync, existsSync, readdirSync, readlinkSync, unlinkSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, readdirSync, readlinkSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { pruneToPayload } from "./server-payload.mjs";
+import { missingFromPayload, pruneToPayload } from "./server-payload.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../..");
@@ -129,20 +129,9 @@ cpSync(path.join(repoRoot, "infra/docker"), path.join(outDir, "sandbox"), {
   filter: (src) => !src.endsWith("server.Dockerfile"),
 });
 
-// dist/executor.js is the local executor the desktop spawns for Local
-// workspaces (supervisor/executor.js); `ws` is its one runtime dependency.
-// node-forge builds the GitHub egress proxy's certificates: without it the
-// proxy cannot start, and sandboxes have no GitHub. yaml parses every skill's
-// frontmatter, the built-ins included: without it no skill loads at all.
-// tar-stream writes a custom image's home into its container before start
-// (sandbox/container-engine.ts, which the executor bundles too): without it
-// neither process loads. playwright-core drives web_fetch's browser fallback
-// and carries the installer that downloads its Chromium (browser/install.ts):
-// without it the admin's Install button has nothing to run.
-for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "node_modules/playwright-core", "node_modules/node-forge", "node_modules/yaml", "node_modules/tar-stream", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
-  if (!existsSync(path.join(outDir, required))) {
-    throw new Error(`[build-server] missing ${required} in ${outDir}`);
-  }
+const missing = missingFromPayload(outDir);
+if (missing.length > 0) {
+  throw new Error(`[build-server] missing ${missing.join(", ")} in ${outDir}`);
 }
 // Checked last so a future step cannot reintroduce one: this fails in seconds
 // on any machine, instead of in a release's signing step on one runner.

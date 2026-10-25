@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
  *     Postgres data directories apart.
  */
 const require_ = createRequire(import.meta.url);
-const { configFor, missingResources } = require_("../builder-variants.cjs");
+const { configFor, missingResources, checkPackagedServer } = require_("../builder-variants.cjs");
 
 describe("the electron-builder config", () => {
   it("packages the stable app by default", () => {
@@ -126,6 +126,35 @@ describe("the electron-builder config", () => {
     }
   });
 
+  it("ships the server's node_modules as a resource of its own", () => {
+    // electron-builder 26 drops a node_modules at the root of any extraResources
+    // source, so inside `resources/server` it never reaches the app.
+    const resources = configFor(undefined).extraResources;
+    expect(resources).toContainEqual({ from: "resources/server/node_modules", to: "server/node_modules" });
+  });
+
+  it("fails packaging when the server inside the app is incomplete", async () => {
+    const config = configFor(undefined);
+    expect(config.afterPack).toBe(checkPackagedServer);
+    const resourcesDir = mkdtempSync(path.join(os.tmpdir(), "loxaic-packed-"));
+    const context = { appOutDir: "/unused", packager: { getResourcesDir: () => resourcesDir } };
+    const { PAYLOAD_REQUIRED } = await import("../server-payload.mjs");
+    try {
+      for (const required of PAYLOAD_REQUIRED.filter((r) => !r.startsWith("node_modules/"))) {
+        const file = path.join(resourcesDir, "server", required);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, "");
+      }
+      await expect(checkPackagedServer(context)).rejects.toThrow(/missing node_modules\/fastify/);
+      for (const required of PAYLOAD_REQUIRED.filter((r) => r.startsWith("node_modules/"))) {
+        mkdirSync(path.join(resourcesDir, "server", required), { recursive: true });
+      }
+      await expect(checkPackagedServer(context)).resolves.toBeUndefined();
+    } finally {
+      rmSync(resourcesDir, { recursive: true, force: true });
+    }
+  });
+
   it("names every extraResources source that is not on disk", () => {
     // electron-builder packages past a missing source with a log line and exit
     // 0; electron-builder.config.cjs throws on this list instead.
@@ -139,8 +168,12 @@ describe("the electron-builder config", () => {
       expect(missingResources(config, dir)).toEqual(config.extraResources.map((r) => r.from));
       for (const { from } of config.extraResources) {
         const file = path.resolve(dir, from);
-        mkdirSync(path.dirname(file), { recursive: true });
-        writeFileSync(file, "");
+        // A source another one sits inside (resources/server) is a directory.
+        if (config.extraResources.some((r) => r.from.startsWith(`${from}/`))) mkdirSync(file, { recursive: true });
+        else {
+          mkdirSync(path.dirname(file), { recursive: true });
+          writeFileSync(file, "");
+        }
       }
       expect(missingResources(config, dir)).toEqual([]);
       rmSync(path.join(dir, "resources/electron-licenses/LICENSES.chromium.html"));

@@ -92,6 +92,11 @@ function configFor(rawVariant) {
       { from: "../mobile/dist", to: "web" },
       { from: "resources/tsnet-proxy", to: "tsnet-proxy" },
       { from: "resources/server", to: "server" },
+      // Its own entry, not part of the one above: electron-builder 26 drops a
+      // `node_modules` at the root of any extraResources source, before any
+      // filter is read, so the server above arrives without its dependencies.
+      // afterPack (checkPackagedServer) fails the build if that ever recurs.
+      { from: "resources/server/node_modules", to: "server/node_modules" },
       // What the app redistributes and under which licences: our own, and
       // everyone else's (scripts/third-party-notices.mjs, run by `package`).
       { from: "../../LICENSE", to: "LICENSE" },
@@ -104,6 +109,7 @@ function configFor(rawVariant) {
       { from: "resources/electron-licenses/LICENSES.chromium.html", to: "LICENSES.chromium.html" },
     ],
     artifactName: variant.artifactName,
+    afterPack: checkPackagedServer,
     publish: [
       {
         provider: "github",
@@ -158,6 +164,22 @@ function configFor(rawVariant) {
 }
 
 /**
+ * Fails packaging when the server inside the built app is missing anything it
+ * needs to start. electron-builder copies resources with its own filters, so a
+ * payload build-server.mjs checked can still arrive incomplete; nothing else
+ * notices before a user's app fails to start its server.
+ */
+async function checkPackagedServer(context) {
+  const path = require("node:path");
+  const { missingFromPayload } = await import("./server-payload.mjs");
+  const serverDir = path.join(context.packager.getResourcesDir(context.appOutDir), "server");
+  const missing = missingFromPayload(serverDir);
+  if (missing.length > 0) {
+    throw new Error(`The packaged server at ${serverDir} is missing ${missing.join(", ")}.`);
+  }
+}
+
+/**
  * The extraResources sources that are not on disk, relative to `projectDir`.
  *
  * electron-builder only logs "file source doesn't exist" for one and packages
@@ -172,4 +194,4 @@ function missingResources(config, projectDir) {
   return config.extraResources.map((r) => r.from).filter((from) => !existsSync(path.resolve(projectDir, from)));
 }
 
-module.exports = { configFor, missingResources, VARIANTS };
+module.exports = { configFor, missingResources, checkPackagedServer, VARIANTS };

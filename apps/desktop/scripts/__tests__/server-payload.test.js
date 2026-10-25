@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PAYLOAD_KEEP, pruneToPayload } from "../server-payload.mjs";
+import { PAYLOAD_KEEP, PAYLOAD_REQUIRED, missingFromPayload, pruneToPayload } from "../server-payload.mjs";
 
 /**
  * `pnpm deploy` copies every file in apps/server that npm would not ignore, and a checkout that
@@ -66,6 +66,25 @@ describe("pruneToPayload", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("missingFromPayload", () => {
+  it("names each required entry that is absent, and nothing once all are there", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "payload-"));
+    try {
+      expect(missingFromPayload(dir)).toEqual(PAYLOAD_REQUIRED);
+      for (const required of PAYLOAD_REQUIRED) {
+        mkdirSync(path.dirname(path.join(dir, required)), { recursive: true });
+        writeFileSync(path.join(dir, required), "x");
+      }
+      expect(missingFromPayload(dir)).toEqual([]);
+      // The server's dependencies as a whole, which is what electron-builder 26 dropped.
+      rmSync(path.join(dir, "node_modules"), { recursive: true });
+      expect(missingFromPayload(dir)).toEqual(PAYLOAD_REQUIRED.filter((r) => r.startsWith("node_modules/")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
