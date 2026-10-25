@@ -16,7 +16,7 @@ export default defineConfig({
   clean: true,
   // The oldest Node that runs this output: the Docker image's node:22
   // (infra/docker/server.Dockerfile). The packaged desktop runs it under
-  // Electron's Node (ELECTRON_RUN_AS_NODE), which is newer from Electron 40 on.
+  // Electron's Node (ELECTRON_RUN_AS_NODE), Node 24 in Electron 44.
   target: "node22",
   // Workspace packages ship raw TS with no build step; bundle them so dist
   // runs on any Node without native TS support. Real npm deps stay external —

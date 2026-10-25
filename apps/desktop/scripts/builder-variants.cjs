@@ -170,7 +170,8 @@ function postgresBinariesPackage(platform, arch) {
 
 /**
  * Fails packaging when the built app is missing what it needs to start its
- * stack; nothing else notices before a user's app fails to. Two ways it has:
+ * stack; nothing else notices before a user's app fails to. It checks two
+ * things electron-builder can leave out:
  *
  *   - the server payload: electron-builder copies resources with its own
  *     filters, so a payload build-server.mjs checked can still arrive

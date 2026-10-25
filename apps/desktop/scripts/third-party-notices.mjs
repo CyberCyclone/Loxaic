@@ -283,8 +283,9 @@ const ELECTRON_LICENCES = { LICENSE: "LICENSE.electron.txt", "LICENSES.chromium.
 /**
  * Copies the named top-level entries out of a zip, and nothing else — an
  * Electron zip is ~100 MB of which these are two files. yauzl is declared, not
- * borrowed from electron's tree: electron 41+ unzips with a dependency-free
- * fork, so the only yauzl left there was hoisted in by the e2e packages.
+ * borrowed from electron's tree: electron 41+ unzips with
+ * @electron-internal/extract-zip, which has no dependencies, so the only yauzl
+ * left there was hoisted in by the e2e packages.
  */
 export function extractZipEntries(yauzl, zipPath, wanted, outDir) {
   mkdirSync(outDir, { recursive: true });
