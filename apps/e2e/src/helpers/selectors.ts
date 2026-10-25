@@ -194,6 +194,16 @@ export async function typeInto(id: string, text: string): Promise<void> {
 }
 
 /**
+ * What a text field holds. UiAutomator2 has no `value` attribute, so Android
+ * reads the field's text. An empty field reads as its placeholder on both
+ * native platforms.
+ */
+export async function fieldValue(id: string): Promise<string> {
+  const el = byTestId(id);
+  return platform() === 'android' ? el.getText() : el.getValue();
+}
+
+/**
  * Brings the element carrying `id` on screen, scrolling whatever holds it.
  * A row below a modal's or a screen's fold is not "displayed" to XCUITest or
  * UiAutomator2, so a tap on it times out on a phone while working in a

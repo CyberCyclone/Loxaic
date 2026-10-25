@@ -16,7 +16,7 @@ import { browser } from '@wdio/globals';
 import { openSettings, revealInSettings, signIn, signOut, signUp } from '../../helpers/app.ts';
 import { uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { byTestId, isVisible, tap, typeInto, waitForAbsent, waitForFreshText, waitForVisible } from '../../helpers/selectors.ts';
+import { byTestId, fieldValue, isVisible, tap, typeInto, waitForAbsent, waitForFreshText, waitForVisible } from '../../helpers/selectors.ts';
 import { BASE_URL, PORT } from '../../../scripts/standup.ts';
 
 /**
@@ -27,15 +27,18 @@ import { BASE_URL, PORT } from '../../../scripts/standup.ts';
  */
 const PICKED = `http://127.0.0.1:${String(PORT)}`;
 
-/** What an empty field reads as. UiAutomator2 reports an empty EditText's
- * hint as its text, so on Android the placeholder stands for "empty". */
+/** What an empty field reads as. Both XCUITest and UiAutomator2 report an
+ * empty field's placeholder as its value, so the placeholder stands for "empty". */
 const EMPTY_FIELD = ['', 'https://your-server.tailnet.ts.net'];
 
 /** Saves `address` from the sign-in screen's picker; empty clears it. */
 async function pickServer(address: string): Promise<void> {
   if (!(await isVisible('login.server.input'))) await tap('login.server.toggle');
   await waitForVisible('login.server.input');
-  await typeInto('login.server.input', address);
+  // Cleared directly: typeInto reads the field back, and XCUITest reads an
+  // empty field as its placeholder, so "" never matches.
+  if (address) await typeInto('login.server.input', address);
+  else await byTestId('login.server.input').clearValue();
   await tap('login.server.save');
   if (address) {
     // On the text: an earlier result line may already be on screen.
@@ -87,7 +90,7 @@ describe('the server endpoint in Settings, after choosing one at sign-in', () =>
     await signUp(creds);
     await openEndpointField();
 
-    expect(await byTestId('settings.endpoint').getValue()).toBe(PICKED);
+    expect(await fieldValue('settings.endpoint')).toBe(PICKED);
     // Pinned, not detected: nothing claims auto-detection chose it.
     expect(await isVisible('settings.endpoint.detected')).toBe(false);
     await shot('settings-endpoint-from-login');
@@ -102,9 +105,12 @@ describe('the server endpoint in Settings, after choosing one at sign-in', () =>
 
     // The detected address is said underneath, not put in the field, where a
     // Save would have pinned it.
-    expect(EMPTY_FIELD).toContain(await byTestId('settings.endpoint').getValue());
+    expect(EMPTY_FIELD).toContain(await fieldValue('settings.endpoint'));
     await revealInSettings('settings.endpoint.detected');
-    await waitForFreshText('settings.endpoint.detected', BASE_URL, 10_000);
+    // Which name detection settles on depends on the build (an Android
+    // build can bake the emulator's 10.0.2.2 alias in beside localhost), but
+    // it is this run's server either way, and said to be detected.
+    await waitForFreshText('settings.endpoint.detected', `:${String(PORT)} (auto-detected)`, 10_000);
     await shot('settings-endpoint-auto-detected');
     await closeSettings();
   });
