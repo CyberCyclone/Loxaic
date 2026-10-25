@@ -177,14 +177,28 @@ const guardedAgent = new Agent({
   bodyTimeout: 15_000,
 });
 
+/** The same check with Node's own fetch deadlines (300 s), for responses that
+ * are meant to wait: an MCP tool call, an MCP server's event stream. */
+const longLivedAgent = new Agent({
+  connect: { lookup: guardedLookup, timeout: 10_000 },
+  headersTimeout: 300_000,
+  bodyTimeout: 300_000,
+});
+
 /**
  * One request to a model-chosen URL, with the address checked at connect time.
  *
  * Never follows a redirect: the caller decides whether to request the next hop,
  * and that request is checked again. An IP literal never reaches the resolver,
  * so it is checked here.
+ *
+ * `longLived` raises the 15 s header and body deadlines to 300 s.
  */
-export async function guardedFetch(url: URL, init: Omit<RequestInit, "dispatcher" | "redirect"> = {}): Promise<Response> {
+export async function guardedFetch(
+  url: URL,
+  init: Omit<RequestInit, "dispatcher" | "redirect"> = {},
+  opts: { longLived?: boolean } = {},
+): Promise<Response> {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new BlockedTargetError(`only http and https URLs are allowed (got ${url.protocol})`);
   }
@@ -200,7 +214,7 @@ export async function guardedFetch(url: URL, init: Omit<RequestInit, "dispatcher
     }
   }
   try {
-    return await fetch(url, { ...init, redirect: "manual", dispatcher: guardedAgent });
+    return await fetch(url, { ...init, redirect: "manual", dispatcher: opts.longLived ? longLivedAgent : guardedAgent });
   } catch (err) {
     // undici wraps the connect error; surface the guard's own refusal.
     const cause = (err as { cause?: unknown }).cause;

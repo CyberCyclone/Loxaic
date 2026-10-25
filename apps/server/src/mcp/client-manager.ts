@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { db, eq } from "@loxaic/db";
 import { mcpServers } from "@loxaic/db/schema";
 import { assertPublicUrl } from "../agent/executor.ts";
+import { mcpFetch } from "./http-fetch.ts";
 import { decryptSecrets, redact } from "./secrets.ts";
 import { MAX_TOOLS_PER_SERVER, sanitizeToolMeta, type SanitizedToolMeta } from "./sanitize.ts";
 
@@ -84,15 +85,8 @@ async function connect(userId: string, row: McpServerRow): Promise<Entry> {
       const url = new URL(row.url);
       if (!allowPrivateNetwork) await assertPublicUrl(url);
       const headers: Record<string, string> = { ...asStringRecord(row.headers), ...secrets };
-      // Re-vet every request unless the user explicitly allowed a private
-      // address — a public hostname can re-resolve to an internal one later.
-      const guardedFetch: typeof fetch = async (input, init) => {
-        const requestUrl = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
-        if (!allowPrivateNetwork) await assertPublicUrl(requestUrl);
-        return fetch(input, init);
-      };
       const transport = new StreamableHTTPClientTransport(url, {
-        fetch: guardedFetch,
+        fetch: mcpFetch(allowPrivateNetwork),
         requestInit: { headers },
       });
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
