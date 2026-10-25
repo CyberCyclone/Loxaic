@@ -454,7 +454,7 @@ jobs:
       # to every later step, and `pnpm install` runs third-party postinstall
       # scripts that have no business seeing it.
       - run: pnpm install --frozen-lockfile
-      - uses: expo/expo-github-action@9da89d3617bb88139671bad31b09c65714c2ee06 # v9
+      - uses: expo/expo-github-action@9da89d3617bb88139671bad31b09c65714c2ee06 # 9.0.1
         with:
           # Pinned to a major, not `latest`: the publish step reads eas-cli's
           # --json output field by field, so a CLI whose output changed would
