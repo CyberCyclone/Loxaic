@@ -44,7 +44,6 @@ import { getRun, getRunByConversation } from "../streams/registry.ts";
 import { listSubagents } from "../streams/runs/subagentRun.ts";
 import { latestTodos } from "../conversations/latest-todos.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
-import { publicErrorMessage } from "../streams/error-text.ts";
 
 export function conversationRoutes(app: FastifyInstance) {
   /**
@@ -321,7 +320,7 @@ export function conversationRoutes(app: FastifyInstance) {
         return { ...sandboxLimitBody(err), error: `The image was not changed: ${err.message}` };
       }
       reply.code(409);
-      return { error: `The image was not changed: ${publicErrorMessage(err)}` };
+      return { error: `The image was not changed: ${err instanceof Error ? err.message : String(err)}` };
     } finally {
       clearTimeout(timer);
       unregisterRun(claim.streamId);

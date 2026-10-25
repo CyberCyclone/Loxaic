@@ -1,4 +1,3 @@
-import { describeQueryError, isQueryError } from "@loxaic/db";
 import { stripControl } from "../mcp/sanitize.ts";
 
 /**
@@ -44,23 +43,6 @@ export const INTERRUPTED_BY_RESTART = "The server restarted before this response
  * backend. Deliberately says nothing more: the real message is logged. */
 export const TURN_FAILED = "Something went wrong on the server while finishing this response.";
 
-/** Said in place of a failed query's own message, which carries every bound
- * parameter (see `packages/db/src/errors.ts`). */
-export const QUERY_FAILED = "The server could not complete this request.";
-
-/**
- * An error's message as a client may see it. A failed query's is replaced by
- * `QUERY_FAILED` and logged without its parameters; anything else is passed
- * through as it was. For a catch that answers with whatever it caught.
- */
-export function publicErrorMessage(err: unknown): string {
-  if (isQueryError(err)) {
-    console.error(describeQueryError(err));
-    return QUERY_FAILED;
-  }
-  return err instanceof Error ? err.message : String(err);
-}
-
 const backendErrors = new WeakSet();
 
 /**
@@ -91,6 +73,6 @@ export function isBackendError(err: unknown): boolean {
  */
 export function turnErrorText(err: unknown, label: string, backendText?: string): string {
   if (isBackendError(err)) return capErrorText(backendText ?? (err as Error).message) ?? TURN_FAILED;
-  console.error(`${label}:`, isQueryError(err) ? describeQueryError(err) : err);
+  console.error(`${label}:`, err);
   return TURN_FAILED;
 }

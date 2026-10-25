@@ -33,7 +33,6 @@ import {
   isRuleAction,
   loadCommandRules,
 } from "../permissions/store.ts";
-import { publicErrorMessage } from "../streams/error-text.ts";
 
 /** What the API exposes. Builtin tools only for the allowlist; MCP tools have
  * their own per-server toolPolicies allowlist (PATCH /v1/mcp/servers/:id). */
@@ -269,7 +268,7 @@ export function prefsRoutes(app: FastifyInstance) {
           await assertModelResolvable(body.subagentModel);
         } catch (err) {
           reply.code(400);
-          return { error: publicErrorMessage(err) };
+          return { error: (err as Error).message };
         }
       }
       patch.subagentModel = body.subagentModel;
@@ -305,7 +304,7 @@ export function prefsRoutes(app: FastifyInstance) {
           await assertModelResolvable(model);
         } catch (err) {
           reply.code(400);
-          return { error: publicErrorMessage(err) };
+          return { error: (err as Error).message };
         }
       }
     }
