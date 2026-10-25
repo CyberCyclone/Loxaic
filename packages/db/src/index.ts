@@ -1,6 +1,11 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "./schema.ts";
+import { installQueryErrorScrub } from "./errors.ts";
+
+// Before any query can fail: a failed query must never carry its parameters
+// (errors.ts).
+installQueryErrorScrub();
 
 type Db = ReturnType<typeof drizzle<typeof schema>>;
 
@@ -46,4 +51,5 @@ export async function closeDb(): Promise<void> {
 
 export { eq, ne, and, or, not, isNull, isNotNull, inArray, ilike, desc, asc, gte, lte, gt, lt, sql, count, sum, avg, getTableColumns } from "drizzle-orm";
 export { migrate } from "drizzle-orm/postgres-js/migrator";
+export { pgErrorCode, pgConstraint, isUniqueViolation, isQueryError, findQueryError } from "./errors.ts";
 export { user, session, account, verification } from "./schema.ts";

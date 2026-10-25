@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { and, db, eq } from "@loxaic/db";
+import { and, db, eq, isUniqueViolation } from "@loxaic/db";
 import { mcpServers } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { assertPublicUrl } from "../agent/executor.ts";
@@ -206,7 +206,7 @@ export function mcpRoutes(app: FastifyInstance) {
       // Drizzle's `.returning()` type doesn't reflect that the duplicate-slug
       // catch below yields zero rows — cast to what actually comes back.
       .catch((err: unknown) => {
-        if (err instanceof Error && /mcp_servers_owner_slug_idx|duplicate key/.test(err.message)) {
+        if (isUniqueViolation(err, "mcp_servers_owner_slug_idx")) {
           return [];
         }
         throw err;

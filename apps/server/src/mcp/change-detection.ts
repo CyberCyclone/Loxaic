@@ -62,7 +62,6 @@ export function reconcileTools(
       // The tool the user allowlisted no longer exists in that form — any
       // standing "allow" or read-only grant is revoked until re-confirmed.
       const { grantedFrom: _revoked, ...kept } = prevPolicy;
-      void _revoked;
       policies[tool.name] = { ...kept, approval: "ask", readOnly: false, changed: true, missing: false };
       changedTools.push(tool.name);
     } else if (prevPolicy.missing) {

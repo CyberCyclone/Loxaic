@@ -207,7 +207,6 @@ export class StreamBroker {
         case "prompt.cache": {
           // Like prompt.stats: the pill lasts until its reply's first output.
           const { kind: _kind, ...status } = event;
-          void _kind;
           promptCache = status;
           break;
         }
@@ -216,7 +215,6 @@ export class StreamBroker {
           // end clears it): it describes a prefill still under way, and is
           // emit-only — nothing here changes the prompt's bytes.
           const { kind: _kind, ...stats } = event;
-          void _kind;
           promptStats = stats;
           break;
         }
@@ -241,7 +239,6 @@ export class StreamBroker {
           break;
         case "context.stage": {
           const { kind: _kind, ...status } = event;
-          void _kind;
           contextStage = status;
           break;
         }
@@ -264,7 +261,6 @@ export class StreamBroker {
           break;
         case "steps.checkin": {
           const { kind: _kind, ...question } = event;
-          void _kind;
           // Every field, deadline included: someone reconnecting mid-wait is
           // exactly who needs to know how long is left, and what happens then.
           pendingCheckin = question;
@@ -284,7 +280,6 @@ export class StreamBroker {
             const lastAssistant = [...orderedMessages].reverse().find((m) => m.author_type === "assistant");
             if (lastAssistant) {
               const { kind: _kind, ...note } = event;
-              void _kind;
               lastAssistant.checkin_decision = note;
             }
           }
@@ -301,7 +296,6 @@ export class StreamBroker {
           break;
         case "approval.request": {
           const { kind: _kind, ...request } = event;
-          void _kind;
           pendingApproval = request;
           break;
         }
@@ -325,7 +319,6 @@ export class StreamBroker {
           break;
         case "compaction": {
           const { kind: _kind, message_id, ...stats } = event;
-          void _kind;
           ensure(message_id).compaction = stats;
           break;
         }

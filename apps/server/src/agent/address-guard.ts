@@ -150,7 +150,7 @@ const guardedLookup: LookupFunction = (hostname, options, callback) => {
     settled = true;
     callback(new Error(`could not resolve host: ${hostname} (timed out)`), "", 0);
   }, DNS_TIMEOUT_MS);
-  dnsLookup(hostname, { all: true, verbatim: true }, (err, addresses) => {
+  dnsLookup(hostname, { all: true, order: "verbatim" }, (err, addresses) => {
     if (settled) return;
     settled = true;
     clearTimeout(timer);

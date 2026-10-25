@@ -147,3 +147,25 @@ describe("per-kind defaults", () => {
     expect(closeServerClients).toHaveBeenCalledWith(id);
   });
 });
+
+describe("adding a server whose slug you already use", () => {
+  // No pre-check: the unique index is what refuses it, so this is the path
+  // every duplicate takes. Since drizzle-orm 0.44 the Postgres error sits on
+  // the query error's `cause`, and the message carries the bound parameters.
+  it("answers 409, never a 500 that repeats the secrets it was sent", async () => {
+    const slug = `dup-${uuid().slice(0, 8)}`;
+    const add = (name: string) =>
+      app.inject({
+        method: "POST",
+        url: "/v1/mcp/servers",
+        payload: { name, slug, transport: "stdio", command: "true", secrets: { API_KEY: "sk-dup-secret-value" } },
+      });
+    expect((await add("First")).statusCode).toBe(200);
+    const second = await add("Second");
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: "A server with that slug already exists" });
+    expect(second.body).not.toContain("sk-dup-secret-value");
+    const rows = await db.query.mcpServers.findMany({ where: eq(mcpServers.ownerId, userId) });
+    expect(rows.map((r) => r.name)).toEqual(["First"]);
+  });
+});

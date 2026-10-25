@@ -764,10 +764,9 @@ async function reloadNow(): Promise<boolean | "deferred"> {
       store?.recordReload(id, reason);
       store?.forgetClaims(id);
     }
-  } catch (err) {
+  } catch {
     // No router yet: it reads the file when it starts, with nothing loaded.
     lastReloadError = null;
-    void err;
     restoreAfterReload.clear();
     return false;
   }

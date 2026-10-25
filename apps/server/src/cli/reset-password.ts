@@ -1,5 +1,6 @@
 import { closeDb } from "@loxaic/db";
 import { findUserByEmail, resetUserPassword } from "../auth/password-reset.ts";
+import { describeDbError } from "./describe-db-error.ts";
 
 /**
  * reset-password <email>
@@ -16,19 +17,6 @@ import { findUserByEmail, resetUserPassword } from "../auth/password-reset.ts";
  */
 
 const USAGE = "Usage: reset-password <email>\n";
-
-function describe(err: unknown): string {
-  const code = (err as { code?: unknown } | null)?.code;
-  // undefined_column: this database predates the must_change_password column.
-  if (code === "42703") {
-    return "This database has not been migrated for password reset yet. Start the server once on this version so its migrations run, then try again.";
-  }
-  const message = err instanceof Error ? err.message : String(err);
-  if (code === "ECONNREFUSED" || code === "28P01" || code === "3D000") {
-    return `${message}\nCould not use the database. Is DATABASE_URL set to this server's database?`;
-  }
-  return message;
-}
 
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
@@ -50,7 +38,7 @@ async function main(): Promise<number> {
     );
     return 0;
   } catch (err) {
-    process.stderr.write(`${describe(err)}\n`);
+    process.stderr.write(`${describeDbError(err)}\n`);
     return 1;
   } finally {
     await closeDb().catch(() => undefined);

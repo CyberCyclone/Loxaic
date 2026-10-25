@@ -96,7 +96,7 @@ describe("a refusal through the real wire", () => {
 
   async function firstError(model: string): Promise<unknown> {
     try {
-      for await (const _ of streamCompletion(model, [{ role: "user", content: "hello" }])) void _;
+      for await (const _ of streamCompletion(model, [{ role: "user", content: "hello" }])) { /* drain */ }
     } catch (err) {
       return err;
     }
