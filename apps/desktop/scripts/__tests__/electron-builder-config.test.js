@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
  *     Postgres data directories apart.
  */
 const require_ = createRequire(import.meta.url);
-const { configFor, missingResources, checkPackagedServer } = require_("../builder-variants.cjs");
+const { configFor, missingResources, checkPackagedApp, postgresBinariesPackage } = require_("../builder-variants.cjs");
 
 describe("the electron-builder config", () => {
   it("packages the stable app by default", () => {
@@ -133,26 +133,35 @@ describe("the electron-builder config", () => {
     expect(resources).toContainEqual({ from: "resources/server/node_modules", to: "server/node_modules" });
   });
 
-  it("fails packaging when the server inside the app is incomplete", async () => {
+  it("fails packaging when the app is missing its server's or its database's files", async () => {
     const config = configFor(undefined);
-    expect(config.afterPack).toBe(checkPackagedServer);
+    expect(config.afterPack).toBe(checkPackagedApp);
     const resourcesDir = mkdtempSync(path.join(os.tmpdir(), "loxaic-packed-"));
-    const context = { appOutDir: "/unused", packager: { getResourcesDir: () => resourcesDir } };
+    // electron-builder's Arch enum: 3 is arm64.
+    const context = { appOutDir: "/unused", electronPlatformName: "darwin", arch: 3, packager: { getResourcesDir: () => resourcesDir } };
     const { PAYLOAD_REQUIRED } = await import("../server-payload.mjs");
+    const make = (rel) => {
+      mkdirSync(path.dirname(path.join(resourcesDir, rel)), { recursive: true });
+      writeFileSync(path.join(resourcesDir, rel), "");
+    };
     try {
-      for (const required of PAYLOAD_REQUIRED.filter((r) => !r.startsWith("node_modules/"))) {
-        const file = path.join(resourcesDir, "server", required);
-        mkdirSync(path.dirname(file), { recursive: true });
-        writeFileSync(file, "");
-      }
-      await expect(checkPackagedServer(context)).rejects.toThrow(/missing node_modules\/fastify/);
-      for (const required of PAYLOAD_REQUIRED.filter((r) => r.startsWith("node_modules/"))) {
-        mkdirSync(path.join(resourcesDir, "server", required), { recursive: true });
-      }
-      await expect(checkPackagedServer(context)).resolves.toBeUndefined();
+      for (const required of PAYLOAD_REQUIRED.filter((r) => !r.startsWith("node_modules/"))) make(`server/${required}`);
+      make("app/node_modules/@embedded-postgres/darwin-arm64/package.json");
+      await expect(checkPackagedApp(context)).rejects.toThrow(/missing server\/node_modules\/fastify/);
+      for (const required of PAYLOAD_REQUIRED.filter((r) => r.startsWith("node_modules/"))) make(`server/${required}`);
+      await expect(checkPackagedApp(context)).resolves.toBeUndefined();
+      // The other arch's binaries are not this build's.
+      await expect(checkPackagedApp({ ...context, arch: 1 })).rejects.toThrow(/missing app\/node_modules\/@embedded-postgres\/darwin-x64\./);
     } finally {
       rmSync(resourcesDir, { recursive: true, force: true });
     }
+  });
+
+  it("names embedded-postgres's binaries package the way its own loader imports it", () => {
+    expect(postgresBinariesPackage("darwin", "arm64")).toBe("@embedded-postgres/darwin-arm64");
+    expect(postgresBinariesPackage("linux", "x64")).toBe("@embedded-postgres/linux-x64");
+    expect(postgresBinariesPackage("linux", "armv7l")).toBe("@embedded-postgres/linux-arm");
+    expect(postgresBinariesPackage("win32", "x64")).toBe("@embedded-postgres/windows-x64");
   });
 
   it("names every extraResources source that is not on disk", () => {

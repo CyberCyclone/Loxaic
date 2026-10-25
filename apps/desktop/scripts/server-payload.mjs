@@ -16,8 +16,9 @@ import path from "node:path";
 export const PAYLOAD_KEEP = new Set(["dist", "node_modules", "package.json"]);
 
 // What the packaged server cannot start without. build-server.mjs checks the payload it built,
-// and the packaging config's afterPack checks the copy inside the app, because electron-builder
-// can drop part of a resource on the way in (26 drops any `node_modules` at a source's root).
+// and builder-variants.cjs's afterPack (checkPackagedApp) checks the copy inside the app, because
+// electron-builder can drop part of a resource on the way in (26 drops any `node_modules` at a
+// source's root).
 //
 // dist/executor.js is the local executor the desktop spawns for Local
 // workspaces (supervisor/executor.js); `ws` is its one runtime dependency.

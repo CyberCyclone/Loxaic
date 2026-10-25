@@ -95,7 +95,7 @@ function configFor(rawVariant) {
       // Its own entry, not part of the one above: electron-builder 26 drops a
       // `node_modules` at the root of any extraResources source, before any
       // filter is read, so the server above arrives without its dependencies.
-      // afterPack (checkPackagedServer) fails the build if that ever recurs.
+      // afterPack (checkPackagedApp) fails the build if that ever recurs.
       { from: "resources/server/node_modules", to: "server/node_modules" },
       // What the app redistributes and under which licences: our own, and
       // everyone else's (scripts/third-party-notices.mjs, run by `package`).
@@ -109,7 +109,7 @@ function configFor(rawVariant) {
       { from: "resources/electron-licenses/LICENSES.chromium.html", to: "LICENSES.chromium.html" },
     ],
     artifactName: variant.artifactName,
-    afterPack: checkPackagedServer,
+    afterPack: checkPackagedApp,
     publish: [
       {
         provider: "github",
@@ -163,19 +163,34 @@ function configFor(rawVariant) {
   };
 }
 
+/** The package embedded-postgres's dist/binary.js imports its binaries from on a platform. */
+function postgresBinariesPackage(platform, arch) {
+  return `@embedded-postgres/${platform === "win32" ? "windows" : platform}-${arch === "armv7l" ? "arm" : arch}`;
+}
+
 /**
- * Fails packaging when the server inside the built app is missing anything it
- * needs to start. electron-builder copies resources with its own filters, so a
- * payload build-server.mjs checked can still arrive incomplete; nothing else
- * notices before a user's app fails to start its server.
+ * Fails packaging when the built app is missing what it needs to start its
+ * stack; nothing else notices before a user's app fails to. Two ways it has:
+ *
+ *   - the server payload: electron-builder copies resources with its own
+ *     filters, so a payload build-server.mjs checked can still arrive
+ *     incomplete.
+ *   - embedded Postgres's binaries: electron-builder 26 collects the app's
+ *     node_modules with the package manager it detects, and detected as npm
+ *     (`npx electron-builder` run from this directory) it leaves out pnpm's
+ *     platform package, so the app cannot start its database.
  */
-async function checkPackagedServer(context) {
+async function checkPackagedApp(context) {
+  const { existsSync } = require("node:fs");
   const path = require("node:path");
+  const { Arch } = require("electron-builder");
   const { missingFromPayload } = await import("./server-payload.mjs");
-  const serverDir = path.join(context.packager.getResourcesDir(context.appOutDir), "server");
-  const missing = missingFromPayload(serverDir);
+  const resourcesDir = context.packager.getResourcesDir(context.appOutDir);
+  const missing = missingFromPayload(path.join(resourcesDir, "server")).map((entry) => `server/${entry}`);
+  const postgres = `app/node_modules/${postgresBinariesPackage(context.electronPlatformName, Arch[context.arch])}`;
+  if (!existsSync(path.join(resourcesDir, postgres, "package.json"))) missing.push(postgres);
   if (missing.length > 0) {
-    throw new Error(`The packaged server at ${serverDir} is missing ${missing.join(", ")}.`);
+    throw new Error(`The packaged app at ${resourcesDir} is missing ${missing.join(", ")}.`);
   }
 }
 
@@ -194,4 +209,4 @@ function missingResources(config, projectDir) {
   return config.extraResources.map((r) => r.from).filter((from) => !existsSync(path.resolve(projectDir, from)));
 }
 
-module.exports = { configFor, missingResources, checkPackagedServer, VARIANTS };
+module.exports = { configFor, missingResources, checkPackagedApp, postgresBinariesPackage, VARIANTS };
