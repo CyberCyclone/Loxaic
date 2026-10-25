@@ -22,7 +22,16 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # A dependency joins the first group it matches. drizzle is 0.x, so its
+    # minors break (0.44 changed every query error's shape), and better-auth
+    # is the auth library whose internals routes/auth.ts and
+    # auth/password-reset.ts mirror: each comes as its own PR, not inside a
+    # 38-package batch.
     groups:
+      drizzle:
+        patterns: ["drizzle-orm", "drizzle-kit"]
+      better-auth:
+        patterns: ["better-auth", "@better-auth/*"]
       minor-and-patch:
         update-types: [minor, patch]
     ignore:
@@ -31,6 +40,7 @@ updates:
       - dependency-name: "expo"
       - dependency-name: "expo-*"
       - dependency-name: "@expo/*"
+      - dependency-name: "babel-preset-expo"
       - dependency-name: "react"
       - dependency-name: "react-dom"
       - dependency-name: "react-native"
