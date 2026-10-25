@@ -19,13 +19,15 @@
 // file as they are, copied into resources/electron-licenses/ by this step
 // (see electronLicences) and listed in builder-variants.cjs's extraResources.
 //
-// Run after build-server.mjs (it reads the deployed payload). No dependencies
-// of its own: this runs inside the release job, before anything is signed.
+// Run after build-server.mjs (it reads the deployed payload). It runs inside
+// the release job, before anything is signed; its one dependency, yauzl, is a
+// devDependency of this package.
 import { execFileSync } from "node:child_process";
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import yauzl from "yauzl";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopDir = path.resolve(__dirname, "..");
@@ -280,8 +282,9 @@ const ELECTRON_LICENCES = { LICENSE: "LICENSE.electron.txt", "LICENSES.chromium.
 
 /**
  * Copies the named top-level entries out of a zip, and nothing else — an
- * Electron zip is ~100 MB of which these are two files. yauzl is borrowed from
- * electron's own dependency tree (extract-zip), so this adds no dependency.
+ * Electron zip is ~100 MB of which these are two files. yauzl is declared, not
+ * borrowed from electron's tree: electron 41+ unzips with a dependency-free
+ * fork, so the only yauzl left there was hoisted in by the e2e packages.
  */
 export function extractZipEntries(yauzl, zipPath, wanted, outDir) {
   mkdirSync(outDir, { recursive: true });
@@ -337,7 +340,6 @@ async function electronLicences(outDir) {
   }
   const electronRequire = createRequire(path.join(electronDir, "package.json"));
   const { downloadArtifact } = electronRequire("@electron/get");
-  const yauzl = createRequire(electronRequire.resolve("extract-zip"))("yauzl");
   const { version } = electronRequire("./package.json");
   const zipPath = await downloadArtifact({
     version,

@@ -25,8 +25,9 @@
     "embedded-postgres": "17.10.0-beta.17"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.0.0",
-    "vitest": "^3.0.0"
+    "electron": "^44.9.3",
+    "electron-builder": "^26.18.0",
+    "vitest": "^3.0.0",
+    "yauzl": "^3.4.0"
   }
 }
