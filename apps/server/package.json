@@ -24,7 +24,7 @@
     "@loxaic/db": "workspace:*",
     "@loxaic/sync": "workspace:*",
     "@loxaic/types": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "ajv": "^8.20.0",
     "better-auth": "1.6.26",
     "dockerode": "^5.0.1",
@@ -37,11 +37,11 @@
     "postgres": "^3.4.0",
     "tar-fs": "^2.1.4",
     "tar-stream": "^3.1.7",
-    "undici": "^6.28.0",
+    "undici": "^6.29.1",
     "uuid": "^14.0.1",
     "ws": "^8.21.3",
     "yaml": "^2.9.0",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@loxaic/config-ts": "workspace:*",
