@@ -165,7 +165,7 @@ describe("a load that fails, end to end", () => {
   it("tells the person in the chat what stopped it, and that MTP is the setting to change", async () => {
     let message = "";
     try {
-      for await (const ev of streamCompletion(crashy, [{ role: "user", content: "hi" }])) void ev;
+      for await (const _ of streamCompletion(crashy, [{ role: "user", content: "hi" }])) { /* drain */ }
     } catch (err) {
       message = err instanceof Error ? err.message : String(err);
     }

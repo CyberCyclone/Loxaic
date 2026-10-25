@@ -36,13 +36,13 @@ let base = "";
 const routes = new Map<string, (res: import("node:http").ServerResponse) => void>();
 
 /** A tar.gz of `files` (name → contents, or a link target as `{ link }`). */
-function tarball(name: string, files: Record<string, string | { link: string }>): Buffer {
+function tarball(name: string, files: Record<string, string | { symlink: string }>): Buffer {
   const src = path.join(dir, `src-${name}`);
   for (const [file, content] of Object.entries(files)) {
     const full = path.join(src, file);
     mkdirSync(path.dirname(full), { recursive: true });
     if (typeof content === "string") writeFileSync(full, content);
-    else symlinkSync(content.link, full);
+    else symlinkSync(content.symlink, full);
   }
   const out = path.join(dir, `${name}.tar.gz`);
   execFileSync("tar", ["-czf", out, "-C", src, "."]);
@@ -301,11 +301,11 @@ describe("a third-party build", () => {
   });
 
   it.skipIf(process.platform === "win32")("is refused when it holds a link that leads outside it", async () => {
-    const url = serve("/escape.tar.gz", tarball("escape", { [`b/${bin}`]: "#!/bin/sh\n", "b/models": { link: "../../../models" } }));
+    const url = serve("/escape.tar.gz", tarball("escape", { [`b/${bin}`]: "#!/bin/sh\n", "b/models": { symlink: "../../../models" } }));
     await expect(installSource(custom("aaaaaaaaaaa9", url))).rejects.toThrow(/link that leads outside/);
     expect(await installedCustom("aaaaaaaaaaa9")).toBeNull();
     // A link that stays inside is what upstream's own archives contain.
-    const ok = serve("/inside.tar.gz", tarball("inside", { [`b/${bin}`]: "#!/bin/sh\n", "b/libllama.so.0": "lib", "b/libllama.so": { link: "libllama.so.0" } }));
+    const ok = serve("/inside.tar.gz", tarball("inside", { [`b/${bin}`]: "#!/bin/sh\n", "b/libllama.so.0": "lib", "b/libllama.so": { symlink: "libllama.so.0" } }));
     await expect(installSource(custom("aaaaaaaaaab1", ok))).resolves.toMatchObject({ source: "custom" });
   });
 
@@ -314,8 +314,8 @@ describe("a third-party build", () => {
     // above it — while joined as text it reads as `root/pwned`.
     const url = serve("/chain.tar.gz", tarball("chain", {
       [`b/${bin}`]: "#!/bin/sh\n",
-      "d/up": { link: ".." },
-      ".loxaic-complete.json": { link: "d/up/../../pwned" },
+      "d/up": { symlink: ".." },
+      ".loxaic-complete.json": { symlink: "d/up/../../pwned" },
     }));
     await expect(installSource(custom("aaaaaaaaaac3", url))).rejects.toThrow(/link that leads outside/);
     expect(await installedCustom("aaaaaaaaaac3")).toBeNull();
@@ -326,9 +326,9 @@ describe("a third-party build", () => {
 
   it.skipIf(process.platform === "win32")("judges a link to something missing by where it would lead", async () => {
     // Writing through it would create the file wherever it names.
-    const out = serve("/dangling-out.tar.gz", tarball("dangling-out", { [`b/${bin}`]: "#!/bin/sh\n", "b/cache": { link: "../../not-there" } }));
+    const out = serve("/dangling-out.tar.gz", tarball("dangling-out", { [`b/${bin}`]: "#!/bin/sh\n", "b/cache": { symlink: "../../not-there" } }));
     await expect(installSource(custom("aaaaaaaaaac4", out))).rejects.toThrow(/link that leads outside/);
-    const inside = serve("/dangling-in.tar.gz", tarball("dangling-in", { [`b/${bin}`]: "#!/bin/sh\n", "b/libllama.so": { link: "libllama.so.9" } }));
+    const inside = serve("/dangling-in.tar.gz", tarball("dangling-in", { [`b/${bin}`]: "#!/bin/sh\n", "b/libllama.so": { symlink: "libllama.so.9" } }));
     await expect(installSource(custom("aaaaaaaaaac7", inside))).resolves.toMatchObject({ source: "custom" });
   });
 
@@ -336,7 +336,7 @@ describe("a third-party build", () => {
     const url = serve("/marker.tar.gz", tarball("marker", {
       [`b/${bin}`]: "#!/bin/sh\n",
       "b/notes.txt": "upstream notes",
-      ".loxaic-complete.json": { link: "b/notes.txt" },
+      ".loxaic-complete.json": { symlink: "b/notes.txt" },
     }));
     const r = await installSource(custom("aaaaaaaaaac5", url));
     expect(readFileSync(path.join(r.dir, "b", "notes.txt"), "utf8")).toBe("upstream notes");

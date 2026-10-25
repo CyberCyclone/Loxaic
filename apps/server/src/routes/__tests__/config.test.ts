@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import Fastify from "fastify";
 import { v4 as uuid } from "uuid";
-import { db, eq, inArray } from "@loxaic/db";
+import { db, inArray } from "@loxaic/db";
 import { account, session, user } from "@loxaic/db/schema";
 import { auth } from "../../auth/index.ts";
 import { configRoutes } from "../config.ts";
@@ -100,6 +100,3 @@ describe("GET /v1/config", () => {
     expect(body.signUpOpen).toBe(true);
   });
 });
-
-// Referenced so the import is not unused when the cleanup branch is skipped.
-void eq;

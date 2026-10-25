@@ -120,7 +120,7 @@ beforeAll(async () => {
         res.end(JSON.stringify([{ name: "main" }, { name: "dev" }]));
         return;
       }
-      void (await readBody(req));
+      await readBody(req);
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ message: "not found in fixture" }));
     })();

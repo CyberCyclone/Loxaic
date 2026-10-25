@@ -321,7 +321,8 @@ export function getHostProvider(): SandboxProvider {
       return { ok: true };
     },
 
-    async create(userId: string, config: CreateSandboxConfig) {
+    // Unlike the container provider, host mode has no per-user isolation to label.
+    async create(_userId: string, config: CreateSandboxConfig) {
       const sandboxDir = path.join(hostRoot(), randomUUID());
       const workdir = path.join(sandboxDir, "repo");
       await mkdir(workdir, { recursive: true });
@@ -337,7 +338,6 @@ export function getHostProvider(): SandboxProvider {
           throw err;
         }
       }
-      void userId; // Unlike the container provider, host mode has no per-user isolation to label.
       return handle;
     },
 
