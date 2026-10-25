@@ -91,11 +91,12 @@ function configFor(rawVariant) {
     extraResources: [
       { from: "../mobile/dist", to: "web" },
       { from: "resources/tsnet-proxy", to: "tsnet-proxy" },
-      { from: "resources/server", to: "server" },
-      // Its own entry, not part of the one above: electron-builder 26 drops a
+      // The server's node_modules is its own entry, and excluded here so the
+      // two never copy the same tree: electron-builder 26 drops a
       // `node_modules` at the root of any extraResources source, before any
-      // filter is read, so the server above arrives without its dependencies.
-      // afterPack (checkPackagedApp) fails the build if that ever recurs.
+      // filter is read, so inside this one it never arrives. afterPack
+      // (checkPackagedApp) fails the build if that ever recurs.
+      { from: "resources/server", to: "server", filter: ["**/*", "!node_modules{,/**}"] },
       { from: "resources/server/node_modules", to: "server/node_modules" },
       // What the app redistributes and under which licences: our own, and
       // everyone else's (scripts/third-party-notices.mjs, run by `package`).
@@ -124,6 +125,10 @@ function configFor(rawVariant) {
       // Keep `zip`: MacUpdater downloads the zip, not the dmg.
       target: ["dmg", "zip"],
       category: "public.app-category.developer-tools",
+      // Electron 44's floor (its README's "Platform support"); 33 ran on 11.
+      // As LSMinimumSystemVersion it makes macOS refuse to open the app with
+      // a sentence naming the version, rather than the app failing to start.
+      minimumSystemVersion: "13.0",
       hardenedRuntime: true,
       // Deliberate: this assessment runs before notarization, so a signed app
       // fails it by construction. Check the stapled build with `spctl -a -vv -t install`.
@@ -169,6 +174,17 @@ function postgresBinariesPackage(platform, arch) {
 }
 
 /**
+ * The executables a packaged app must carry to run its database, relative to
+ * the app's node_modules: what each binaries package's dist/index.js points
+ * at. A universal mac app runs on either chip, so it needs both.
+ */
+function postgresExecutables(platform, arch) {
+  const arches = platform === "darwin" && arch === "universal" ? ["arm64", "x64"] : [arch];
+  const ext = platform === "win32" ? ".exe" : "";
+  return arches.flatMap((a) => ["pg_ctl", "initdb", "postgres"].map((bin) => `${postgresBinariesPackage(platform, a)}/native/bin/${bin}${ext}`));
+}
+
+/**
  * Fails packaging when the built app is missing what it needs to start its
  * stack; nothing else notices before a user's app fails to. It checks two
  * things electron-builder can leave out:
@@ -188,8 +204,9 @@ async function checkPackagedApp(context) {
   const { missingFromPayload } = await import("./server-payload.mjs");
   const resourcesDir = context.packager.getResourcesDir(context.appOutDir);
   const missing = missingFromPayload(path.join(resourcesDir, "server")).map((entry) => `server/${entry}`);
-  const postgres = `app/node_modules/${postgresBinariesPackage(context.electronPlatformName, Arch[context.arch])}`;
-  if (!existsSync(path.join(resourcesDir, postgres, "package.json"))) missing.push(postgres);
+  for (const executable of postgresExecutables(context.electronPlatformName, Arch[context.arch])) {
+    if (!existsSync(path.join(resourcesDir, "app/node_modules", executable))) missing.push(`app/node_modules/${executable}`);
+  }
   if (missing.length > 0) {
     throw new Error(`The packaged app at ${resourcesDir} is missing ${missing.join(", ")}.`);
   }
@@ -210,4 +227,4 @@ function missingResources(config, projectDir) {
   return config.extraResources.map((r) => r.from).filter((from) => !existsSync(path.resolve(projectDir, from)));
 }
 
-module.exports = { configFor, missingResources, checkPackagedApp, postgresBinariesPackage, VARIANTS };
+module.exports = { configFor, missingResources, checkPackagedApp, postgresBinariesPackage, postgresExecutables, VARIANTS };

@@ -4,7 +4,6 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import yauzl from "yauzl";
 import {
   chooseLicense,
   collectNative,
@@ -208,9 +207,9 @@ describe("renderGroup", () => {
 });
 
 describe("extractZipEntries", () => {
-  // Only a missing `zip` binary (needed to build the fixtures) skips these. yauzl
-  // is imported like the notices step imports it, so if it stops resolving this
-  // file fails to load instead of reporting skips.
+  // Only a missing `zip` binary (needed to build the fixtures) skips these. The
+  // notices script imports yauzl itself, so if it stops resolving this file
+  // fails to load instead of reporting skips.
   let hasZip = true;
   try { execFileSync("zip", ["-v"], { stdio: "ignore" }); } catch { hasZip = false; }
 
@@ -220,7 +219,7 @@ describe("extractZipEntries", () => {
     write("src/Electron.app/binary", "not wanted");
     execFileSync("zip", ["-qr", path.join(root, "e.zip"), "."], { cwd: path.join(root, "src") });
     const out = path.join(root, "out");
-    await extractZipEntries(yauzl, path.join(root, "e.zip"), { LICENSE: "LICENSE.electron.txt", "LICENSES.chromium.html": "LICENSES.chromium.html" }, out);
+    await extractZipEntries(path.join(root, "e.zip"), { LICENSE: "LICENSE.electron.txt", "LICENSES.chromium.html": "LICENSES.chromium.html" }, out);
     expect(readdirSync(out).sort()).toEqual(["LICENSE.electron.txt", "LICENSES.chromium.html"]);
     expect(readFileSync(path.join(out, "LICENSE.electron.txt"), "utf8")).toBe("electron licence");
   });
@@ -229,7 +228,7 @@ describe("extractZipEntries", () => {
     write("src/LICENSE", "electron licence");
     execFileSync("zip", ["-qr", path.join(root, "e.zip"), "."], { cwd: path.join(root, "src") });
     await expect(
-      extractZipEntries(yauzl, path.join(root, "e.zip"), { LICENSE: "a", "LICENSES.chromium.html": "b" }, path.join(root, "out")),
+      extractZipEntries(path.join(root, "e.zip"), { LICENSE: "a", "LICENSES.chromium.html": "b" }, path.join(root, "out")),
     ).rejects.toThrow(/LICENSES\.chromium\.html/);
   });
 
@@ -243,6 +242,6 @@ describe("extractZipEntries", () => {
     const dataStart = 30 + zip.readUInt16LE(26) + zip.readUInt16LE(28);
     for (let i = dataStart; i < dataStart + 8; i++) zip[i] ^= 0xff;
     writeFileSync(path.join(root, "e.zip"), zip);
-    await expect(extractZipEntries(yauzl, path.join(root, "e.zip"), { LICENSE: "a" }, path.join(root, "out"))).rejects.toThrow();
+    await expect(extractZipEntries(path.join(root, "e.zip"), { LICENSE: "a" }, path.join(root, "out"))).rejects.toThrow();
   });
 });

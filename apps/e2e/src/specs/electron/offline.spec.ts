@@ -20,8 +20,11 @@ import { shot } from '../../helpers/screenshot.ts';
 import { isVisible, waitForVisible, waitForTextIn } from '../../helpers/selectors.ts';
 import { mockEcho, sendAndAwaitReply, signUp, startNewThread } from '../../helpers/app.ts';
 
+/** A DevTools session on the window WebDriver drives, found by its URL rather than list order. */
 async function openDevTools() {
-  const [page] = await (await browser.getPuppeteer()).pages();
+  const url = await browser.getUrl();
+  const page = (await (await browser.getPuppeteer()).pages()).find((p) => p.url() === url);
+  if (!page) throw new Error(`[e2e] no DevTools page for the window at ${url}`);
   return page.createCDPSession();
 }
 
@@ -34,7 +37,11 @@ async function openDevTools() {
 let devtools: ReturnType<typeof openDevTools> | undefined;
 
 async function setOffline(offline: boolean): Promise<void> {
-  devtools ??= openDevTools();
+  // A failed open is not kept: the next call, `after`'s goOnline included, tries again.
+  devtools ??= openDevTools().catch((err: unknown) => {
+    devtools = undefined;
+    throw err;
+  });
   await (await devtools).send('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
 }
 

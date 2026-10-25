@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
  *     Postgres data directories apart.
  */
 const require_ = createRequire(import.meta.url);
-const { configFor, missingResources, checkPackagedApp, postgresBinariesPackage } = require_("../builder-variants.cjs");
+const { configFor, missingResources, checkPackagedApp, postgresBinariesPackage, postgresExecutables } = require_("../builder-variants.cjs");
 
 describe("the electron-builder config", () => {
   it("packages the stable app by default", () => {
@@ -131,6 +131,12 @@ describe("the electron-builder config", () => {
     // source, so inside `resources/server` it never reaches the app.
     const resources = configFor(undefined).extraResources;
     expect(resources).toContainEqual({ from: "resources/server/node_modules", to: "server/node_modules" });
+    // And the server's own entry leaves it out, so no build copies it twice.
+    expect(resources.find((r) => r.from === "resources/server").filter).toContain("!node_modules{,/**}");
+  });
+
+  it("will not open on a macOS older than Electron's floor", () => {
+    expect(configFor(undefined).mac.minimumSystemVersion).toBe("13.0");
   });
 
   it("fails packaging when the app is missing its server's or its database's files", async () => {
@@ -146,12 +152,16 @@ describe("the electron-builder config", () => {
     };
     try {
       for (const required of PAYLOAD_REQUIRED.filter((r) => !r.startsWith("node_modules/"))) make(`server/${required}`);
-      make("app/node_modules/@embedded-postgres/darwin-arm64/package.json");
+      for (const executable of postgresExecutables("darwin", "arm64")) make(`app/node_modules/${executable}`);
       await expect(checkPackagedApp(context)).rejects.toThrow(/missing server\/node_modules\/fastify/);
       for (const required of PAYLOAD_REQUIRED.filter((r) => r.startsWith("node_modules/"))) make(`server/${required}`);
       await expect(checkPackagedApp(context)).resolves.toBeUndefined();
       // The other arch's binaries are not this build's.
-      await expect(checkPackagedApp({ ...context, arch: 1 })).rejects.toThrow(/missing app\/node_modules\/@embedded-postgres\/darwin-x64\./);
+      await expect(checkPackagedApp({ ...context, arch: 1 })).rejects.toThrow(/missing app\/node_modules\/@embedded-postgres\/darwin-x64\/native\/bin\/pg_ctl/);
+      // A manifest without the executables is not a database.
+      rmSync(path.join(resourcesDir, "app/node_modules/@embedded-postgres/darwin-arm64/native"), { recursive: true });
+      make("app/node_modules/@embedded-postgres/darwin-arm64/package.json");
+      await expect(checkPackagedApp(context)).rejects.toThrow(/darwin-arm64\/native\/bin\/initdb/);
     } finally {
       rmSync(resourcesDir, { recursive: true, force: true });
     }
@@ -162,6 +172,13 @@ describe("the electron-builder config", () => {
     expect(postgresBinariesPackage("linux", "x64")).toBe("@embedded-postgres/linux-x64");
     expect(postgresBinariesPackage("linux", "armv7l")).toBe("@embedded-postgres/linux-arm");
     expect(postgresBinariesPackage("win32", "x64")).toBe("@embedded-postgres/windows-x64");
+  });
+
+  it("requires the database's executables, both chips' for a universal mac app", () => {
+    expect(postgresExecutables("win32", "x64")).toEqual(["pg_ctl.exe", "initdb.exe", "postgres.exe"].map((b) => `@embedded-postgres/windows-x64/native/bin/${b}`));
+    expect(postgresExecutables("darwin", "universal")).toEqual(
+      ["darwin-arm64", "darwin-x64"].flatMap((p) => ["pg_ctl", "initdb", "postgres"].map((b) => `@embedded-postgres/${p}/native/bin/${b}`)),
+    );
   });
 
   it("names every extraResources source that is not on disk", () => {

@@ -287,7 +287,7 @@ const ELECTRON_LICENCES = { LICENSE: "LICENSE.electron.txt", "LICENSES.chromium.
  * @electron-internal/extract-zip, which has no dependencies, so the only yauzl
  * left there was hoisted in by the e2e packages.
  */
-export function extractZipEntries(yauzl, zipPath, wanted, outDir) {
+export function extractZipEntries(zipPath, wanted, outDir) {
   mkdirSync(outDir, { recursive: true });
   return new Promise((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true }, (err, zip) => {
@@ -349,7 +349,7 @@ async function electronLicences(outDir) {
     arch: process.arch,
     checksums: electronRequire("./checksums.json"),
   });
-  await extractZipEntries(yauzl, zipPath, ELECTRON_LICENCES, outDir);
+  await extractZipEntries(zipPath, ELECTRON_LICENCES, outDir);
   return `release zip v${version}`;
 }
 
