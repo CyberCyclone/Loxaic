@@ -346,7 +346,6 @@ export interface Settings {
   name: string
   defaultMode: AgentMode
   defaultThinkingLevel: ThinkingLevel
-  endpoint: string
 }
 
 export interface SmartRouting {

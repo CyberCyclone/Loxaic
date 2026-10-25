@@ -15,7 +15,7 @@ import { browser } from '@wdio/globals';
 import { provisionAdmin } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { byTestId, isVisible, platform, tap, typeInto, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
-import { goToSurface, openSettings, openSidebar, openSkills, signIn } from '../helpers/app.ts';
+import { goToSurface, openSettings, openSidebar, openSkills, revealInSettings, signIn } from '../helpers/app.ts';
 
 /** Navigates to a surface and waits for something only that surface renders,
  * so the modal is opened from the screen under test and not the previous one. */
@@ -40,29 +40,6 @@ async function goTo(surface: 'chat' | 'agent' | 'routines' | 'stats' | 'admin' |
     return;
   }
   await goToSurface(surface);
-}
-
-/**
- * Brings a row below the settings modal's fold into view on native, where an
- * element off screen cannot be typed into (web needs nothing). A touch drag in
- * the middle of the window, where the centred modal is, repeated until the row
- * shows — not UiScrollable or XCUITest's scroll-to, which pick the first
- * scrollable they find, and that can be the screen's own list behind the modal.
- */
-async function revealInSettings(id: string): Promise<void> {
-  const p = platform();
-  if (p === 'web' || p === 'electron') return;
-  const { width, height } = await browser.getWindowSize();
-  const x = Math.round(width / 2);
-  for (let i = 0; i < 6 && !(await isVisible(id)); i++) {
-    await browser
-      .action('pointer', { parameters: { pointerType: 'touch' } })
-      .move({ x, y: Math.round(height * 0.62) })
-      .down()
-      .move({ x, y: Math.round(height * 0.38), duration: 400 })
-      .up()
-      .perform();
-  }
 }
 
 async function closeSettings(): Promise<void> {

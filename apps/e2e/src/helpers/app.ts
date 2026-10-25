@@ -186,6 +186,29 @@ export async function openSettings(): Promise<void> {
 }
 
 /**
+ * Brings a row below the settings modal's fold into view on native, where an
+ * element off screen cannot be typed into (web needs nothing). A touch drag in
+ * the middle of the window, where the centred modal is, repeated until the row
+ * shows — not UiScrollable or XCUITest's scroll-to, which pick the first
+ * scrollable they find, and that can be the screen's own list behind the modal.
+ */
+export async function revealInSettings(id: string): Promise<void> {
+  const p = platform();
+  if (p === 'web' || p === 'electron') return;
+  const { width, height } = await browser.getWindowSize();
+  const x = Math.round(width / 2);
+  for (let i = 0; i < 6 && !(await isVisible(id)); i++) {
+    await browser
+      .action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ x, y: Math.round(height * 0.62) })
+      .down()
+      .move({ x, y: Math.round(height * 0.38), duration: 400 })
+      .up()
+      .perform();
+  }
+}
+
+/**
  * Waits for the authenticated shell to be usable.
  *
  * Not simply `composer.input`: a user whose only conversation is shared

@@ -1,0 +1,127 @@
+/**
+ * Settings names the server the app is actually using, whichever screen chose
+ * it.
+ *
+ * On a phone the address can be set in two places: the sign-in screen's
+ * server picker and Settings → Server endpoint. The picker writes the override
+ * the app resolves from, and Settings used to show a copy of its own that only
+ * Settings wrote. An address chosen at sign-in therefore showed as an empty
+ * field over an app pinned to it, and nothing in Settings said which server
+ * was in use.
+ *
+ * Native only: a browser has no picker (the page came from its own server),
+ * and the desktop's goes back to onboarding instead.
+ */
+import { browser } from '@wdio/globals';
+import { openSettings, revealInSettings, signIn, signOut, signUp } from '../../helpers/app.ts';
+import { uniqueCreds } from '../../helpers/auth.ts';
+import { shot } from '../../helpers/screenshot.ts';
+import { byTestId, fieldValue, isVisible, tap, typeInto, waitForAbsent, waitForFreshText, waitForVisible } from '../../helpers/selectors.ts';
+import { PORT } from '../../../scripts/standup.ts';
+
+/**
+ * The e2e server under another name. It is the same machine as the suite's
+ * `BASE_URL`
+ * (the simulator shares the host's loopback; Android's `adb reverse` maps the
+ * port on the device's), so signing in still works, but a different string,
+ * so whatever an earlier spec left behind cannot pass for it.
+ */
+const PICKED = `http://127.0.0.1:${String(PORT)}`;
+
+/** What an empty field reads as. Both XCUITest and UiAutomator2 report an
+ * empty field's placeholder as its value, so the placeholder stands for "empty". */
+const EMPTY_FIELD = ['', 'https://your-server.tailnet.ts.net'];
+
+/** Saves `address` from the sign-in screen's picker; empty clears it. */
+async function pickServer(address: string): Promise<void> {
+  if (!(await isVisible('login.server.input'))) await tap('login.server.toggle');
+  await waitForVisible('login.server.input');
+  // Cleared directly: typeInto reads the field back, and XCUITest reads an
+  // empty field as its placeholder, so "" never matches.
+  if (address) await typeInto('login.server.input', address);
+  else await byTestId('login.server.input').clearValue();
+  await tap('login.server.save');
+  if (address) {
+    // On the text: an earlier result line may already be on screen.
+    await waitForFreshText('login.server.result', 'Saved', 10_000);
+  } else {
+    // A clear collapses the picker back to its one line.
+    await waitForAbsent('login.server.input');
+  }
+}
+
+async function openEndpointField(): Promise<void> {
+  await openSettings();
+  await waitForVisible('settings.name');
+  await revealInSettings('settings.endpoint');
+  await waitForVisible('settings.endpoint');
+}
+
+async function closeSettings(): Promise<void> {
+  await tap('settings.close');
+  await waitForAbsent('settings.name');
+}
+
+describe('the server endpoint in Settings, after choosing one at sign-in', () => {
+  const creds = uniqueCreds();
+  /** The override this install had before this file ran ('' for none), put
+   * back afterwards: every native spec file shares the install, so leaving a
+   * different one would make later files depend on the order they run in. */
+  let prior = '';
+
+  before(async () => {
+    // Every native spec file shares one app install, so this may open on the
+    // shell an earlier file signed in to. Polled: asked while the app is
+    // still loading, neither is displayed yet.
+    const probe = (id: string) => isVisible(id).catch(() => false);
+    await browser.waitUntil(async () => (await probe('login.submit')) || (await probe('sidebar.signOut')) || (await probe('composer.input')), {
+      timeout: 20_000,
+      interval: 300,
+      timeoutMsg: 'neither the sign-in screen nor the signed-in shell appeared',
+    });
+    if (!(await probe('login.submit'))) await signOut();
+    // Settings is the one place that says whether an override is pinned (the
+    // sign-in screen shows the server in use either way), so look there.
+    await signUp(creds);
+    await openEndpointField();
+    const value = await fieldValue('settings.endpoint');
+    prior = EMPTY_FIELD.includes(value) ? '' : value;
+    await closeSettings();
+    await signOut();
+  });
+
+  after(async () => {
+    if (!(await isVisible('login.submit').catch(() => false))) await signOut();
+    await pickServer(prior);
+  });
+
+  it('shows the address the sign-in screen saved', async () => {
+    await pickServer(PICKED);
+    await signIn(creds);
+    await openEndpointField();
+
+    expect(await fieldValue('settings.endpoint')).toBe(PICKED);
+    // Pinned, not detected: nothing claims auto-detection chose it.
+    expect(await isVisible('settings.endpoint.detected')).toBe(false);
+    await shot('settings-endpoint-from-login');
+    await closeSettings();
+  });
+
+  it('says what was auto-detected once the sign-in screen clears it, without filling the field', async () => {
+    await signOut();
+    await pickServer('');
+    await signIn(creds);
+    await openEndpointField();
+
+    // The detected address is said underneath, not put in the field, where a
+    // Save would have pinned it.
+    expect(EMPTY_FIELD).toContain(await fieldValue('settings.endpoint'));
+    await revealInSettings('settings.endpoint.detected');
+    // Which name detection settles on depends on the build (an Android
+    // build can bake the emulator's 10.0.2.2 alias in beside localhost), but
+    // it is this run's server either way, and said to be detected.
+    await waitForFreshText('settings.endpoint.detected', `:${String(PORT)} (auto-detected)`, 10_000);
+    await shot('settings-endpoint-auto-detected');
+    await closeSettings();
+  });
+});

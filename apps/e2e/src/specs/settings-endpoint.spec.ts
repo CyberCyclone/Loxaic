@@ -8,10 +8,11 @@
  * confirmed, and the confirmation names both addresses rather than saying
  * "the server address".
  */
+import { browser } from '@wdio/globals';
 import { openSidebar, signUp } from '../helpers/app.ts';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, isVisible, tap, typeInto, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, fieldValue, isVisible, platform, tap, typeInto, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 
 describe('changing the server endpoint', () => {
   before(async () => {
@@ -21,6 +22,23 @@ describe('changing the server endpoint', () => {
     await openSidebar();
     await tap('sidebar.settings');
     await waitForVisible('settings.endpoint');
+  });
+
+  it('says which server it found by itself, under an empty field', async function webAndDesktop() {
+    // Native lanes run with an address pinned from the sign-in screen (see
+    // specs/native/settings-endpoint-from-login.spec.ts for both sides there).
+    if (platform() !== 'web' && platform() !== 'electron') return this.skip();
+    // Said, not filled in: as the field's value, Save would pin it.
+    expect(await fieldValue('settings.endpoint')).toBe('');
+    if (platform() === 'web') {
+      // The page's own origin, the server that served it.
+      const origin = new URL(await browser.getUrl()).origin;
+      await waitForFreshText('settings.endpoint.detected', `Using ${origin} (auto-detected)`, 5_000);
+    } else {
+      // The desktop found nothing: onboarding set its server up.
+      await waitForFreshText('settings.endpoint.detected', "(from this computer's setup)", 5_000);
+    }
+    await shot('settings-endpoint-in-use');
   });
 
   it('saves everything else without asking', async () => {
