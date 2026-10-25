@@ -171,11 +171,20 @@ const guardedLookup: LookupFunction = (hostname, options, callback) => {
   });
 };
 
-const guardedAgent = new Agent({
-  connect: { lookup: guardedLookup, timeout: 10_000 },
-  headersTimeout: 15_000,
-  bodyTimeout: 15_000,
-});
+/** Every guarded agent is built here, so the address check cannot drift
+ * between them; only the header and body deadlines differ. */
+function guardedAgentWith(deadlineMs: number): Agent {
+  return new Agent({
+    connect: { lookup: guardedLookup, timeout: 10_000 },
+    headersTimeout: deadlineMs,
+    bodyTimeout: deadlineMs,
+  });
+}
+
+const guardedAgent = guardedAgentWith(15_000);
+/** Node's own fetch deadlines, for responses that are meant to wait: an MCP
+ * tool call, an MCP server's event stream. */
+const longLivedAgent = guardedAgentWith(300_000);
 
 /**
  * One request to a model-chosen URL, with the address checked at connect time.
@@ -183,8 +192,14 @@ const guardedAgent = new Agent({
  * Never follows a redirect: the caller decides whether to request the next hop,
  * and that request is checked again. An IP literal never reaches the resolver,
  * so it is checked here.
+ *
+ * `longLived` raises the 15 s header and body deadlines to 300 s.
  */
-export async function guardedFetch(url: URL, init: Omit<RequestInit, "dispatcher" | "redirect"> = {}): Promise<Response> {
+export async function guardedFetch(
+  url: URL,
+  init: Omit<RequestInit, "dispatcher" | "redirect"> = {},
+  opts: { longLived?: boolean } = {},
+): Promise<Response> {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new BlockedTargetError(`only http and https URLs are allowed (got ${url.protocol})`);
   }
@@ -200,7 +215,7 @@ export async function guardedFetch(url: URL, init: Omit<RequestInit, "dispatcher
     }
   }
   try {
-    return await fetch(url, { ...init, redirect: "manual", dispatcher: guardedAgent });
+    return await fetch(url, { ...init, redirect: "manual", dispatcher: opts.longLived ? longLivedAgent : guardedAgent });
   } catch (err) {
     // undici wraps the connect error; surface the guard's own refusal.
     const cause = (err as { cause?: unknown }).cause;
