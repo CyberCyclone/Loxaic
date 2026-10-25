@@ -17,10 +17,11 @@ import { openSettings, revealInSettings, signIn, signOut, signUp } from '../../h
 import { uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
 import { byTestId, fieldValue, isVisible, tap, typeInto, waitForAbsent, waitForFreshText, waitForVisible } from '../../helpers/selectors.ts';
-import { BASE_URL, PORT } from '../../../scripts/standup.ts';
+import { PORT } from '../../../scripts/standup.ts';
 
 /**
- * The e2e server under another name. It is the same machine as `BASE_URL`
+ * The e2e server under another name. It is the same machine as the suite's
+ * `BASE_URL`
  * (the simulator shares the host's loopback; Android's `adb reverse` maps the
  * port on the device's), so signing in still works, but a different string,
  * so whatever an earlier spec left behind cannot pass for it.
@@ -63,6 +64,10 @@ async function closeSettings(): Promise<void> {
 
 describe('the server endpoint in Settings, after choosing one at sign-in', () => {
   const creds = uniqueCreds();
+  /** The override this install had before this file ran ('' for none), put
+   * back afterwards: every native spec file shares the install, so leaving a
+   * different one would make later files depend on the order they run in. */
+  let prior = '';
 
   before(async () => {
     // Every native spec file shares one app install, so this may open on the
@@ -75,19 +80,24 @@ describe('the server endpoint in Settings, after choosing one at sign-in', () =>
       timeoutMsg: 'neither the sign-in screen nor the signed-in shell appeared',
     });
     if (!(await probe('login.submit'))) await signOut();
-    await waitForVisible('login.submit');
+    // Settings is the one place that says whether an override is pinned (the
+    // sign-in screen shows the server in use either way), so look there.
+    await signUp(creds);
+    await openEndpointField();
+    const value = await fieldValue('settings.endpoint');
+    prior = EMPTY_FIELD.includes(value) ? '' : value;
+    await closeSettings();
+    await signOut();
   });
 
   after(async () => {
-    // Put back the address every other spec signs in at, so a later file
-    // neither talks to the alias nor looks for its token under it.
     if (!(await isVisible('login.submit').catch(() => false))) await signOut();
-    await pickServer(BASE_URL);
+    await pickServer(prior);
   });
 
   it('shows the address the sign-in screen saved', async () => {
     await pickServer(PICKED);
-    await signUp(creds);
+    await signIn(creds);
     await openEndpointField();
 
     expect(await fieldValue('settings.endpoint')).toBe(PICKED);

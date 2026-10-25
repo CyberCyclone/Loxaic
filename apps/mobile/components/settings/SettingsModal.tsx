@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter, type Href } from 'expo-router';
 import { BookOpen, Boxes, Container, Gauge, GitBranch, HardDrive, Hourglass, Layers, Plug, ScrollText, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
 import {
@@ -32,7 +32,7 @@ import { useSession } from '@/lib/session';
 import { normalizeUrl } from '@/lib/server-address';
 import { setAuthToken } from '@loxaic/api-client';
 import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
-import { endpointField } from '@/lib/endpointField';
+import { endpointFieldValue, endpointInUse, withoutStaleEndpoint } from '@/lib/endpointField';
 import { unreachableServerName } from '@/lib/instanceAddress';
 import { useEndpoint } from '@/hooks/useEndpoint';
 import { useInstanceState } from '@/hooks/useInstanceState';
@@ -85,7 +85,13 @@ export function SettingsModal({
   // The server in use, named as the person would: a desktop Tailscale client
   // talks to its sidecar's loopback, which nobody typed.
   const active = unreachableServerName(useInstanceState(), useEndpoint());
-  const { detected } = endpointField({ override: getItem('loxaic-endpoint'), active });
+  const inUse = endpointInUse({
+    saved: endpointBaseline,
+    draft: endpointDraft,
+    active,
+    desktop: electronBridge() !== null,
+  });
+  const wasOpen = useRef(false);
 
   useEffect(() => {
     if (open) void refreshConfig();
@@ -95,10 +101,14 @@ export function SettingsModal({
     // Every opening starts clean. There is one instance for the life of the
     // shell now, so nothing else resets what a previous opening left behind —
     // a failed Test would otherwise stay red under a working address.
-    if (open) {
+    // Only on opening: keyed on `settings` too, this used to run whenever
+    // another screen wrote loxaic-settings while the modal was open, throwing
+    // away whatever was being typed.
+    const opening = open && !wasOpen.current;
+    wasOpen.current = open;
+    if (opening) {
       setDraft(settings);
-      // Only the value: `detected` is worked out each render, from the live endpoint.
-      const { value } = endpointField({ override: getItem('loxaic-endpoint'), active: null });
+      const value = endpointFieldValue(getItem('loxaic-endpoint'));
       setEndpointDraft(value);
       setEndpointBaseline(value);
       setDirty(false);
@@ -121,7 +131,15 @@ export function SettingsModal({
    * caller: everything that actually writes goes through here.
    */
   const commit = (moved: boolean) => {
-    setSettings(draft);
+    setSettings(withoutStaleEndpoint(draft));
+    setDirty(false);
+    showToast('Settings saved');
+    // An address left as it was is left alone. Re-applying it re-ran
+    // detection on every save with nothing pinned, which could move the app
+    // to another server (a phone that has left its LAN, a desktop whose
+    // launch URL is stale) while keeping the old server's bearer, since
+    // nothing had "moved".
+    if (!moved) return;
     const endpoint = endpointDraft.trim();
     setEndpointBaseline(endpoint);
     // The old host's session must not follow the endpoint to the new one.
@@ -132,7 +150,7 @@ export function SettingsModal({
     // Per-endpoint scoping only governs what is *read from storage*, so it
     // has to be dropped here, before the URL moves, and the new endpoint's
     // own token loaded after. detach() does the same for the same reason.
-    if (moved) setAuthToken(null);
+    setAuthToken(null);
     if (endpoint) {
       setItem('loxaic-endpoint', endpoint);
       // setEndpoint, not setApiBaseUrl: the api-client's base URL is only half
@@ -140,7 +158,7 @@ export function SettingsModal({
       // hold a URL captured when their effect last ran, so both have to be
       // told or the change appears to work and then silently doesn't.
       setEndpoint(endpoint);
-      if (moved) void adoptSessionAt();
+      void adoptSessionAt();
     } else {
       // Clearing the field has to actually clear the override. It previously
       // fell through this branch entirely, so an endpoint could be set from
@@ -155,11 +173,9 @@ export function SettingsModal({
       // the user thinks they left.
       void resolveEndpoint(true).then(async (resolved) => {
         if (resolved) setEndpoint(resolved);
-        if (moved) await adoptSessionAt();
+        await adoptSessionAt();
       });
     }
-    setDirty(false);
-    showToast('Settings saved');
   };
 
   /** Loads whatever session the endpoint now in effect has — and signs out,
@@ -224,6 +240,8 @@ export function SettingsModal({
   const discard = () => {
     setDraft(settings);
     setEndpointDraft(endpointBaseline);
+    setEndpointTest(null);
+    setEndpointError(null);
     setDirty(false);
   };
 
@@ -529,9 +547,9 @@ export function SettingsModal({
                   </Text>
                 )}
               </HStack>
-              {detected && (
+              {inUse && (
                 <Text testID="settings.endpoint.detected" size="2xs" className="text-muted-foreground">
-                  Using {detected} (auto-detected)
+                  Using {inUse.url} {inUse.source === 'setup' ? "(from this computer's setup)" : '(auto-detected)'}
                 </Text>
               )}
               {endpointError && (
@@ -592,7 +610,7 @@ export function SettingsModal({
     <WarningConfirmModal
       open={confirmEndpoint}
       title="Change the server address?"
-      message={endpointWarning(currentEndpoint() ?? endpointBaseline, endpointDraft)}
+      message={endpointWarning(active ?? endpointBaseline, endpointDraft)}
       confirmLabel="Change it"
       testIDPrefix="settings.endpoint.confirm"
       local
@@ -629,8 +647,9 @@ export function SettingsModal({
  * out, not saving.
  */
 function endpointWarning(current: string, next: string): string {
-  // `current` is the address actually in effect (currentEndpoint()), not the
-  // stored override: on every auto-detected install the override is '' while
+  // `current` is the server in use, named as the hint under the field names
+  // it (a desktop Tailscale client's host, not its sidecar's loopback), not
+  // the stored override: on every auto-detected install the override is '' while
   // a real resolved address is in use, and the before/after comparison — the
   // whole point of naming both — vanished on exactly those installs.
   const from = current.trim();

@@ -12,7 +12,7 @@ import { browser } from '@wdio/globals';
 import { openSidebar, signUp } from '../helpers/app.ts';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, isVisible, platform, tap, typeInto, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, fieldValue, isVisible, platform, tap, typeInto, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 
 describe('changing the server endpoint', () => {
   before(async () => {
@@ -29,12 +29,16 @@ describe('changing the server endpoint', () => {
     // specs/native/settings-endpoint-from-login.spec.ts for both sides there).
     if (platform() !== 'web' && platform() !== 'electron') return this.skip();
     // Said, not filled in: as the field's value, Save would pin it.
-    expect(await byTestId('settings.endpoint').getValue()).toBe('');
-    // In a browser that is the page's own origin, the server that served it.
-    const expected = platform() === 'web' ? new URL(await browser.getUrl()).origin : 'http';
-    await waitForFreshText('settings.endpoint.detected', `Using ${expected}`, 5_000);
-    await waitForFreshText('settings.endpoint.detected', '(auto-detected)', 5_000);
-    await shot('settings-endpoint-auto-detected');
+    expect(await fieldValue('settings.endpoint')).toBe('');
+    if (platform() === 'web') {
+      // The page's own origin, the server that served it.
+      const origin = new URL(await browser.getUrl()).origin;
+      await waitForFreshText('settings.endpoint.detected', `Using ${origin} (auto-detected)`, 5_000);
+    } else {
+      // The desktop found nothing: onboarding set its server up.
+      await waitForFreshText('settings.endpoint.detected', "(from this computer's setup)", 5_000);
+    }
+    await shot('settings-endpoint-in-use');
   });
 
   it('saves everything else without asking', async () => {
