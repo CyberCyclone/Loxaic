@@ -25,13 +25,17 @@ import { SettingsNavRow } from './SettingsNavRow';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { useSettings } from '@/hooks/useSettings';
 import { useThemePreference, type ThemePreference } from '@/hooks/useTheme';
-import { removeItem, setItem } from '@/lib/storage';
+import { getItem, removeItem, setItem } from '@/lib/storage';
 import { clearCacheForEndpoint } from '@/lib/message-cache';
 import { clearToken, loadToken } from '@/lib/auth';
 import { useSession } from '@/lib/session';
 import { normalizeUrl } from '@/lib/server-address';
 import { setAuthToken } from '@loxaic/api-client';
 import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
+import { endpointField } from '@/lib/endpointField';
+import { unreachableServerName } from '@/lib/instanceAddress';
+import { useEndpoint } from '@/hooks/useEndpoint';
+import { useInstanceState } from '@/hooks/useInstanceState';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import type { AgentMode, Settings, ThinkingLevel } from '@/lib/types';
 import { useServerConfig } from '@/hooks/useServerConfig';
@@ -62,6 +66,12 @@ export function SettingsModal({
   const { showToast } = useToastHelper();
   const { signOut, isAdmin } = useSession();
   const [draft, setDraft] = useState<Settings>(settings);
+  // The address field is not part of `Settings`: it edits `loxaic-endpoint`,
+  // the override resolveEndpoint honours and the sign-in screen's picker
+  // writes too (see lib/endpointField.ts). `endpointBaseline` is what it
+  // showed on opening, so Save can tell a move from leaving it alone.
+  const [endpointDraft, setEndpointDraft] = useState('');
+  const [endpointBaseline, setEndpointBaseline] = useState('');
   const [dirty, setDirty] = useState(false);
   const [confirmDetach, setConfirmDetach] = useState(false);
   const [endpointTest, setEndpointTest] = useState<{ ok: boolean; message: string } | null>(null);
@@ -72,6 +82,10 @@ export function SettingsModal({
   // again on every opening: an admin may have just changed it.
   const { config, refresh: refreshConfig } = useServerConfig();
   const screens = imageScreens(config?.sandbox.customImages, isAdmin);
+  // The server in use, named as the person would: a desktop Tailscale client
+  // talks to its sidecar's loopback, which nobody typed.
+  const active = unreachableServerName(useInstanceState(), useEndpoint());
+  const { detected } = endpointField({ override: getItem('loxaic-endpoint'), active });
 
   useEffect(() => {
     if (open) void refreshConfig();
@@ -83,6 +97,10 @@ export function SettingsModal({
     // a failed Test would otherwise stay red under a working address.
     if (open) {
       setDraft(settings);
+      // Only the value: `detected` is worked out each render, from the live endpoint.
+      const { value } = endpointField({ override: getItem('loxaic-endpoint'), active: null });
+      setEndpointDraft(value);
+      setEndpointBaseline(value);
       setDirty(false);
       setConfirmEndpoint(false);
       setConfirmDetach(false);
@@ -104,7 +122,8 @@ export function SettingsModal({
    */
   const commit = (moved: boolean) => {
     setSettings(draft);
-    const endpoint = draft.endpoint.trim();
+    const endpoint = endpointDraft.trim();
+    setEndpointBaseline(endpoint);
     // The old host's session must not follow the endpoint to the new one.
     // BASE_URL moving is only half of a move: the api-client also holds the
     // live bearer in memory, and REST, both stream sockets and every
@@ -162,7 +181,7 @@ export function SettingsModal({
    * neither until they agree to the risky half separately.
    */
   const save = () => {
-    if (draft.endpoint.trim() === settings.endpoint.trim()) {
+    if (endpointDraft.trim() === endpointBaseline.trim()) {
       commit(false);
       return;
     }
@@ -172,13 +191,13 @@ export function SettingsModal({
     // resolve relative on web while the WebSocket constructor threw: a
     // half-connected device with no indication why, right after a dialog
     // had named the address and said the change took effect.
-    const next = normalizeUrl(draft.endpoint);
+    const next = normalizeUrl(endpointDraft);
     if (next instanceof Error) {
       setEndpointError(next.message);
       return;
     }
     setEndpointError(null);
-    if (next !== null && next !== draft.endpoint) setDraft((d) => ({ ...d, endpoint: next }));
+    if (next !== null && next !== endpointDraft) setEndpointDraft(next);
     setConfirmEndpoint(true);
   };
 
@@ -204,6 +223,7 @@ export function SettingsModal({
 
   const discard = () => {
     setDraft(settings);
+    setEndpointDraft(endpointBaseline);
     setDirty(false);
   };
 
@@ -212,7 +232,7 @@ export function SettingsModal({
    * is fine to test: whatever's currently typed is what the user wants to
    * know is reachable. */
   const testEndpoint = async () => {
-    const url = draft.endpoint.trim();
+    const url = endpointDraft.trim();
     if (!url) return;
     setTestingEndpoint(true);
     setEndpointTest(null);
@@ -480,9 +500,10 @@ export function SettingsModal({
                   testID="settings.endpoint"
                   placeholder="https://your-server.tailnet.ts.net"
                   autoCapitalize="none"
-                  value={draft.endpoint}
+                  value={endpointDraft}
                   onChangeText={(v) => {
-                    update('endpoint', v);
+                    setEndpointDraft(v);
+                    setDirty(true);
                     setEndpointTest(null);
                     setEndpointError(null);
                   }}
@@ -493,7 +514,7 @@ export function SettingsModal({
                   testID="settings.endpoint.test"
                   variant="outline"
                   size="sm"
-                  isDisabled={!draft.endpoint.trim() || testingEndpoint}
+                  isDisabled={!endpointDraft.trim() || testingEndpoint}
                   onPress={() => { void testEndpoint(); }}
                 >
                   {testingEndpoint ? <ButtonSpinner /> : <ButtonText>Test</ButtonText>}
@@ -508,6 +529,11 @@ export function SettingsModal({
                   </Text>
                 )}
               </HStack>
+              {detected && (
+                <Text testID="settings.endpoint.detected" size="2xs" className="text-muted-foreground">
+                  Using {detected} (auto-detected)
+                </Text>
+              )}
               {endpointError && (
                 <Text testID="settings.endpoint.error" size="2xs" className="text-destructive">
                   {endpointError}
@@ -566,7 +592,7 @@ export function SettingsModal({
     <WarningConfirmModal
       open={confirmEndpoint}
       title="Change the server address?"
-      message={endpointWarning(currentEndpoint() ?? settings.endpoint, draft.endpoint)}
+      message={endpointWarning(currentEndpoint() ?? endpointBaseline, endpointDraft)}
       confirmLabel="Change it"
       testIDPrefix="settings.endpoint.confirm"
       local

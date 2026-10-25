@@ -5,7 +5,6 @@ const DEFAULT_SETTINGS: Settings = {
   name: '',
   defaultMode: 'manual',
   defaultThinkingLevel: 'Medium',
-  endpoint: '',
 };
 
 const DEFAULT_ROUTING: SmartRouting = {
