@@ -16,6 +16,7 @@ import {
   toApi,
   updateProvider,
 } from "../inference/providers.ts";
+import { publicErrorMessage } from "../streams/error-text.ts";
 
 /**
  * The LLM backends this deployment can reach, admin-only.
@@ -100,7 +101,7 @@ export function adminProviderRoutes(app: FastifyInstance) {
       afterWrite();
       return { ok: true, models: models.length };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = publicErrorMessage(err);
       await recordProviderCheck(id, message);
       afterWrite();
       // 200 with ok:false, not a 5xx: the request was well-formed and the
@@ -129,7 +130,7 @@ export function adminProviderRoutes(app: FastifyInstance) {
         })),
       };
     } catch (err) {
-      return reply.code(200).send({ models: [], error: err instanceof Error ? err.message : String(err) });
+      return reply.code(200).send({ models: [], error: publicErrorMessage(err) });
     }
   });
 }

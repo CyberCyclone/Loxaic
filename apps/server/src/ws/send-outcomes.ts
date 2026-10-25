@@ -1,5 +1,6 @@
 import { isStreamErrorCode, type ServerMessage } from "@loxaic/types";
 import { NotFoundError } from "../streams/authz.ts";
+import { publicErrorMessage } from "../streams/error-text.ts";
 import { clientRefOf } from "./client-ref.ts";
 
 /**
@@ -62,7 +63,7 @@ export function sendErrorFor(err: unknown, ref: string | undefined): SendError {
   const code = isStreamErrorCode(raw) ? raw : undefined;
   return {
     type: "error",
-    error: (err as Error).message,
+    error: publicErrorMessage(err),
     ...(code ? { code } : {}),
     ...(ref ? { client_ref: ref } : {}),
   };

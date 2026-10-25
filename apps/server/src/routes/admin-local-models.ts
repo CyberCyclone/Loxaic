@@ -44,7 +44,7 @@ import { checkMtpSetting, checkTableSetting, LOAD_SETTINGS, LoadSettingsError, n
 import { refreshMemory } from "../llama/memory.ts";
 import { describePlacement, measuredFrom, type Placement } from "../llama/placement.ts";
 import { measuredForPort } from "../llama/residency.ts";
-import { loadErrorFor, loadRequested, NoRoomError, pinErrorFor, requestLoad, requestUnload, UnloadRefusedError } from "../llama/room.ts";
+import { loadErrorFor, loadRequested, pinErrorFor, requestLoad, requestUnload, UnloadRefusedError } from "../llama/room.ts";
 import { findRelease, listReleases, ReleasesError, type ReleaseRow } from "../llama/releases.ts";
 import { OFFICIAL_TAG } from "../llama/runtime-assets.ts";
 import {
@@ -95,6 +95,7 @@ import {
   updateLocalModelsSettings,
   type RuntimeSelection,
 } from "../llama/settings.ts";
+import { publicErrorMessage } from "../streams/error-text.ts";
 
 /**
  * The admin screen for local models: the llama.cpp runtime, HuggingFace
@@ -814,7 +815,7 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     try {
       await requestLoad(id);
     } catch (err) {
-      return reply.code(409).send({ error: err instanceof NoRoomError ? err.message : err instanceof Error ? err.message : String(err) });
+      return reply.code(409).send({ error: publicErrorMessage(err) });
     }
     return reply.code(202).send(modelView(row, await routerModelStatuses()));
   });

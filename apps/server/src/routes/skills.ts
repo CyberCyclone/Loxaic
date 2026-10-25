@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { and, asc, count, db, eq } from "@loxaic/db";
+import { and, asc, count, db, eq, isUniqueViolation } from "@loxaic/db";
 import { skills } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { NotFoundError } from "../streams/authz.ts";
@@ -81,7 +81,7 @@ export function skillRoutes(app: FastifyInstance) {
       [row] = await db.insert(skills).values({ ownerId: userId, name, description, body, modelInvocable }).returning();
     } catch (err) {
       // Two saves at once both found the name free; the index decided.
-      if (!isUniqueViolation(err)) throw err;
+      if (!isUniqueViolation(err, NAME_INDEX)) throw err;
       reply.code(409);
       return { error: `You already have a skill called "${name}".` };
     }
@@ -114,7 +114,7 @@ export function skillRoutes(app: FastifyInstance) {
         .where(and(eq(skills.id, existing.id), eq(skills.ownerId, userId)))
         .returning();
     } catch (err) {
-      if (!isUniqueViolation(err)) throw err;
+      if (!isUniqueViolation(err, NAME_INDEX)) throw err;
       reply.code(409);
       return { error: `You already have a skill called "${input.value.name ?? existing.name}".` };
     }
@@ -143,9 +143,7 @@ export function skillRoutes(app: FastifyInstance) {
 
 /** The `(owner_id, name)` index refusing a name: what a save that raced
  * another one past `nameTaken` gets, answered as the same 409. */
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
-}
+const NAME_INDEX = "skills_owner_name_idx";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -46,4 +46,5 @@ export async function closeDb(): Promise<void> {
 
 export { eq, ne, and, or, not, isNull, isNotNull, inArray, ilike, desc, asc, gte, lte, gt, lt, sql, count, sum, avg, getTableColumns } from "drizzle-orm";
 export { migrate } from "drizzle-orm/postgres-js/migrator";
+export { pgErrorCode, pgConstraint, isUniqueViolation, isQueryError, describeQueryError } from "./errors.ts";
 export { user, session, account, verification } from "./schema.ts";
