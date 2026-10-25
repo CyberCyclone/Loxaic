@@ -171,19 +171,20 @@ const guardedLookup: LookupFunction = (hostname, options, callback) => {
   });
 };
 
-const guardedAgent = new Agent({
-  connect: { lookup: guardedLookup, timeout: 10_000 },
-  headersTimeout: 15_000,
-  bodyTimeout: 15_000,
-});
+/** Every guarded agent is built here, so the address check cannot drift
+ * between them; only the header and body deadlines differ. */
+function guardedAgentWith(deadlineMs: number): Agent {
+  return new Agent({
+    connect: { lookup: guardedLookup, timeout: 10_000 },
+    headersTimeout: deadlineMs,
+    bodyTimeout: deadlineMs,
+  });
+}
 
-/** The same check with Node's own fetch deadlines (300 s), for responses that
- * are meant to wait: an MCP tool call, an MCP server's event stream. */
-const longLivedAgent = new Agent({
-  connect: { lookup: guardedLookup, timeout: 10_000 },
-  headersTimeout: 300_000,
-  bodyTimeout: 300_000,
-});
+const guardedAgent = guardedAgentWith(15_000);
+/** Node's own fetch deadlines, for responses that are meant to wait: an MCP
+ * tool call, an MCP server's event stream. */
+const longLivedAgent = guardedAgentWith(300_000);
 
 /**
  * One request to a model-chosen URL, with the address checked at connect time.

@@ -2,35 +2,40 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
-import { dropEntry, listServerTools, type McpServerRow } from "../client-manager.ts";
 import { guardedFetch } from "../../agent/address-guard.ts";
+import { dropEntry, listServerTools, type McpServerRow } from "../client-manager.ts";
 import { mcpFetch } from "../http-fetch.ts";
 import { startMockMcpHttp, type MockMcpHttp } from "./mock-mcp-http.ts";
 
 /**
- * An HTTP MCP server that redirects to a private address must never get the
- * request through. Every fixture binds to 127.0.0.1, so "public" here means
- * one of `publicPorts`, in both of the checks a request can meet:
- * - `assertPublicUrl` (the up-front check in `connect()`) is mocked to pass
- *   only those ports;
- * - `guardedFetch` lets them through its existing e2e allowlist
- *   (`LOXAIC_E2E_FETCH_ALLOW`, honoured only under `MOCK_INFERENCE`).
- * Any other address is private, as 169.254.169.254 would be in production.
+ * Every fixture binds to 127.0.0.1. A fixture counts as public when its
+ * `host:port` is on guardedFetch's e2e allowlist (`LOXAIC_E2E_FETCH_ALLOW`,
+ * honoured only under `MOCK_INFERENCE`); anything else on loopback is private,
+ * as 169.254.169.254 would be in production.
+ *
+ * `localhost` is a rebinding name: a check-time lookup (`dns.promises`, which
+ * a separate `assertPublicUrl` uses) answers a public address, and the
+ * connect-time lookup (`dns.lookup`, which guardedFetch dials through) gives
+ * the real loopback one. `unresolvable.test` fails at connect time.
  */
-const { publicPorts } = vi.hoisted(() => ({ publicPorts: new Set<string>() }));
+const PUBLIC_ANSWER = "93.184.216.34";
+const UNRESOLVABLE = "unresolvable.test";
 
-vi.mock("../../agent/address-guard.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../agent/address-guard.ts")>();
-  return {
-    ...actual,
-    guardedFetch: vi.fn(actual.guardedFetch),
-    assertPublicUrl: (url: URL) => {
-      if (!publicPorts.has(url.port)) {
-        return Promise.reject(new Error(`refusing to fetch a private or loopback address (${url.host})`));
-      }
-      return Promise.resolve();
-    },
+vi.mock("node:dns", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:dns")>();
+  const promises = {
+    ...actual.promises,
+    lookup: (host: string, opts: object) =>
+      host === "localhost" ? Promise.resolve([{ address: PUBLIC_ANSWER, family: 4 }]) : actual.promises.lookup(host, opts),
   };
+  const lookup = (host: string, opts: object, cb: (err: Error | null, ...rest: unknown[]) => void) => {
+    if (host === UNRESOLVABLE) {
+      cb(Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" }));
+      return;
+    }
+    actual.lookup(host, opts, cb);
+  };
+  return { ...actual, default: { ...actual, promises, lookup }, promises, lookup };
 });
 
 process.env.MCP_ENCRYPTION_KEY ??= "http-fetch-test-key";
@@ -38,18 +43,25 @@ process.env.MCP_ENCRYPTION_KEY ??= "http-fetch-test-key";
 let privateMcp: MockMcpHttp;
 let publicMcp: MockMcpHttp;
 let redirector: Server;
-let redirectorUrl: string;
+let slow: Server;
+const allowed: string[] = [];
 const userId = `test-mcp-fetch-${uuid()}`;
 
-function portOf(url: string): string {
-  return new URL(url).port;
+async function listen(server: Server): Promise<string> {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return String((server.address() as AddressInfo).port);
+}
+
+async function close(server: Server): Promise<void> {
+  server.closeAllConnections();
+  await new Promise<void>((resolve) => server.close(() => { resolve(); }));
 }
 
 function row(url: string): McpServerRow {
   return {
     id: uuid(),
     ownerId: userId,
-    name: "Redirect test",
+    name: "Fetch test",
     transport: "http",
     url,
     allowPrivateNetwork: false,
@@ -59,30 +71,40 @@ function row(url: string): McpServerRow {
   } as unknown as McpServerRow;
 }
 
+let redirectorUrl: string;
+let slowUrl: string;
+
 beforeAll(async () => {
   privateMcp = await startMockMcpHttp();
   publicMcp = await startMockMcpHttp();
+  allowed.push(new URL(publicMcp.url).host);
   // 307 keeps the method and body, so a followed redirect would deliver the
   // whole MCP request to the private server.
   redirector = createServer((_req, res) => {
     res.writeHead(307, { location: privateMcp.url }).end();
   });
-  await new Promise<void>((resolve) => redirector.listen(0, "127.0.0.1", resolve));
-  redirectorUrl = `http://127.0.0.1:${String((redirector.address() as AddressInfo).port)}/mcp`;
-  publicPorts.add(portOf(redirectorUrl));
-  publicPorts.add(portOf(publicMcp.url));
+  const redirectorPort = await listen(redirector);
+  redirectorUrl = `http://localhost:${redirectorPort}/mcp`;
+  allowed.push(`localhost:${redirectorPort}`);
+  // Withholds its headers past the guard's default 15 s deadline.
+  slow = createServer((_req, res) => {
+    setTimeout(() => { res.writeHead(200).end("late"); }, 16_000);
+  });
+  const slowPort = await listen(slow);
+  slowUrl = `http://127.0.0.1:${slowPort}/`;
+  allowed.push(`127.0.0.1:${slowPort}`);
 });
 
 afterAll(async () => {
   await privateMcp.close();
   await publicMcp.close();
-  redirector.closeAllConnections();
-  await new Promise<void>((resolve) => redirector.close(() => { resolve(); }));
+  await close(redirector);
+  await close(slow);
 });
 
 beforeEach(() => {
   vi.stubEnv("MOCK_INFERENCE", "true");
-  vi.stubEnv("LOXAIC_E2E_FETCH_ALLOW", [...publicPorts].map((p) => `127.0.0.1:${p}`).join(","));
+  vi.stubEnv("LOXAIC_E2E_FETCH_ALLOW", allowed.join(","));
 });
 
 afterEach(() => {
@@ -102,11 +124,20 @@ describe("mcpFetch", () => {
     expect(res.headers.get("location")).toBe(privateMcp.url);
   });
 
-  it("keeps Node's 300 s deadlines, not web_fetch's 15 s, for tool calls and event streams", async () => {
-    vi.mocked(guardedFetch).mockClear();
-    await mcpFetch(false)(publicMcp.url, { method: "GET", headers: { accept: "text/event-stream" } })
-      .then((res) => res.body?.cancel());
-    expect(vi.mocked(guardedFetch)).toHaveBeenCalledWith(expect.any(URL), expect.anything(), { longLived: true });
+  it("outlives the guard's default 15 s deadline, which web_fetch keeps", async () => {
+    const [plain, mcp] = await Promise.allSettled([guardedFetch(new URL(slowUrl)), mcpFetch(false)(slowUrl)]);
+    expect(plain.status).toBe("rejected");
+    expect(String(((plain as PromiseRejectedResult).reason as { cause?: unknown }).cause)).toMatch(/Headers Timeout/);
+    expect(mcp.status).toBe("fulfilled");
+    expect(await (mcp as PromiseFulfilledResult<Response>).value.text()).toBe("late");
+  }, 30_000);
+
+  it("says why a request failed, not just \"fetch failed\"", async () => {
+    await expect(mcpFetch(false)(`http://${UNRESOLVABLE}/mcp`)).rejects.toThrow(`getaddrinfo ENOTFOUND ${UNRESOLVABLE}`);
+  });
+
+  it("refuses a Request rather than drop its method, headers and body", async () => {
+    await expect(mcpFetch(false)(new Request(publicMcp.url, { method: "POST", body: "{}" }))).rejects.toThrow("MCP requests take a URL, not a Request");
   });
 
   it("is the plain fetch once the user allowed a private address", () => {
@@ -115,10 +146,10 @@ describe("mcpFetch", () => {
 });
 
 describe("connecting to an HTTP MCP server", () => {
-  it("fails when the server redirects to a private address, without reaching it", async () => {
+  it("refuses a name that resolves to a private address when it connects", async () => {
     const before = privateMcp.requests();
-    const r = row(redirectorUrl);
-    await expect(listServerTools(userId, r)).rejects.toThrow(/Could not connect to MCP server "Redirect test"/);
+    const r = row(`http://localhost:${new URL(privateMcp.url).port}/mcp`);
+    await expect(listServerTools(userId, r)).rejects.toThrow(/Could not connect to MCP server "Fetch test": refusing to fetch a private or loopback address/);
     expect(privateMcp.requests()).toBe(before);
     await dropEntry(userId, r.id);
   });

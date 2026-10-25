@@ -3,7 +3,6 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { db, eq } from "@loxaic/db";
 import { mcpServers } from "@loxaic/db/schema";
-import { assertPublicUrl } from "../agent/executor.ts";
 import { mcpFetch } from "./http-fetch.ts";
 import { decryptSecrets, redact } from "./secrets.ts";
 import { MAX_TOOLS_PER_SERVER, sanitizeToolMeta, type SanitizedToolMeta } from "./sanitize.ts";
@@ -83,7 +82,6 @@ async function connect(userId: string, row: McpServerRow): Promise<Entry> {
       if (!row.url) throw new Error("http MCP server has no URL configured");
       const allowPrivateNetwork = row.allowPrivateNetwork;
       const url = new URL(row.url);
-      if (!allowPrivateNetwork) await assertPublicUrl(url);
       const headers: Record<string, string> = { ...asStringRecord(row.headers), ...secrets };
       const transport = new StreamableHTTPClientTransport(url, {
         fetch: mcpFetch(allowPrivateNetwork),
