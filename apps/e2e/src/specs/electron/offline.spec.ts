@@ -12,7 +12,7 @@
  * `10.0.2.2` host alias the harness reaches the server through, so a native
  * version would claim more than it proved.)
  *
- * The cut itself is genuine: `browser.throttleNetwork('offline')` is Chrome DevTools
+ * The cut itself is genuine: Chrome DevTools' `Network.emulateNetworkConditions`
  * turning the renderer's network off.
  */
 import { uniqueCreds } from '../../helpers/auth.ts';
@@ -20,13 +20,31 @@ import { shot } from '../../helpers/screenshot.ts';
 import { isVisible, waitForVisible, waitForTextIn } from '../../helpers/selectors.ts';
 import { mockEcho, sendAndAwaitReply, signUp, startNewThread } from '../../helpers/app.ts';
 
+async function openDevTools() {
+  const [page] = await (await browser.getPuppeteer()).pages();
+  return page.createCDPSession();
+}
+
+/**
+ * One DevTools session both cuts and restores the network. Not
+ * `browser.throttleNetwork`: it opens a new session per call, and on Electron 44
+ * (Chromium 152) the offline condition one session set outlives another session
+ * sending "online", so the network never came back.
+ */
+let devtools: ReturnType<typeof openDevTools> | undefined;
+
+async function setOffline(offline: boolean): Promise<void> {
+  devtools ??= openDevTools();
+  await (await devtools).send('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+}
+
 /** Cuts the renderer's network, the way a host going away looks to the app. */
 async function goOffline(): Promise<void> {
-  await browser.throttleNetwork('offline');
+  await setOffline(true);
 }
 
 async function goOnline(): Promise<void> {
-  await browser.throttleNetwork('online');
+  await setOffline(false);
 }
 
 describe('offline', () => {
