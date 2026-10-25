@@ -14,9 +14,10 @@ export default defineConfig({
   entry: { index: "src/index.ts", executor: "src/executor/main.ts", "reset-password": "src/cli/reset-password.ts" },
   format: ["esm"],
   clean: true,
-  // The packaged desktop build runs this output under Electron's Node
-  // (ELECTRON_RUN_AS_NODE, Node 20 in Electron 33) — no >=22 features.
-  target: "node20",
+  // The oldest Node that runs this output: the Docker image's node:22
+  // (infra/docker/server.Dockerfile). The packaged desktop runs it under
+  // Electron's Node (ELECTRON_RUN_AS_NODE), Node 24 in Electron 44.
+  target: "node22",
   // Workspace packages ship raw TS with no build step; bundle them so dist
   // runs on any Node without native TS support. Real npm deps stay external —
   // drizzle-orm/postgres must therefore be direct deps of this package so the

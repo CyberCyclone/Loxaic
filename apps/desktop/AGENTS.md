@@ -38,7 +38,7 @@ The Electron app and its supervisor (`src/supervisor/`), which runs an embedded 
 ## Versions and variants
 
 - `parseReleaseTag` accepts only `vX.Y.Z` and `vX.Y.Z-beta.N`; CI's `meta` job uses the same parser, so change both together.
-- Electron's major decides the packaged server's Node (Electron 33 is Node 20, while dev runs Node 24): bump it only in its own PR, after checking the server's runtime dependencies on that Node (e.g. `undici`, see `apps/server/src/inference/AGENTS.md`).
+- Electron's major decides the packaged server's Node (Electron 44 is Node 24, like dev; the Docker image is Node 22): bump it only in its own PR, after checking the server's runtime dependencies on that Node (e.g. `undici`, see `apps/server/src/inference/AGENTS.md`).
 
 ## Updater (`src/updates/`)
 

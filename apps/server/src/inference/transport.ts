@@ -11,10 +11,11 @@
 // real prompt evaluation, and that dispatcher has to be driven by a `fetch`
 // from the *same* undici: handing
 // an npm-undici Agent to Node's bundled fetch is unreliable across undici
-// majors, and the packaged desktop runs Electron 33's Node 20 (undici 6) while
-// dev runs Node 24 (undici 7). Importing both from one package makes the pair
-// identical on every runtime. It is used for inference calls only; quick probes
-// (`/props`, `/v1/models`) keep the global fetch and their own short timeouts.
+// majors, and the server runs on more than one Node (the Docker image's 22,
+// Electron's and dev's 24), each bundling its own undici. Importing both from
+// one package makes the pair identical on every runtime. It is used for
+// inference calls only; quick probes (`/props`, `/v1/models`) keep the global
+// fetch and their own short timeouts.
 import { Agent, DecoratorHandler, Dispatcher, fetch, type RequestInit, type Response } from "undici";
 
 export interface InferenceTimeouts {

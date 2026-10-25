@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -208,43 +207,32 @@ describe("renderGroup", () => {
 });
 
 describe("extractZipEntries", () => {
-  // yauzl the way the notices step reaches it: through electron's own tree.
-  // Through electron's *real* path: pnpm keeps a package's dependencies beside
-  // the real directory, not beside the node_modules symlink to it. Resolved in a
-  // try, not bare in the describe body: a throw at collection time would fail
-  // every suite in this file, not just these.
-  let yauzl;
-  try {
-    const electronPkg = realpathSync(path.join(path.resolve(licensesDir, ".."), "node_modules/electron/package.json"));
-    const electronRequire = createRequire(electronPkg);
-    yauzl = createRequire(electronRequire.resolve("extract-zip"))("yauzl");
-  } catch {
-    yauzl = undefined;
-  }
+  // Only a missing `zip` binary (needed to build the fixtures) skips these. The
+  // notices script imports yauzl itself, so if it stops resolving this file
+  // fails to load instead of reporting skips.
   let hasZip = true;
   try { execFileSync("zip", ["-v"], { stdio: "ignore" }); } catch { hasZip = false; }
-  const runnable = hasZip && yauzl !== undefined;
 
-  it.skipIf(!runnable)("copies only the named entries out, under their new names", async () => {
+  it.skipIf(!hasZip)("copies only the named entries out, under their new names", async () => {
     write("src/LICENSE", "electron licence");
     write("src/LICENSES.chromium.html", "<html>chromium</html>");
     write("src/Electron.app/binary", "not wanted");
     execFileSync("zip", ["-qr", path.join(root, "e.zip"), "."], { cwd: path.join(root, "src") });
     const out = path.join(root, "out");
-    await extractZipEntries(yauzl, path.join(root, "e.zip"), { LICENSE: "LICENSE.electron.txt", "LICENSES.chromium.html": "LICENSES.chromium.html" }, out);
+    await extractZipEntries(path.join(root, "e.zip"), { LICENSE: "LICENSE.electron.txt", "LICENSES.chromium.html": "LICENSES.chromium.html" }, out);
     expect(readdirSync(out).sort()).toEqual(["LICENSE.electron.txt", "LICENSES.chromium.html"]);
     expect(readFileSync(path.join(out, "LICENSE.electron.txt"), "utf8")).toBe("electron licence");
   });
 
-  it.skipIf(!runnable)("fails when a named entry is missing rather than shipping without it", async () => {
+  it.skipIf(!hasZip)("fails when a named entry is missing rather than shipping without it", async () => {
     write("src/LICENSE", "electron licence");
     execFileSync("zip", ["-qr", path.join(root, "e.zip"), "."], { cwd: path.join(root, "src") });
     await expect(
-      extractZipEntries(yauzl, path.join(root, "e.zip"), { LICENSE: "a", "LICENSES.chromium.html": "b" }, path.join(root, "out")),
+      extractZipEntries(path.join(root, "e.zip"), { LICENSE: "a", "LICENSES.chromium.html": "b" }, path.join(root, "out")),
     ).rejects.toThrow(/LICENSES\.chromium\.html/);
   });
 
-  it.skipIf(!runnable)("rejects a corrupt entry instead of throwing out of band", async () => {
+  it.skipIf(!hasZip)("rejects a corrupt entry instead of throwing out of band", async () => {
     write("src/LICENSE", "x".repeat(4096));
     execFileSync("zip", ["-qr", path.join(root, "e.zip"), "."], { cwd: path.join(root, "src") });
     // Flip bytes inside the compressed data, which starts after the 30-byte local
@@ -254,6 +242,6 @@ describe("extractZipEntries", () => {
     const dataStart = 30 + zip.readUInt16LE(26) + zip.readUInt16LE(28);
     for (let i = dataStart; i < dataStart + 8; i++) zip[i] ^= 0xff;
     writeFileSync(path.join(root, "e.zip"), zip);
-    await expect(extractZipEntries(yauzl, path.join(root, "e.zip"), { LICENSE: "a" }, path.join(root, "out"))).rejects.toThrow();
+    await expect(extractZipEntries(path.join(root, "e.zip"), { LICENSE: "a" }, path.join(root, "out"))).rejects.toThrow();
   });
 });

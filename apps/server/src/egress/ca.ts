@@ -27,7 +27,7 @@ export function egressCaDir(): string {
 }
 
 function newKeyPem(): string {
-  return generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" });
+  return generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 }
 
 function serial(): string {
