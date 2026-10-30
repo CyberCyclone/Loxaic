@@ -20,6 +20,7 @@ Uploaded attachments: storage, byte verification, document extraction in a sandb
 
 - Never parse a document in the server process. `TEXT_MIMES` are decoded in-process as UTF-8 (must keep working with `SANDBOX_MODE=off`); every `DOCUMENT_MIMES` format is parsed by `extract.ts` in a pooled per-user sandbox.
 - Document uploads require `mode === "container" && available` — host mode does not count. Otherwise reject with 415 `code: "sandbox_required"`; never store a file nothing can read.
+- `extractDocumentBytes` (web_fetch) stores nothing but keeps every rule here, the container gate included.
 - Extraction reads and never executes (no macros, embedded scripts or PDF JavaScript).
 - Name the sandbox copy with the extension from our mime table (`<uuid>.xlsx`), never the user's filename — openpyxl and others dispatch on extension.
 - Put scratch files under `handle.root`, never an absolute `/tmp` — on the host provider that is the shared host `/tmp`.

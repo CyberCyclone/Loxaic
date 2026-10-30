@@ -73,8 +73,10 @@ import {
 import type { SubagentCall, SubagentOutcome, SubagentParent } from "./subagentRun.ts";
 import { turnDraftUsage, usageRecordValues } from "./usage-record.ts";
 import { recordRequestShape } from "./request-shape.ts";
+import { jsonbSafe } from "./jsonb-safe.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
+import { extractDocumentBytes } from "../../files/extract.ts";
 import { recordBeforeWrite, type CheckpointTurn } from "../../agent/checkpoints.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
 import { answerSkillCall, prepareRunSkills, type RunSkills } from "../../skills/session.ts";
@@ -107,7 +109,7 @@ import type { StreamProducer } from "../broker.ts";
 import { clearRunApproval, clearRunCheckin, clearRunQueuePosition, getRun, onRunModeChange, setRunApproval, setRunCheckin, setRunQueuePosition, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
-import { markBackendErrors, turnErrorText } from "../error-text.ts";
+import { markBackendErrors, shownTurnError, TOOL_FAILED, turnErrorText } from "../error-text.ts";
 import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
 import { TodoStaleness } from "./todo-staleness.ts";
 import {
@@ -216,8 +218,21 @@ export function assistantMessageForPrompt(text: string, calls: ToolCall[]): Chat
   return { role: "assistant", content: content || null, ...(calls.length ? { tool_calls: calls } : {}) };
 }
 
+/**
+ * What a tool call that threw reads as, on its card and to the model.
+ * `RunSlotAbortedError` is thrown by a stop, and any other throw after a stop
+ * is that stop tearing something down, so neither is a fault worth logging.
+ */
+function toolThrowText(err: unknown, stopped: boolean, label: string): string {
+  if (stopped || err instanceof RunSlotAbortedError) return STOPPED_BEFORE_RUN;
+  console.error(`${label}:`, err);
+  return TOOL_FAILED;
+}
+
 export function toolResultMessageForPrompt(callId: string, name: string | undefined, output: string): ChatMessage {
-  return { role: "tool", tool_call_id: callId, ...(name === undefined ? {} : { name }), content: output };
+  // The live request and the replay both pass through here, so the prefix
+  // stays the same whatever the tool produced.
+  return { role: "tool", tool_call_id: callId, ...(name === undefined ? {} : { name }), content: jsonbSafe(output) };
 }
 
 /**
@@ -582,6 +597,60 @@ export async function runToolLoop(ctx: {
   // back only while waiting on a human — see acquireRunSlot.
   let slot: RunSlot | null = null;
 
+  // Two messages persisted less than a millisecond apart both take
+  // Date.now() as their lamport, and loadHistory's ORDER BY lamport (then
+  // createdAt) breaks the tie arbitrarily rather than by insertion order.
+  // Not hypothetical: an iteration whose tool call does no real work (e.g.
+  // two todo_write calls back to back, as a mock scenario step can) reliably
+  // lands that iteration's tool-result message and the next iteration's
+  // assistant message in the same millisecond, and a swap there is a genuine
+  // prompt-prefix break on the conversation's very next turn. Scoped to this
+  // one run — only the two inserts below share this counter — so it changes
+  // nothing about the cross-device LWW ordering packages/sync relies on.
+  // Seeded from the user message rather than zero: with a zero seed the
+  // first insert was a bare Date.now(), unguarded against the user message
+  // that had just been written with one — the same tie, at the one
+  // boundary the counter did not cover.
+  let lastLamport = ctx.userLamport ?? 0;
+  const nextLamport = (): number => {
+    lastLamport = monotonicLamport(lastLamport);
+    return lastLamport;
+  };
+
+  let parentId = ctx.userMsgId;
+  // The assistant row a failure would leave saying "streaming" for good.
+  let streamingMsgId: string | null = null;
+  // A run that dies past the model's own failures has only the stream's end
+  // to say so, which is a toast for whoever is watching and nothing after a
+  // reload: the thread just stops. So it goes in the thread too.
+  const recordFailure = async (err: unknown): Promise<void> => {
+    const error = shownTurnError(err);
+    if (streamingMsgId) {
+      await db.update(messages).set({ status: "error", error }).where(eq(messages.id, streamingMsgId));
+      producer.emit({ kind: "message.end", message_id: streamingMsgId, status: "error", error });
+      return;
+    }
+    // Its steps ended complete and stay that way, so the failure is a reply
+    // of its own, the same shape as a turn refused for being full.
+    const id = uuid();
+    const lamport = nextLamport();
+    await db.insert(messages).values({
+      id,
+      conversationId: convId,
+      parentId,
+      authorType: "assistant",
+      origin: "server",
+      model,
+      lamport,
+      content: [] as ContentBlock[],
+      status: "error",
+      error,
+      createdAt: new Date(),
+    });
+    producer.emit({ kind: "message.start", message_id: id, author_type: "assistant", parent_id: parentId, lamport, model });
+    producer.emit({ kind: "message.end", message_id: id, status: "error", error });
+  };
+
   try {
     // One read for both: the iteration ceiling and the builtin allowlist live
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
@@ -714,25 +783,6 @@ export async function runToolLoop(ctx: {
     // the next request's size is that plus an estimate of what was appended.
     let lastPrompt: { tokens: number; completion: number; messages: number } | null = null;
 
-    // Two messages persisted less than a millisecond apart both take
-    // Date.now() as their lamport, and loadHistory's ORDER BY lamport (then
-    // createdAt) breaks the tie arbitrarily rather than by insertion order.
-    // Not hypothetical: an iteration whose tool call does no real work (e.g.
-    // two todo_write calls back to back, as a mock scenario step can) reliably
-    // lands that iteration's tool-result message and the next iteration's
-    // assistant message in the same millisecond, and a swap there is a genuine
-    // prompt-prefix break on the conversation's very next turn. Scoped to this
-    // one run — only the two inserts below share this counter — so it changes
-    // nothing about the cross-device LWW ordering packages/sync relies on.
-    // Seeded from the user message rather than zero: with a zero seed the
-    // first insert was a bare Date.now(), unguarded against the user message
-    // that had just been written with one — the same tie, at the one
-    // boundary the counter did not cover.
-    let lastLamport = ctx.userLamport ?? 0;
-    const nextLamport = (): number => {
-      lastLamport = monotonicLamport(lastLamport);
-      return lastLamport;
-    };
     // The stored row this run's next request ends on and has not answered:
     // the person's message until the first reply is written, then any nudge
     // the run writes after a reply. A compaction keeps it after the summary
@@ -818,7 +868,6 @@ export async function runToolLoop(ctx: {
       return;
     }
 
-    let parentId = ctx.userMsgId;
     // The end of the *current* step window, absolute rather than relative:
     // each "keep going" pushes it out by another `maxIterations`, so the
     // client can render "7/100" and then "104/200" without having to track
@@ -1073,6 +1122,7 @@ export async function runToolLoop(ctx: {
         status: "streaming",
         createdAt: new Date(),
       });
+      streamingMsgId = assistantMsgId;
       producer.emit({
         kind: "message.start",
         message_id: assistantMsgId,
@@ -1216,7 +1266,7 @@ export async function runToolLoop(ctx: {
         const errorCode = !isAbort && isStreamErrorCode(code) ? code : undefined;
         await db
           .update(messages)
-          .set({ content: blocks, status, error: eventError ?? null, errorCode: errorCode ?? null })
+          .set({ content: jsonbSafe(blocks), status, error: eventError ?? null, errorCode: errorCode ?? null })
           .where(eq(messages.id, assistantMsgId))
           .catch(() => undefined);
         producer.emit({
@@ -1301,8 +1351,9 @@ export async function runToolLoop(ctx: {
       }
       await db
         .update(messages)
-        .set({ content: blocks.length ? blocks : [{ kind: "text", text: "" }], status: "complete" })
+        .set({ content: blocks.length ? jsonbSafe(blocks) : [{ kind: "text", text: "" }], status: "complete" })
         .where(eq(messages.id, assistantMsgId));
+      streamingMsgId = null;
 
       /**
        * Ends the turn as a success, from whichever branch got there.
@@ -1536,26 +1587,34 @@ export async function runToolLoop(ctx: {
         // sub-agent (or a chat run) that names it anyway falls through to the
         // unknown-tool answer below.
         if (subagents && call.function.name === SUBAGENT_TOOL_NAME && toolset.get(SUBAGENT_TOOL_NAME)) {
-          subagentOutcomes = await runSubagentGroup({
-            calls: [...toolCalls.entries()]
-              .filter(([, c]) => c.function.name === SUBAGENT_TOOL_NAME)
-              .map(([index, c]) => ({ index, call: c })),
-            subagents,
-            parentModel: model,
-            slot,
-            parent: {
-              convId,
-              streamId,
-              userId,
-              mode: liveMode(),
-              surface: ctx.surface,
-              assistantMsgId,
-              producer,
-              signal: abort.signal,
-              thinkingLevel: ctx.thinkingLevel,
-              checkpointTurn,
-            },
-          });
+          const group = [...toolCalls.entries()]
+            .filter(([, c]) => c.function.name === SUBAGENT_TOOL_NAME)
+            .map(([index, c]) => ({ index, call: c }));
+          try {
+            subagentOutcomes = await runSubagentGroup({
+              calls: group,
+              subagents,
+              parentModel: model,
+              slot,
+              parent: {
+                convId,
+                streamId,
+                userId,
+                mode: liveMode(),
+                surface: ctx.surface,
+                assistantMsgId,
+                producer,
+                signal: abort.signal,
+                thinkingLevel: ctx.thinkingLevel,
+                checkpointTurn,
+              },
+            });
+          } catch (err) {
+            // Every call in the group goes the same way, so each still gets
+            // the result its tool_call needs; see the per-call catch below.
+            const output = toolThrowText(err, isAborted(abort), `sub-agents failed in ${convId}`);
+            subagentOutcomes = new Map(group.map(({ index }) => [index, { output, ok: false }]));
+          }
           const mine = subagentOutcomes.get(callIndex) ?? { output: SUBAGENT_NOT_RUN, ok: false };
           producer.emit({
             kind: "tool.result",
@@ -1608,19 +1667,20 @@ export async function runToolLoop(ctx: {
             call,
           );
         } catch (err) {
-          if (!(err instanceof RunSlotAbortedError)) throw err;
-          // Stopped at this call's approval prompt: the approval handed the
-          // inference slot back, and re-entering the queue for an aborted run
-          // throws. Nothing ran for *this* call, so it is recorded exactly
-          // like a skipped one — which is what keeps the calls before it,
-          // which did run and did write, in the transcript and the prompt.
-          // Letting the throw escape the loop used to skip the insert below
-          // and discard those results: the model then had no record that a
-          // file it had written existed, and the user watched a result
-          // arrive live that was gone after a reload. The per-call check
-          // above skips the rest; the abort branch after the insert ends the
-          // turn.
-          const output = "Stopped by the user before this tool call ran.";
+          // A call that throws is a failed call, never a failed run: the card
+          // says so, the calls after it still run, and the model answers
+          // without this one. `executeTool` already turns a tool's own errors
+          // into a result, so what lands here is our server's own fault, and
+          // its message stays in the log (it can carry SQL).
+          //
+          // The other way here is a stop at this call's approval prompt: the
+          // approval handed the inference slot back, and re-entering the queue
+          // for an aborted run throws. Nothing ran for *this* call, so it is
+          // recorded exactly like a skipped one — which is what keeps the
+          // calls before it, which did run and did write, in the transcript
+          // and the prompt. The per-call check above skips the rest; the abort
+          // branch after the insert ends the turn.
+          const output = toolThrowText(err, isAborted(abort), `${call.function.name} failed in ${convId}`);
           producer.emit({
             kind: "tool.result",
             message_id: assistantMsgId,
@@ -1671,7 +1731,7 @@ export async function runToolLoop(ctx: {
         authorType: "tool",
         origin: "server",
         lamport: nextLamport(),
-        content: resultBlocks,
+        content: jsonbSafe(resultBlocks),
         status: "complete",
         createdAt: new Date(),
       });
@@ -1863,7 +1923,14 @@ export async function runToolLoop(ctx: {
     // an approval, and the right response is the same one every other cancel
     // gets. Anything else keeps propagating rather than being flattened into a
     // cancelled turn that hides a real fault.
-    if (!(err instanceof RunSlotAbortedError)) throw err;
+    if (!(err instanceof RunSlotAbortedError)) {
+      // If the database is what failed this can fail too, and the stream's end
+      // still reports the run.
+      await recordFailure(err).catch((recordErr: unknown) => {
+        console.error(`recording a failed run in ${convId} failed:`, recordErr);
+      });
+      throw err;
+    }
     await producer.end("cancelled").catch(() => undefined);
     return;
   } finally {
@@ -2289,6 +2356,9 @@ async function runOneToolCall(
       ...(builtinName === "web_fetch" && getBrowserSettings().enabled
         ? { renderer: (url: URL, o: { screenshot: "required" | "best-effort"; maxTextChars: number }) => renderPage(ctx.convId, url, { ...o, signal: ctx.signal }) }
         : {}),
+      ...(builtinName === "web_fetch"
+        ? { readDocument: (bytes: Buffer, mime: string, signal?: AbortSignal) => extractDocumentBytes({ bytes, mime, userId, signal }) }
+        : {}),
     },
   );
   // A read inside a subdirectory with its own AGENTS.md brings that file
@@ -2331,6 +2401,9 @@ async function runOneToolCall(
       result.output += `\n${stored.note}`;
     }
   }
+  // Before the event, so the live card reads as the reload will.
+  result.output = jsonbSafe(result.output);
+  if (result.diff) result.diff = jsonbSafe(result.diff);
   producer.emit({
     kind: "tool.result",
     message_id: assistantMsgId,

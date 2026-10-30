@@ -45,6 +45,11 @@ The stream log, run registry and conversation authorization shared by every run 
 
 ## Runs (`runs/`)
 
+### Tool failures
+
+- A tool call's failure is a failed result on its card, never a failed run: the calls after it run and the model answers without it. Only a stop or a fault outside the calls ends a run, and a fault leaves an error row in the thread (`recordFailure`).
+- Everything bound for a `jsonb` block or the prompt goes through `jsonbSafe`, in both places, so the replay matches: Postgres refuses NUL and lone surrogates.
+
 ### Starters
 
 - Chat and Agent share `runToolLoop`; `chatRun.ts`/`agentRun.ts` differ only in setup and system prompt. Chat always has manual-mode approval semantics. Chat, agent and retry all start through `startRunOnRow`.
