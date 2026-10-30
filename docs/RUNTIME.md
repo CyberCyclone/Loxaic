@@ -621,6 +621,8 @@ RTF, EPUB, and PDF are all extracted inside the same `loxaic-sandbox` image
 agent tool calls use, never on the server itself — so `SANDBOX_MODE` must be
 `container`, with an engine actually reachable (see
 [Container engine](#container-engine-agent-sandboxes) above).
+`web_fetch` reads these formats the same way, up to 25 MB; without a container
+the call fails with that reason and the run carries on.
 
 **`host` does not count for this.** It runs tools directly on the machine, so a
 parser reading an untrusted document there is reading it on the server, with the

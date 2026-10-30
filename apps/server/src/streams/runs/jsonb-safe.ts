@@ -13,7 +13,7 @@ const UNSTORABLE = /[\u0000\p{Cs}]/gu;
 
 export function jsonbSafe<T>(value: T): T;
 export function jsonbSafe(value: unknown): unknown {
-  if (typeof value === "string") return value.replace(UNSTORABLE, "�");
+  if (typeof value === "string") return value.replace(UNSTORABLE, "\ufffd");
   if (Array.isArray(value)) return value.map((item: unknown) => jsonbSafe(item));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [jsonbSafe(key), jsonbSafe(item)]));
