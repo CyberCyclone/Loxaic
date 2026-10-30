@@ -47,7 +47,8 @@ describe("web_fetch on a file", () => {
     "/labelless.pdf": (res) => { res.setHeader("content-type", "application/octet-stream"); res.end(PDF); },
     "/blob.bin": (res) => { res.setHeader("content-type", "application/octet-stream"); res.end(Buffer.from([1, 0, 2])); },
     "/notes": (res) => { res.setHeader("content-type", "application/octet-stream"); res.end("plain words"); },
-    "/photo.png": (res) => { res.setHeader("content-type", "image/png"); res.end(Buffer.from([0x89, 0x50, 0, 0])); },
+    // No NUL: only its type can give this one away.
+    "/photo.png": (res) => { res.setHeader("content-type", "image/png"); res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47])); },
     "/mislabelled.txt": (res) => { res.setHeader("content-type", "text/plain"); res.end(Buffer.from("text\0then not")); },
     "/huge.pdf": (res) => {
       res.setHeader("content-type", "application/pdf");

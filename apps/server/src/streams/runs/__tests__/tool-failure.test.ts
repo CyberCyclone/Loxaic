@@ -26,6 +26,8 @@ const fault = vi.hoisted(() => ({
   /** Runs just before the throw: a stop arriving as the call falls over. */
   before: null as (() => void) | null,
   subagent: false,
+  /** What every sub-agent reports, in place of running. */
+  report: null as string | null,
   /** Answered once in place of the real tool: bytes that cannot go in a row. */
   output: null as string | null,
 }));
@@ -53,8 +55,10 @@ vi.mock("../subagentRun.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof SubagentRun>();
   return {
     ...actual,
-    runSubagent: (...args: Parameters<typeof actual.runSubagent>) =>
-      fault.subagent ? Promise.reject(new Error(fault.message)) : actual.runSubagent(...args),
+    runSubagent: (...args: Parameters<typeof actual.runSubagent>) => {
+      if (fault.report !== null) return Promise.resolve({ output: fault.report, ok: true });
+      return fault.subagent ? Promise.reject(new Error(fault.message)) : actual.runSubagent(...args);
+    },
   };
 });
 
@@ -88,6 +92,7 @@ describe("a failed tool call does not end the run", () => {
     fault.on = false;
     fault.before = null;
     fault.subagent = false;
+    fault.report = null;
     fault.output = null;
   });
 
@@ -174,6 +179,16 @@ describe("a failed tool call does not end the run", () => {
     const records = await getStreamBroker().readFrom(streamOf.get(convId) ?? "", 0);
     expect(JSON.stringify(records)).toContain(JSON.stringify(cleaned));
     expect(stored.at(-1)).toMatchObject({ block: { kind: "text", text: "Answered with it." } });
+  });
+
+  it("stores a result from outside the built-in tools, a sub-agent's report", async () => {
+    scenario("odd report", [{ tool: SUBAGENT_TOOL_NAME, args: { description: "look", prompt: "look around" } }], "Read the report.");
+    fault.report = "found\u0000this";
+    const convId = await run("odd report");
+
+    const results = (await blocks(convId)).flatMap(({ block }) => (block.kind === "tool_result" ? [block] : []));
+    expect(results.map((r) => r.output)).toEqual(["found\ufffdthis"]);
+    expect((await blocks(convId)).at(-1)).toMatchObject({ block: { kind: "text", text: "Read the report." } });
   });
 
   it("stores a web page whose 100 KB cap falls inside an emoji", async () => {

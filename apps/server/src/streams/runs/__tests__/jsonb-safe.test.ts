@@ -3,6 +3,7 @@ import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, user } from "@loxaic/db/schema";
 import type { ContentBlock } from "@loxaic/types";
+import { toolResultMessageForPrompt } from "../engine.ts";
 import { jsonbSafe } from "../jsonb-safe.ts";
 
 describe("jsonbSafe", () => {
@@ -17,6 +18,10 @@ describe("jsonbSafe", () => {
     expect(jsonbSafe({ "k\u0000": ["a\u0000", { n: 1, b: true, z: null }] })).toEqual({
       "k�": ["a�", { n: 1, b: true, z: null }],
     });
+  });
+
+  it("is what the prompt sends too, or the replay of a stored result would differ from the request", () => {
+    expect(toolResultMessageForPrompt("c", "t", "a\u0000b").content).toBe("a\ufffdb");
   });
 
   it("is idempotent, so the prompt and the row can each apply it and still match", () => {
