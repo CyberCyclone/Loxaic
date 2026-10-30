@@ -43,6 +43,11 @@ export const INTERRUPTED_BY_RESTART = "The server restarted before this response
  * backend. Deliberately says nothing more: the real message is logged. */
 export const TURN_FAILED = "Something went wrong on the server while finishing this response.";
 
+/** A tool call's result when the call threw rather than failed, which is our
+ * server's fault, not the tool's. Says no more for the same reason: it reaches
+ * the card, the transcript and the model. */
+export const TOOL_FAILED = "This tool call failed on the server, so it has no result.";
+
 const backendErrors = new WeakSet();
 
 /**
