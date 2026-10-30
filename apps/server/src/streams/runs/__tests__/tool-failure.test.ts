@@ -155,9 +155,9 @@ describe("a failed tool call does not end the run", () => {
   });
 
   it.each([
-    ["NUL", "binary\u0000bytes"],
-    ["a lone surrogate", "cut emoji \ud83d"],
-  ])("stores a result holding %s, keeps the rest of the batch, and finishes", async (_name, output) => {
+    ["NUL", "binary\u0000bytes", "binary\ufffdbytes"],
+    ["a lone surrogate", "cut emoji \ud83d", "cut emoji \ufffd"],
+  ])("stores a result holding %s, keeps the rest of the batch, and finishes", async (_name, output, cleaned) => {
     scenario("unstorable bytes", [{ calls: [TODO("first"), TODO("second")] }], "Answered with it.");
     fault.output = output;
     const convId = await run("unstorable bytes");
@@ -165,8 +165,7 @@ describe("a failed tool call does not end the run", () => {
     const stored = await blocks(convId);
     const results = stored.flatMap(({ block }) => (block.kind === "tool_result" ? [block] : []));
     expect(results.map((r) => r.ok)).toEqual([true, true]);
-    expect(results[0].output).toContain("\ufffd");
-    expect(results[0].output).toBe(output.replace(/\u0000|\ud83d/, "\ufffd"));
+    expect(results[0].output).toBe(cleaned);
     expect(stored.at(-1)).toMatchObject({ block: { kind: "text", text: "Answered with it." } });
   });
 
