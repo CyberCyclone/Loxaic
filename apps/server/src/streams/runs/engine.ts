@@ -73,6 +73,7 @@ import {
 import type { SubagentCall, SubagentOutcome, SubagentParent } from "./subagentRun.ts";
 import { turnDraftUsage, usageRecordValues } from "./usage-record.ts";
 import { recordRequestShape } from "./request-shape.ts";
+import { jsonbSafe } from "./jsonb-safe.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { recordBeforeWrite, type CheckpointTurn } from "../../agent/checkpoints.ts";
@@ -228,7 +229,9 @@ function toolThrowText(err: unknown, stopped: boolean, label: string): string {
 }
 
 export function toolResultMessageForPrompt(callId: string, name: string | undefined, output: string): ChatMessage {
-  return { role: "tool", tool_call_id: callId, ...(name === undefined ? {} : { name }), content: output };
+  // The live request and the replay both pass through here, so the prefix
+  // stays the same whatever the tool produced.
+  return { role: "tool", tool_call_id: callId, ...(name === undefined ? {} : { name }), content: jsonbSafe(output) };
 }
 
 /**
@@ -1227,7 +1230,7 @@ export async function runToolLoop(ctx: {
         const errorCode = !isAbort && isStreamErrorCode(code) ? code : undefined;
         await db
           .update(messages)
-          .set({ content: blocks, status, error: eventError ?? null, errorCode: errorCode ?? null })
+          .set({ content: jsonbSafe(blocks), status, error: eventError ?? null, errorCode: errorCode ?? null })
           .where(eq(messages.id, assistantMsgId))
           .catch(() => undefined);
         producer.emit({
@@ -1312,7 +1315,7 @@ export async function runToolLoop(ctx: {
       }
       await db
         .update(messages)
-        .set({ content: blocks.length ? blocks : [{ kind: "text", text: "" }], status: "complete" })
+        .set({ content: blocks.length ? jsonbSafe(blocks) : [{ kind: "text", text: "" }], status: "complete" })
         .where(eq(messages.id, assistantMsgId));
 
       /**
@@ -1691,7 +1694,7 @@ export async function runToolLoop(ctx: {
         authorType: "tool",
         origin: "server",
         lamport: nextLamport(),
-        content: resultBlocks,
+        content: jsonbSafe(resultBlocks),
         status: "complete",
         createdAt: new Date(),
       });
@@ -2351,6 +2354,9 @@ async function runOneToolCall(
       result.output += `\n${stored.note}`;
     }
   }
+  // Before the event, so the live card reads as the reload will.
+  result.output = jsonbSafe(result.output);
+  if (result.diff) result.diff = jsonbSafe(result.diff);
   producer.emit({
     kind: "tool.result",
     message_id: assistantMsgId,

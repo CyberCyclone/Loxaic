@@ -1,4 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -24,6 +26,8 @@ const fault = vi.hoisted(() => ({
   /** Runs just before the throw: a stop arriving as the call falls over. */
   before: null as (() => void) | null,
   subagent: false,
+  /** Answered once in place of the real tool: bytes that cannot go in a row. */
+  output: null as string | null,
 }));
 vi.mock("../../../agent/executor.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof Executor>();
@@ -31,6 +35,11 @@ vi.mock("../../../agent/executor.ts", async (importOriginal) => {
     ...actual,
     executeTool: async (...args: Parameters<typeof actual.executeTool>) => {
       // Only the first of a batch, so "the next call still runs" means something.
+      if (fault.output !== null) {
+        const output = fault.output;
+        fault.output = null;
+        return { ok: true, output };
+      }
       if (fault.on) {
         fault.on = false;
         fault.before?.();
@@ -79,6 +88,7 @@ describe("a failed tool call does not end the run", () => {
     fault.on = false;
     fault.before = null;
     fault.subagent = false;
+    fault.output = null;
   });
 
   afterAll(async () => {
@@ -142,6 +152,49 @@ describe("a failed tool call does not end the run", () => {
     // The call after it ran, and its result was not lost with the first.
     expect(results[1].ok).toBe(true);
     expect(stored.at(-1)).toMatchObject({ row: { status: "complete" }, block: { kind: "text", text: "Answered without it." } });
+  });
+
+  it.each([
+    ["NUL", "binary\u0000bytes"],
+    ["a lone surrogate", "cut emoji \ud83d"],
+  ])("stores a result holding %s, keeps the rest of the batch, and finishes", async (_name, output) => {
+    scenario("unstorable bytes", [{ calls: [TODO("first"), TODO("second")] }], "Answered with it.");
+    fault.output = output;
+    const convId = await run("unstorable bytes");
+
+    const stored = await blocks(convId);
+    const results = stored.flatMap(({ block }) => (block.kind === "tool_result" ? [block] : []));
+    expect(results.map((r) => r.ok)).toEqual([true, true]);
+    expect(results[0].output).toContain("\ufffd");
+    expect(results[0].output).toBe(output.replace(/\u0000|\ud83d/, "\ufffd"));
+    expect(stored.at(-1)).toMatchObject({ block: { kind: "text", text: "Answered with it." } });
+  });
+
+  it("stores a web page whose 100 KB cap falls inside an emoji", async () => {
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "text/plain; charset=utf-8");
+      res.end(`${"x".repeat(100 * 1024 - 1)}\u{1F600} and the rest`);
+    });
+    await new Promise<void>((resolve) => { server.listen(0, "127.0.0.1", resolve); });
+    const { port } = server.address() as AddressInfo;
+    process.env.LOXAIC_E2E_FETCH_ALLOW = `127.0.0.1:${String(port)}`;
+    try {
+      scenario("page cut in an emoji", [{ tool: "web_fetch", args: { url: `http://127.0.0.1:${String(port)}/page.txt` } }], "Read it.");
+      const convId = await run("page cut in an emoji");
+
+      const stored = await blocks(convId);
+      const results = stored.flatMap(({ block }) => (block.kind === "tool_result" ? [block] : []));
+      expect(results).toHaveLength(1);
+      expect(results[0].ok).toBe(true);
+      expect(results[0].output).toContain("x\ufffd\n… [truncated");
+      // A result this size compacts the mock's small window, so the scenario's
+      // own answer is not what comes next; what matters is that the run went on.
+      expect(stored.at(-1)?.block.kind).not.toBe("tool_result");
+      expect(stored.every(({ row }) => row.status === "complete")).toBe(true);
+    } finally {
+      delete process.env.LOXAIC_E2E_FETCH_ALLOW;
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("reads as stopped, not failed, when the throw is a stop arriving", async () => {
