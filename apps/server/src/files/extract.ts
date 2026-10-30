@@ -8,6 +8,7 @@ import {
 } from "@loxaic/types";
 import { stripControl } from "../mcp/sanitize.ts";
 import { getSandboxProvider, type SandboxHandle, type SandboxProvider } from "../sandbox/provider.ts";
+import { getSandboxStatus } from "../sandbox/status.ts";
 import { attachmentPath, attachmentTextPath } from "./storage.ts";
 
 /**
@@ -79,6 +80,33 @@ export async function extractText(input: ExtractInput): Promise<ExtractResult> {
       `[extract] ${input.mime} attachment ${input.ref} could not be read: ${(err as Error).message}`,
     );
     return { status: "failed", bytes: 0 };
+  }
+}
+
+/**
+ * Read a document nothing has stored: web_fetch's, which goes to the model and
+ * nowhere else, so no attachment row, sidecar or quota is involved. The same
+ * rules as an upload otherwise, the container gate included. Never throws: each
+ * failure is a sentence for the tool's card.
+ */
+export async function extractDocumentBytes(input: {
+  bytes: Buffer;
+  mime: string;
+  userId: string;
+  signal?: AbortSignal;
+}): Promise<{ ok: true; text: string } | { ok: false; reason: string }> {
+  const sandbox = await getSandboxStatus();
+  if (sandbox.mode !== "container" || !sandbox.available) {
+    return { ok: false, reason: "this file type can't be read safely without a container sandbox, and this server has none." };
+  }
+  try {
+    const text = stripControl(await extractInSandbox(input.bytes, input.mime, input.userId, input.signal));
+    if (!text.trim()) return { ok: false, reason: "this document has no readable text; it may be a scan." };
+    return { ok: true, text };
+  } catch (err) {
+    if (input.signal?.aborted) return { ok: false, reason: "stopped by the user." };
+    console.warn(`[extract] a fetched ${input.mime} could not be read: ${(err as Error).message}`);
+    return { ok: false, reason: "this document could not be read. It may be damaged, or too large to read in time." };
   }
 }
 
@@ -229,8 +257,12 @@ function htmlToText(html: string): string {
  * the user controls is ever parsed as a command. The filename stays metadata.
  */
 async function extractViaSandbox(input: ExtractInput): Promise<string> {
-  const handle = await getExtractionSandbox(input.userId);
-  const format = sandboxFormat(input.mime);
+  return extractInSandbox(await readFile(attachmentPath(input.ref)), input.mime, input.userId);
+}
+
+async function extractInSandbox(bytes: Buffer, mime: string, userId: string, signal?: AbortSignal): Promise<string> {
+  const handle = await getExtractionSandbox(userId);
+  const format = sandboxFormat(mime);
   // Under `handle.root`, never an absolute /tmp path. The two providers give
   // that very different meanings and only one of them is isolated: for the
   // container provider /tmp is the container's own, but for the host provider
@@ -247,7 +279,7 @@ async function extractViaSandbox(input: ExtractInput): Promise<string> {
   const inPath = `${base}.${format}`;
   const outPath = `${base}.out`;
   try {
-    await handle.writeFileBinary(inPath, await readFile(attachmentPath(input.ref)));
+    await handle.writeFileBinary(inPath, bytes);
     // The extractor's output goes to a file, not stdout. exec caps what it
     // will read back at MAX_OUTPUT_BYTES (256 KB) — far below what a long
     // document legitimately extracts to — so taking stdout directly would
@@ -257,7 +289,7 @@ async function extractViaSandbox(input: ExtractInput): Promise<string> {
     // neither the path nor the command is ever spliced into the script text.
     const res = await handle.exec(
       ["bash", "-c", '"$@" > "$0"', outPath, ...commandFor(format, inPath)],
-      { timeoutMs: EXTRACT_TIMEOUT_MS },
+      { timeoutMs: EXTRACT_TIMEOUT_MS, ...(signal ? { signal } : {}) },
     );
     if (res.timedOut) throw new Error(`extractor timed out after ${String(EXTRACT_TIMEOUT_MS)}ms`);
     if (res.exitCode !== 0) {
