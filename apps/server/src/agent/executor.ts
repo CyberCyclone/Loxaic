@@ -2,8 +2,9 @@ import posix from "node:path/posix";
 import type { SandboxHandle } from "../sandbox/provider.ts";
 import type { FileDiff, Todo, ToolName } from "@loxaic/agent";
 import { QUESTION_LIMITS } from "@loxaic/agent";
-import { parseTodoList } from "@loxaic/types";
+import { attachmentClass, MAX_DOCUMENT_BYTES, parseTodoList } from "@loxaic/types";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
+import { sniffMime } from "../files/storage.ts";
 import { BlockedTargetError, guardedFetch, type GuardedResponse } from "./address-guard.ts";
 
 /** Tools that need a live sandbox; the rest run in-process on the server. */
@@ -33,9 +34,23 @@ export interface ToolResult {
  * the engine to the run's conversation and abort signal. Absent when browsing
  * is off, which makes web_fetch exactly the plain fetch it always was.
  */
+/**
+ * Turns a document's bytes into text. Injected for the reason `PageRenderer`
+ * is: reading one needs a sandbox and a user, which this module knows nothing
+ * of (files/extract.ts's `extractDocumentBytes` is the real one).
+ */
+export type DocumentReader = (
+  bytes: Buffer,
+  mime: string,
+  signal?: AbortSignal,
+) => Promise<{ ok: true; text: string } | { ok: false; reason: string }>;
+
 export type PageRenderer = (url: URL, opts: { screenshot: "required" | "best-effort"; maxTextChars: number }) => Promise<RenderResult>;
 
 const WEB_FETCH_TIMEOUT_MS = 15_000;
+/** A document takes longer to arrive than a page, so its body gets this long,
+ * counted from the headers. Stop reaches it through the run's signal. */
+const WEB_FETCH_DOCUMENT_TIMEOUT_MS = 60_000;
 /** Ceiling on the *extracted text* a fetch contributes to the prompt. */
 const WEB_FETCH_MAX_BYTES = 100 * 1024;
 /**
@@ -100,6 +115,8 @@ export async function executeTool(
     bashEnv?: Record<string, string>;
     /** web_fetch's browser fallback; see `PageRenderer`. */
     renderer?: PageRenderer | null;
+    /** How web_fetch reads a document; see `DocumentReader`. */
+    readDocument?: DocumentReader;
   },
 ): Promise<ToolResult> {
   try {
@@ -117,7 +134,7 @@ export async function executeTool(
       }
     }
     switch (tool) {
-      case "web_fetch": return await runWebFetch(args, options?.renderer ?? null);
+      case "web_fetch": return await runWebFetch(args, options?.renderer ?? null, signal, options?.readDocument);
       case "todo_write": return runTodoWrite(args);
       case "propose_plan": return runProposePlan(args);
       case "ask_questions": return runAskQuestions(args);
@@ -550,6 +567,100 @@ export function extractFetchText(body: string, contentType: string, rawTruncated
   return text;
 }
 
+/** Types that are never text, whatever their bytes. Anything else unknown is
+ * read as text, which is what catches a mislabelled one: see `NUL` below. */
+const BINARY_MIME_PREFIXES = ["image/", "audio/", "video/", "font/"];
+const BINARY_MIMES = new Set([
+  "application/zip",
+  "application/gzip",
+  "application/x-gzip",
+  "application/x-tar",
+  "application/x-bzip2",
+  "application/x-xz",
+  "application/x-7z-compressed",
+  "application/x-rar-compressed",
+  "application/vnd.rar",
+  "application/wasm",
+  "application/java-archive",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/x-msdownload",
+  "application/vnd.microsoft.portable-executable",
+  "application/x-executable",
+]);
+
+function mimeOf(contentType: string): string {
+  return contentType.split(";")[0].trim().toLowerCase();
+}
+
+/**
+ * How web_fetch reads a response, from its Content-Type alone. `document`
+ * bytes go to the sandbox, never into the prompt. `unlabelled` says nothing
+ * either way, so its bytes decide (a PDF is often served as octet-stream).
+ */
+export function classifyFetchBody(contentType: string): "text" | "document" | "unlabelled" | "binary" {
+  const mime = mimeOf(contentType);
+  if (mime === "" || mime === "application/octet-stream" || mime === "binary/octet-stream") return "unlabelled";
+  if (mime.endsWith("+xml") || mime.endsWith("+json")) return "text";
+  if (attachmentClass(mime) === "document") return "document";
+  if (BINARY_MIMES.has(mime) || BINARY_MIME_PREFIXES.some((prefix) => mime.startsWith(prefix))) return "binary";
+  return "text";
+}
+
+function notReadable(url: URL, contentType: string): ToolResult {
+  const mime = mimeOf(contentType);
+  const what = mime && mime !== "application/octet-stream" && mime !== "binary/octet-stream" ? `a ${mime}` : "a binary";
+  return { ok: false, output: `${url.href} is ${what} file. web_fetch reads text, web pages and documents.` };
+}
+
+function tooLarge(url: URL, bytes: number | null): ToolResult {
+  const limit = `${String(MAX_DOCUMENT_BYTES / 1024 / 1024)} MB`;
+  const size = bytes === null ? "larger than" : `${(bytes / 1024 / 1024).toFixed(1)} MB, over`;
+  return { ok: false, output: `${url.href} is ${size} the ${limit} web_fetch can read.` };
+}
+
+/**
+ * Bytes a text-labelled response must not be holding: a binary file served
+ * under a text type, or with no useful type at all. NUL rather than "invalid
+ * UTF-8", which would also refuse an ordinary page in Latin-1.
+ */
+const NUL = "\u0000";
+
+/**
+ * A document's bytes to text: `document` and `unlabelled` responses. Buffered
+ * whole, under a cap, because a parser needs all of it; a PDF's index of
+ * its contents is at the end, so the first part alone reads as damaged.
+ */
+async function readFetchedDocument(
+  response: GuardedResponse,
+  url: URL,
+  contentType: string,
+  signal: AbortSignal | undefined,
+  readDocument: DocumentReader | undefined,
+): Promise<ToolResult> {
+  const declared = Number(response.headers.get("content-length"));
+  if (declared > MAX_DOCUMENT_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    return tooLarge(url, declared);
+  }
+  const bytes = await readBoundedBytes(response, MAX_DOCUMENT_BYTES);
+  if (!bytes) return tooLarge(url, null);
+
+  const labelled = classifyFetchBody(contentType) === "document";
+  const mime = labelled ? mimeOf(contentType) : sniffMime(bytes.subarray(0, 16));
+  if (!mime || attachmentClass(mime) !== "document") {
+    if (bytes.includes(0)) return notReadable(url, contentType);
+    // Nothing said what it is, and it reads as text.
+    const text = new TextDecoder("utf-8").decode(bytes.subarray(0, WEB_FETCH_MAX_RAW_BYTES));
+    return { ok: true, output: extractFetchText(text, contentType, bytes.length > WEB_FETCH_MAX_RAW_BYTES) };
+  }
+  if (!readDocument) return { ok: false, output: `Documents can't be read here, so ${url.href} was not.` };
+  const read = await readDocument(bytes, mime, signal);
+  if (!read.ok) return { ok: false, output: `${url.href}: ${read.reason}` };
+  return { ok: true, output: extractFetchText(read.text, "text/plain", false) };
+}
+
 /** What the plain fetch saw, for deciding whether the browser should try. */
 export interface PlainFetchSignal {
   /** The guard refused the address. Never worth a browser: it would be refused
@@ -596,17 +707,23 @@ export function shouldRender(signal: PlainFetchSignal): { render: boolean; reaso
   return { render: false, reason: "" };
 }
 
-async function plainFetch(start: URL): Promise<{ result: ToolResult; signal: PlainFetchSignal }> {
+async function plainFetch(
+  start: URL,
+  runSignal: AbortSignal | undefined,
+  readDocument: DocumentReader | undefined,
+): Promise<{ result: ToolResult; signal: PlainFetchSignal }> {
   let url = start;
   const controller = new AbortController();
-  const timer = setTimeout(() => { controller.abort(); }, WEB_FETCH_TIMEOUT_MS);
+  let timeoutMs = WEB_FETCH_TIMEOUT_MS;
+  let timer = setTimeout(() => { controller.abort(); }, timeoutMs);
+  const signal = runSignal ? AbortSignal.any([controller.signal, runSignal]) : controller.signal;
   try {
     let response: GuardedResponse | null = null;
     // Redirects are followed by hand so every hop gets the address check —
     // following them inside fetch would let a public URL bounce to 169.254.169.254.
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const res = await guardedFetch(url, {
-        signal: controller.signal,
+        signal,
         headers: { "User-Agent": "Loxaic-Agent/1.0", Accept: "text/*, application/json;q=0.9, */*;q=0.5" },
       });
       const location = res.headers.get("location");
@@ -627,7 +744,20 @@ async function plainFetch(start: URL): Promise<{ result: ToolResult; signal: Pla
         signal: { status: response.status, contentType },
       };
     }
+    const kind = classifyFetchBody(contentType);
+    const reached = { status: response.status, contentType };
+    if (kind === "binary") {
+      await response.body?.cancel().catch(() => undefined);
+      return { result: notReadable(url, contentType), signal: reached };
+    }
+    if (kind !== "text") {
+      clearTimeout(timer);
+      timeoutMs = WEB_FETCH_DOCUMENT_TIMEOUT_MS;
+      timer = setTimeout(() => { controller.abort(); }, timeoutMs);
+      return { result: await readFetchedDocument(response, url, contentType, signal, readDocument), signal: reached };
+    }
     const { text: bodyText, truncated: rawTruncated } = await readBoundedText(response);
+    if (bodyText.includes(NUL)) return { result: notReadable(url, contentType), signal: reached };
     const extracted = extractFetchText(bodyText, contentType, rawTruncated);
     return {
       result: { ok: true, output: extracted },
@@ -639,9 +769,11 @@ async function plainFetch(start: URL): Promise<{ result: ToolResult; signal: Pla
     }
     const cause = (err as { cause?: { code?: string; message?: string } }).cause;
     const detail = [cause?.code, cause?.message].filter(Boolean).join(" ");
-    const message = (err as Error).name === "AbortError"
-      ? `Request timed out after ${String(WEB_FETCH_TIMEOUT_MS)}ms`
-      : detail || (err as Error).message;
+    const message = runSignal?.aborted
+      ? "Stopped by the user."
+      : (err as Error).name === "AbortError"
+        ? `Request timed out after ${String(timeoutMs)}ms`
+        : detail || (err as Error).message;
     return { result: { ok: false, output: `Fetch failed: ${message}` }, signal: { networkError: message } };
   } finally {
     clearTimeout(timer);
@@ -674,7 +806,12 @@ async function renderedFetch(url: URL, renderer: PageRenderer, forModel: boolean
   }
 }
 
-async function runWebFetch(args: Record<string, unknown>, renderer: PageRenderer | null): Promise<ToolResult> {
+async function runWebFetch(
+  args: Record<string, unknown>,
+  renderer: PageRenderer | null,
+  signal: AbortSignal | undefined,
+  readDocument: DocumentReader | undefined,
+): Promise<ToolResult> {
   const raw = requireString(args, "url");
   let url: URL;
   try {
@@ -689,12 +826,32 @@ async function runWebFetch(args: Record<string, unknown>, renderer: PageRenderer
     if (!renderer) return { ok: false, output: "Screenshots need web browsing, which is off on this server." };
     return await renderedFetch(url, renderer, true, null);
   }
-  const plain = await plainFetch(url);
+  const plain = await plainFetch(url, signal, readDocument);
   const decision = shouldRender(plain.signal);
   if (!decision.render || !renderer) return plain.result;
   const rendered = await renderedFetch(url, renderer, false, decision.reason);
   if (rendered.ok) return rendered;
   return { ...rendered, output: `${plain.result.output}\nThe browser fallback failed too: ${rendered.output}` };
+}
+
+/** A response's bytes, or null past `maxBytes`. Streamed for the reason
+ * `readBoundedText` is: a Content-Length is only a claim. */
+async function readBoundedBytes(response: GuardedResponse, maxBytes: number): Promise<Buffer | null> {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = (response.body as WebReadableStream<Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let read = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks);
+      read += value.length;
+      if (read > maxBytes) return null;
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
 }
 
 /**

@@ -14,6 +14,7 @@ The agent's server-side pieces: builtin tool execution (`executor.ts`), the per-
 ## Builtin tools (executor.ts)
 
 - `web_fetch` always runs on the server behind the SSRF guard (DNS-resolve, reject private/loopback/link-local, re-check every redirect hop), never in a sandbox.
+- `web_fetch` never hands binary to the model: documents go through `readDocument` (sandbox), everything else binary is a failed result (`classifyFetchBody`, and the NUL check for what is mislabelled).
 - `resolvePath` is lexical and POSIX: it is not a symlink boundary, and Windows executors are unsupported.
 
 ## Checkpoints (checkpoints.ts)

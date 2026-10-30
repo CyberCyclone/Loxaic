@@ -76,6 +76,7 @@ import { recordRequestShape } from "./request-shape.ts";
 import { jsonbSafe } from "./jsonb-safe.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
+import { extractDocumentBytes } from "../../files/extract.ts";
 import { recordBeforeWrite, type CheckpointTurn } from "../../agent/checkpoints.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
 import { answerSkillCall, prepareRunSkills, type RunSkills } from "../../skills/session.ts";
@@ -2355,6 +2356,9 @@ async function runOneToolCall(
       // sub-agent's own, never its parent's — so no two chats share one.
       ...(builtinName === "web_fetch" && getBrowserSettings().enabled
         ? { renderer: (url: URL, o: { screenshot: "required" | "best-effort"; maxTextChars: number }) => renderPage(ctx.convId, url, { ...o, signal: ctx.signal }) }
+        : {}),
+      ...(builtinName === "web_fetch"
+        ? { readDocument: (bytes: Buffer, mime: string, signal?: AbortSignal) => extractDocumentBytes({ bytes, mime, userId, signal }) }
         : {}),
     },
   );
