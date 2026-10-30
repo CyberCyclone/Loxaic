@@ -12,7 +12,7 @@ import { SUBAGENT_TOOL_NAME } from "@loxaic/types";
 import type * as Executor from "../../../agent/executor.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 import { TOOL_FAILED } from "../../error-text.ts";
-import { initStreamBroker } from "../../index.ts";
+import { getStreamBroker, initStreamBroker } from "../../index.ts";
 import { getRunByConversation } from "../../registry.ts";
 import { startAgentRun } from "../agentRun.ts";
 import type * as SubagentRun from "../subagentRun.ts";
@@ -116,11 +116,15 @@ describe("a failed tool call does not end the run", () => {
     __resetMockScenariosForTest();
   }
 
+  /** The stream ids of each conversation's runs, for reading what went out live. */
+  const streamOf = new Map<string, string>();
+
   async function run(content: string, onStart?: (convId: string) => void): Promise<string> {
     const [conv] = await db.insert(conversations).values({ ownerId: userId, title: "tool failure", kind: "agent" }).returning();
     convIds.push(conv.id);
     onStart?.(conv.id);
-    await startAgentRun({ userId, content, model: "llama-3.1-8b-instruct", mode: "auto", conversationId: conv.id });
+    const { streamId } = await startAgentRun({ userId, content, model: "llama-3.1-8b-instruct", mode: "auto", conversationId: conv.id });
+    streamOf.set(conv.id, streamId);
     await waitFor("the run to register", () => getRunByConversation(conv.id) !== undefined);
     await waitFor("the run to end", () => getRunByConversation(conv.id) === undefined, 30_000);
     return conv.id;
@@ -166,6 +170,9 @@ describe("a failed tool call does not end the run", () => {
     const results = stored.flatMap(({ block }) => (block.kind === "tool_result" ? [block] : []));
     expect(results.map((r) => r.ok)).toEqual([true, true]);
     expect(results[0].output).toBe(cleaned);
+    // The live card reads as the reload will.
+    const records = await getStreamBroker().readFrom(streamOf.get(convId) ?? "", 0);
+    expect(JSON.stringify(records)).toContain(JSON.stringify(cleaned));
     expect(stored.at(-1)).toMatchObject({ block: { kind: "text", text: "Answered with it." } });
   });
 
