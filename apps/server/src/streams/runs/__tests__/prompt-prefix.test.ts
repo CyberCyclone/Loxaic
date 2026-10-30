@@ -49,6 +49,21 @@ const requests: string[][] = [];
  * assert not just *what* was sent but under what constraint. */
 const requestOptions: { toolChoice?: string; toolCount: number; tools: string; thinking: string }[] = [];
 
+/** Answered once in place of the real tool, for bytes no tool here produces. */
+const toolOutput = vi.hoisted(() => ({ next: null as string | null }));
+vi.mock("../../../agent/executor.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../agent/executor.ts")>();
+  return {
+    ...actual,
+    executeTool: (...args: Parameters<typeof actual.executeTool>) => {
+      if (toolOutput.next === null) return actual.executeTool(...args);
+      const output = toolOutput.next;
+      toolOutput.next = null;
+      return Promise.resolve({ ok: true, output });
+    },
+  };
+});
+
 vi.mock("../../../inference/provider.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../inference/provider.ts")>();
   return {
@@ -595,6 +610,38 @@ describe("a mock scenario's steps replay identically too", () => {
         (r.content as { kind: string; text?: string }[]).some((b) => b.kind === "text" && b.text?.includes("scenario alpha finished")),
     );
     expect(finalAssistant).toBeTruthy();
+  });
+});
+
+describe("a tool result Postgres would refuse replays identically", () => {
+  // What is stored is cleaned, so what was sent has to be cleaned the same way
+  // or the next turn diverges at this result.
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "unstorable-prefix-"));
+    const file = path.join(dir, "scenarios.json");
+    writeFileSync(file, JSON.stringify([{
+      match: "read the odd bytes",
+      steps: [{ tool: "todo_write", args: { todos: [{ status: "pending", id: "1", text: "step one" }] } }],
+      finalText: "[Mock] read.\n",
+    }]));
+    process.env.MOCK_SCENARIOS_FILE = file;
+    __resetMockScenariosForTest();
+  });
+
+  afterAll(() => {
+    delete process.env.MOCK_SCENARIOS_FILE;
+    __resetMockScenariosForTest();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("sends the stored text, and the next turn extends that request byte for byte", async () => {
+    toolOutput.next = "binary\u0000bytes and a cut emoji \ud83d";
+    const convId = await turn("read the odd bytes");
+    expect(requests.at(-1)?.some((m) => m.includes("binary\ufffdbytes and a cut emoji \ufffd"))).toBe(true);
+    await turn("thanks, what is next?", convId);
+    expectEachRequestExtendsTheLast();
   });
 });
 
