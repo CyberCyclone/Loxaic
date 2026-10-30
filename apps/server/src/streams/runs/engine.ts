@@ -108,7 +108,7 @@ import type { StreamProducer } from "../broker.ts";
 import { clearRunApproval, clearRunCheckin, clearRunQueuePosition, getRun, onRunModeChange, setRunApproval, setRunCheckin, setRunQueuePosition, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
-import { markBackendErrors, TOOL_FAILED, turnErrorText } from "../error-text.ts";
+import { markBackendErrors, shownTurnError, TOOL_FAILED, turnErrorText } from "../error-text.ts";
 import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
 import { TodoStaleness } from "./todo-staleness.ts";
 import {
@@ -596,6 +596,9 @@ export async function runToolLoop(ctx: {
   // back only while waiting on a human — see acquireRunSlot.
   let slot: RunSlot | null = null;
 
+  // Set once the run has a place in the thread; the outer catch calls it.
+  let recordFailure: (err: unknown) => Promise<void> = () => Promise.resolve();
+
   try {
     // One read for both: the iteration ceiling and the builtin allowlist live
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
@@ -833,6 +836,38 @@ export async function runToolLoop(ctx: {
     }
 
     let parentId = ctx.userMsgId;
+    // The assistant row a failure would leave saying "streaming" for good.
+    let streamingMsgId: string | null = null;
+    // A run that dies past the model's own failures has only the stream's end
+    // to say so, which is a toast for whoever is watching and nothing after a
+    // reload: the thread just stops. So it goes in the thread too.
+    recordFailure = async (err) => {
+      const error = shownTurnError(err);
+      if (streamingMsgId) {
+        await db.update(messages).set({ status: "error", error }).where(eq(messages.id, streamingMsgId));
+        producer.emit({ kind: "message.end", message_id: streamingMsgId, status: "error", error });
+        return;
+      }
+      // Its steps ended complete and stay that way, so the failure is a reply
+      // of its own, the same shape as a turn refused for being full.
+      const id = uuid();
+      const lamport = nextLamport();
+      await db.insert(messages).values({
+        id,
+        conversationId: convId,
+        parentId,
+        authorType: "assistant",
+        origin: "server",
+        model,
+        lamport,
+        content: [] as ContentBlock[],
+        status: "error",
+        error,
+        createdAt: new Date(),
+      });
+      producer.emit({ kind: "message.start", message_id: id, author_type: "assistant", parent_id: parentId, lamport, model });
+      producer.emit({ kind: "message.end", message_id: id, status: "error", error });
+    };
     // The end of the *current* step window, absolute rather than relative:
     // each "keep going" pushes it out by another `maxIterations`, so the
     // client can render "7/100" and then "104/200" without having to track
@@ -1087,6 +1122,7 @@ export async function runToolLoop(ctx: {
         status: "streaming",
         createdAt: new Date(),
       });
+      streamingMsgId = assistantMsgId;
       producer.emit({
         kind: "message.start",
         message_id: assistantMsgId,
@@ -1317,6 +1353,7 @@ export async function runToolLoop(ctx: {
         .update(messages)
         .set({ content: blocks.length ? jsonbSafe(blocks) : [{ kind: "text", text: "" }], status: "complete" })
         .where(eq(messages.id, assistantMsgId));
+      streamingMsgId = null;
 
       /**
        * Ends the turn as a success, from whichever branch got there.
@@ -1886,7 +1923,14 @@ export async function runToolLoop(ctx: {
     // an approval, and the right response is the same one every other cancel
     // gets. Anything else keeps propagating rather than being flattened into a
     // cancelled turn that hides a real fault.
-    if (!(err instanceof RunSlotAbortedError)) throw err;
+    if (!(err instanceof RunSlotAbortedError)) {
+      // If the database is what failed this can fail too, and the stream's end
+      // still reports the run.
+      await recordFailure(err).catch((recordErr: unknown) => {
+        console.error(`recording a failed run in ${convId} failed:`, recordErr);
+      });
+      throw err;
+    }
     await producer.end("cancelled").catch(() => undefined);
     return;
   } finally {

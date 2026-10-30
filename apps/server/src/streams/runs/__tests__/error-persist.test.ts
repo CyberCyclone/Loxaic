@@ -1,13 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
-import { and, db, eq } from "@loxaic/db";
+import { and, asc, db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user } from "@loxaic/db/schema";
 import type * as PromptReuse from "../../../inference/prompt-reuse.ts";
 import { initStreamBroker } from "../../index.ts";
 import { getRunByConversation } from "../../registry.ts";
+import { startAgentRun } from "../agentRun.ts";
 import { startChatRun } from "../chatRun.ts";
 import { startCompactRun } from "../compactRun.ts";
 import { capErrorText, MAX_ERROR_TEXT_CHARS, TURN_FAILED } from "../../error-text.ts";
+import type * as TodoStalenessModule from "../todo-staleness.ts";
+import type * as UsageRecord from "../usage-record.ts";
 
 /** A failure of our own inside the turn, standing in for the database write
  * that used to share the stream's `try`. `recordPrompt` runs in that loop body
@@ -25,6 +28,30 @@ vi.mock("../../../inference/prompt-reuse.ts", async (importOriginal) => {
       actual.recordPrompt(...args);
     },
   };
+});
+
+/** Faults past the point a stream's own failure handling covers: one before a
+ * step's row is finished, one after it and its tools are done. */
+const laterFault = vi.hoisted(() => ({ beforeRowDone: false, betweenSteps: false, message: 'relation "internal_billing_ledger" does not exist' }));
+vi.mock("../usage-record.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof UsageRecord>();
+  return {
+    ...actual,
+    turnDraftUsage: (...args: Parameters<typeof actual.turnDraftUsage>) => {
+      if (laterFault.beforeRowDone) throw new Error(laterFault.message);
+      return actual.turnDraftUsage(...args);
+    },
+  };
+});
+vi.mock("../todo-staleness.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof TodoStalenessModule>();
+  // On the prototype: the engine gets its instance from a static of this class.
+  const endIteration = actual.TodoStaleness.prototype.endIteration;
+  actual.TodoStaleness.prototype.endIteration = function (this: TodoStalenessModule.TodoStaleness): void {
+    if (laterFault.betweenSteps) throw new Error(laterFault.message);
+    endIteration.call(this);
+  };
+  return actual;
 });
 
 /**
@@ -138,6 +165,46 @@ describe("persisting why a turn failed", () => {
     expect(row.status).toBe("error");
     expect(row.error).toBe(TURN_FAILED);
     expect(row.error).not.toContain("internal_billing_ledger");
+  });
+
+  async function agentRunThatDies(fault: "beforeRowDone" | "betweenSteps") {
+    const [conv] = await db.insert(conversations).values({ ownerId: userId, title: "dying run", kind: "agent" }).returning();
+    convIds.push(conv.id);
+    laterFault[fault] = true;
+    try {
+      await startAgentRun({
+        userId,
+        content: "make a plan for this work",
+        model: "llama-3.1-8b-instruct",
+        mode: "auto",
+        conversationId: conv.id,
+      });
+      await waitFor("the run to register", () => getRunByConversation(conv.id) !== undefined);
+      await waitFor("the run to end", () => getRunByConversation(conv.id) === undefined);
+    } finally {
+      laterFault[fault] = false;
+    }
+    return db
+      .select()
+      .from(messages)
+      .where(eq(messages.conversationId, conv.id))
+      .orderBy(asc(messages.lamport), asc(messages.createdAt));
+  }
+
+  it("leaves a run that died between steps saying so in the thread", async () => {
+    const rows = await agentRunThatDies("betweenSteps");
+    const replies = rows.filter((r) => r.authorType === "assistant");
+    // The step stays as it finished; the failure is the reply after it.
+    expect(replies[0].status).toBe("complete");
+    expect(rows.at(-1)).toMatchObject({ authorType: "assistant", status: "error", error: TURN_FAILED, content: [] });
+    expect(JSON.stringify(rows)).not.toContain("internal_billing_ledger");
+  });
+
+  it("marks the row that was streaming rather than leaving it streaming for good", async () => {
+    const rows = await agentRunThatDies("beforeRowDone");
+    const replies = rows.filter((r) => r.authorType === "assistant");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ status: "error", error: TURN_FAILED });
   });
 
   it("stores the backend's reason on a failed compaction", async () => {
