@@ -107,7 +107,7 @@ import type { StreamProducer } from "../broker.ts";
 import { clearRunApproval, clearRunCheckin, clearRunQueuePosition, getRun, onRunModeChange, setRunApproval, setRunCheckin, setRunQueuePosition, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
-import { markBackendErrors, turnErrorText } from "../error-text.ts";
+import { markBackendErrors, TOOL_FAILED, turnErrorText } from "../error-text.ts";
 import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
 import { TodoStaleness } from "./todo-staleness.ts";
 import {
@@ -214,6 +214,17 @@ export function assistantMessageForPrompt(text: string, calls: ToolCall[]): Chat
   // message with JSON.stringify, so two objects that differ only in key order
   // hash differently.
   return { role: "assistant", content: content || null, ...(calls.length ? { tool_calls: calls } : {}) };
+}
+
+/**
+ * What a tool call that threw reads as, on its card and to the model.
+ * `RunSlotAbortedError` is thrown by a stop, and any other throw after a stop
+ * is that stop tearing something down, so neither is a fault worth logging.
+ */
+function toolThrowText(err: unknown, stopped: boolean, label: string): string {
+  if (stopped || err instanceof RunSlotAbortedError) return STOPPED_BEFORE_RUN;
+  console.error(`${label}:`, err);
+  return TOOL_FAILED;
 }
 
 export function toolResultMessageForPrompt(callId: string, name: string | undefined, output: string): ChatMessage {
@@ -1536,26 +1547,34 @@ export async function runToolLoop(ctx: {
         // sub-agent (or a chat run) that names it anyway falls through to the
         // unknown-tool answer below.
         if (subagents && call.function.name === SUBAGENT_TOOL_NAME && toolset.get(SUBAGENT_TOOL_NAME)) {
-          subagentOutcomes = await runSubagentGroup({
-            calls: [...toolCalls.entries()]
-              .filter(([, c]) => c.function.name === SUBAGENT_TOOL_NAME)
-              .map(([index, c]) => ({ index, call: c })),
-            subagents,
-            parentModel: model,
-            slot,
-            parent: {
-              convId,
-              streamId,
-              userId,
-              mode: liveMode(),
-              surface: ctx.surface,
-              assistantMsgId,
-              producer,
-              signal: abort.signal,
-              thinkingLevel: ctx.thinkingLevel,
-              checkpointTurn,
-            },
-          });
+          const group = [...toolCalls.entries()]
+            .filter(([, c]) => c.function.name === SUBAGENT_TOOL_NAME)
+            .map(([index, c]) => ({ index, call: c }));
+          try {
+            subagentOutcomes = await runSubagentGroup({
+              calls: group,
+              subagents,
+              parentModel: model,
+              slot,
+              parent: {
+                convId,
+                streamId,
+                userId,
+                mode: liveMode(),
+                surface: ctx.surface,
+                assistantMsgId,
+                producer,
+                signal: abort.signal,
+                thinkingLevel: ctx.thinkingLevel,
+                checkpointTurn,
+              },
+            });
+          } catch (err) {
+            // Every call in the group goes the same way, so each still gets
+            // the result its tool_call needs; see the per-call catch below.
+            const output = toolThrowText(err, isAborted(abort), `sub-agents failed in ${convId}`);
+            subagentOutcomes = new Map(group.map(({ index }) => [index, { output, ok: false }]));
+          }
           const mine = subagentOutcomes.get(callIndex) ?? { output: SUBAGENT_NOT_RUN, ok: false };
           producer.emit({
             kind: "tool.result",
@@ -1608,19 +1627,20 @@ export async function runToolLoop(ctx: {
             call,
           );
         } catch (err) {
-          if (!(err instanceof RunSlotAbortedError)) throw err;
-          // Stopped at this call's approval prompt: the approval handed the
-          // inference slot back, and re-entering the queue for an aborted run
-          // throws. Nothing ran for *this* call, so it is recorded exactly
-          // like a skipped one — which is what keeps the calls before it,
-          // which did run and did write, in the transcript and the prompt.
-          // Letting the throw escape the loop used to skip the insert below
-          // and discard those results: the model then had no record that a
-          // file it had written existed, and the user watched a result
-          // arrive live that was gone after a reload. The per-call check
-          // above skips the rest; the abort branch after the insert ends the
-          // turn.
-          const output = "Stopped by the user before this tool call ran.";
+          // A call that throws is a failed call, never a failed run: the card
+          // says so, the calls after it still run, and the model answers
+          // without this one. `executeTool` already turns a tool's own errors
+          // into a result, so what lands here is our server's own fault, and
+          // its message stays in the log (it can carry SQL).
+          //
+          // The other way here is a stop at this call's approval prompt: the
+          // approval handed the inference slot back, and re-entering the queue
+          // for an aborted run throws. Nothing ran for *this* call, so it is
+          // recorded exactly like a skipped one — which is what keeps the
+          // calls before it, which did run and did write, in the transcript
+          // and the prompt. The per-call check above skips the rest; the abort
+          // branch after the insert ends the turn.
+          const output = toolThrowText(err, isAborted(abort), `${call.function.name} failed in ${convId}`);
           producer.emit({
             kind: "tool.result",
             message_id: assistantMsgId,
