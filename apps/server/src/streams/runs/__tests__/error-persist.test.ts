@@ -45,11 +45,16 @@ vi.mock("../usage-record.ts", async (importOriginal) => {
 });
 vi.mock("../todo-staleness.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof TodoStalenessModule>();
-  // On the prototype: the engine gets its instance from a static of this class.
-  const endIteration = actual.TodoStaleness.prototype.endIteration;
-  actual.TodoStaleness.prototype.endIteration = function (this: TodoStalenessModule.TodoStaleness): void {
-    if (laterFault.betweenSteps) throw new Error(laterFault.message);
-    endIteration.call(this);
+  // Through the static: it is where the engine gets its instance.
+  const fromHistory = actual.TodoStaleness.fromHistory.bind(actual.TodoStaleness);
+  actual.TodoStaleness.fromHistory = (...args) => {
+    const tracker = fromHistory(...args);
+    const endIteration = tracker.endIteration.bind(tracker);
+    tracker.endIteration = () => {
+      if (laterFault.betweenSteps) throw new Error(laterFault.message);
+      endIteration();
+    };
+    return tracker;
   };
   return actual;
 });
