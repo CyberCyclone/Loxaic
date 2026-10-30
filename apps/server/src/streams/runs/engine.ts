@@ -597,8 +597,59 @@ export async function runToolLoop(ctx: {
   // back only while waiting on a human — see acquireRunSlot.
   let slot: RunSlot | null = null;
 
-  // Set once the run has a place in the thread; the outer catch calls it.
-  let recordFailure: (err: unknown) => Promise<void> = () => Promise.resolve();
+  // Two messages persisted less than a millisecond apart both take
+  // Date.now() as their lamport, and loadHistory's ORDER BY lamport (then
+  // createdAt) breaks the tie arbitrarily rather than by insertion order.
+  // Not hypothetical: an iteration whose tool call does no real work (e.g.
+  // two todo_write calls back to back, as a mock scenario step can) reliably
+  // lands that iteration's tool-result message and the next iteration's
+  // assistant message in the same millisecond, and a swap there is a genuine
+  // prompt-prefix break on the conversation's very next turn. Scoped to this
+  // one run — only the two inserts below share this counter — so it changes
+  // nothing about the cross-device LWW ordering packages/sync relies on.
+  // Seeded from the user message rather than zero: with a zero seed the
+  // first insert was a bare Date.now(), unguarded against the user message
+  // that had just been written with one — the same tie, at the one
+  // boundary the counter did not cover.
+  let lastLamport = ctx.userLamport ?? 0;
+  const nextLamport = (): number => {
+    lastLamport = monotonicLamport(lastLamport);
+    return lastLamport;
+  };
+
+  let parentId = ctx.userMsgId;
+  // The assistant row a failure would leave saying "streaming" for good.
+  let streamingMsgId: string | null = null;
+  // A run that dies past the model's own failures has only the stream's end
+  // to say so, which is a toast for whoever is watching and nothing after a
+  // reload: the thread just stops. So it goes in the thread too.
+  const recordFailure = async (err: unknown): Promise<void> => {
+    const error = shownTurnError(err);
+    if (streamingMsgId) {
+      await db.update(messages).set({ status: "error", error }).where(eq(messages.id, streamingMsgId));
+      producer.emit({ kind: "message.end", message_id: streamingMsgId, status: "error", error });
+      return;
+    }
+    // Its steps ended complete and stay that way, so the failure is a reply
+    // of its own, the same shape as a turn refused for being full.
+    const id = uuid();
+    const lamport = nextLamport();
+    await db.insert(messages).values({
+      id,
+      conversationId: convId,
+      parentId,
+      authorType: "assistant",
+      origin: "server",
+      model,
+      lamport,
+      content: [] as ContentBlock[],
+      status: "error",
+      error,
+      createdAt: new Date(),
+    });
+    producer.emit({ kind: "message.start", message_id: id, author_type: "assistant", parent_id: parentId, lamport, model });
+    producer.emit({ kind: "message.end", message_id: id, status: "error", error });
+  };
 
   try {
     // One read for both: the iteration ceiling and the builtin allowlist live
@@ -732,25 +783,6 @@ export async function runToolLoop(ctx: {
     // the next request's size is that plus an estimate of what was appended.
     let lastPrompt: { tokens: number; completion: number; messages: number } | null = null;
 
-    // Two messages persisted less than a millisecond apart both take
-    // Date.now() as their lamport, and loadHistory's ORDER BY lamport (then
-    // createdAt) breaks the tie arbitrarily rather than by insertion order.
-    // Not hypothetical: an iteration whose tool call does no real work (e.g.
-    // two todo_write calls back to back, as a mock scenario step can) reliably
-    // lands that iteration's tool-result message and the next iteration's
-    // assistant message in the same millisecond, and a swap there is a genuine
-    // prompt-prefix break on the conversation's very next turn. Scoped to this
-    // one run — only the two inserts below share this counter — so it changes
-    // nothing about the cross-device LWW ordering packages/sync relies on.
-    // Seeded from the user message rather than zero: with a zero seed the
-    // first insert was a bare Date.now(), unguarded against the user message
-    // that had just been written with one — the same tie, at the one
-    // boundary the counter did not cover.
-    let lastLamport = ctx.userLamport ?? 0;
-    const nextLamport = (): number => {
-      lastLamport = monotonicLamport(lastLamport);
-      return lastLamport;
-    };
     // The stored row this run's next request ends on and has not answered:
     // the person's message until the first reply is written, then any nudge
     // the run writes after a reply. A compaction keeps it after the summary
@@ -836,39 +868,6 @@ export async function runToolLoop(ctx: {
       return;
     }
 
-    let parentId = ctx.userMsgId;
-    // The assistant row a failure would leave saying "streaming" for good.
-    let streamingMsgId: string | null = null;
-    // A run that dies past the model's own failures has only the stream's end
-    // to say so, which is a toast for whoever is watching and nothing after a
-    // reload: the thread just stops. So it goes in the thread too.
-    recordFailure = async (err) => {
-      const error = shownTurnError(err);
-      if (streamingMsgId) {
-        await db.update(messages).set({ status: "error", error }).where(eq(messages.id, streamingMsgId));
-        producer.emit({ kind: "message.end", message_id: streamingMsgId, status: "error", error });
-        return;
-      }
-      // Its steps ended complete and stay that way, so the failure is a reply
-      // of its own, the same shape as a turn refused for being full.
-      const id = uuid();
-      const lamport = nextLamport();
-      await db.insert(messages).values({
-        id,
-        conversationId: convId,
-        parentId,
-        authorType: "assistant",
-        origin: "server",
-        model,
-        lamport,
-        content: [] as ContentBlock[],
-        status: "error",
-        error,
-        createdAt: new Date(),
-      });
-      producer.emit({ kind: "message.start", message_id: id, author_type: "assistant", parent_id: parentId, lamport, model });
-      producer.emit({ kind: "message.end", message_id: id, status: "error", error });
-    };
     // The end of the *current* step window, absolute rather than relative:
     // each "keep going" pushes it out by another `maxIterations`, so the
     // client can render "7/100" and then "104/200" without having to track

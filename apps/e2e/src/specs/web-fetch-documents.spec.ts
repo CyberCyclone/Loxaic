@@ -86,7 +86,7 @@ describe('web_fetch on a file', () => {
 
     const [archive, manual] = await results(creds, conv);
     expect(archive.ok).toBe(false);
-    expect(archive.output).toContain('is a application/zip file. web_fetch reads text, web pages and documents.');
+    expect(archive.output).toContain('is a binary file (application/zip). web_fetch reads text, web pages and documents.');
     expect(manual.ok).toBe(!SANDBOX_HOST_MODE);
     await waitForVisible(`chat.toolCall.failed.${archive.call_id}`);
     await expectResultOnCard(archive.call_id, 'web_fetch reads text, web pages and documents.');

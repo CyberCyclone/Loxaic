@@ -121,8 +121,8 @@ describe("web_fetch on a file", () => {
   });
 
   it.each([
-    ["/photo.png", "a image/png file"],
-    ["/mislabelled.txt", "a text/plain file"],
+    ["/photo.png", "a binary file (image/png)"],
+    ["/mislabelled.txt", "a binary file (text/plain)"],
     ["/blob.bin", "a binary file"],
   ])("refuses %s, and never reaches the reader", async (path, says) => {
     const result = await fetchUrl(path);

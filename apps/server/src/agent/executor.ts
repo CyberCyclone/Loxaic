@@ -30,11 +30,6 @@ export interface ToolResult {
 }
 
 /**
- * Loads a page in the conversation's own browser (browser/render.ts), bound by
- * the engine to the run's conversation and abort signal. Absent when browsing
- * is off, which makes web_fetch exactly the plain fetch it always was.
- */
-/**
  * Turns a document's bytes into text. Injected for the reason `PageRenderer`
  * is: reading one needs a sandbox and a user, which this module knows nothing
  * of (files/extract.ts's `extractDocumentBytes` is the real one).
@@ -45,6 +40,11 @@ export type DocumentReader = (
   signal?: AbortSignal,
 ) => Promise<{ ok: true; text: string } | { ok: false; reason: string }>;
 
+/**
+ * Loads a page in the conversation's own browser (browser/render.ts), bound by
+ * the engine to the run's conversation and abort signal. Absent when browsing
+ * is off, which makes web_fetch exactly the plain fetch it always was.
+ */
 export type PageRenderer = (url: URL, opts: { screenshot: "required" | "best-effort"; maxTextChars: number }) => Promise<RenderResult>;
 
 const WEB_FETCH_TIMEOUT_MS = 15_000;
@@ -610,8 +610,8 @@ export function classifyFetchBody(contentType: string): "text" | "document" | "u
 
 function notReadable(url: URL, contentType: string): ToolResult {
   const mime = mimeOf(contentType);
-  const what = mime && mime !== "application/octet-stream" && mime !== "binary/octet-stream" ? `a ${mime}` : "a binary";
-  return { ok: false, output: `${url.href} is ${what} file. web_fetch reads text, web pages and documents.` };
+  const type = mime && mime !== "application/octet-stream" && mime !== "binary/octet-stream" ? ` (${mime})` : "";
+  return { ok: false, output: `${url.href} is a binary file${type}. web_fetch reads text, web pages and documents.` };
 }
 
 function tooLarge(url: URL, bytes: number | null): ToolResult {

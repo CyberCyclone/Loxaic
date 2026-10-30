@@ -9,6 +9,7 @@ import { startAgentRun } from "../agentRun.ts";
 import { startChatRun } from "../chatRun.ts";
 import { startCompactRun } from "../compactRun.ts";
 import { capErrorText, MAX_ERROR_TEXT_CHARS, TURN_FAILED } from "../../error-text.ts";
+import type * as Skills from "../../../skills/session.ts";
 import type * as TodoStalenessModule from "../todo-staleness.ts";
 import type * as UsageRecord from "../usage-record.ts";
 
@@ -32,7 +33,17 @@ vi.mock("../../../inference/prompt-reuse.ts", async (importOriginal) => {
 
 /** Faults past the point a stream's own failure handling covers: one before a
  * step's row is finished, one after it and its tools are done. */
-const laterFault = vi.hoisted(() => ({ beforeRowDone: false, betweenSteps: false, message: 'relation "internal_billing_ledger" does not exist' }));
+const laterFault = vi.hoisted(() => ({ inSetup: false, beforeRowDone: false, betweenSteps: false, message: 'relation "internal_billing_ledger" does not exist' }));
+vi.mock("../../../skills/session.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof Skills>();
+  return {
+    ...actual,
+    prepareRunSkills: (...args: Parameters<typeof actual.prepareRunSkills>) => {
+      if (laterFault.inSetup) throw new Error(laterFault.message);
+      return actual.prepareRunSkills(...args);
+    },
+  };
+});
 vi.mock("../usage-record.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof UsageRecord>();
   return {
@@ -172,7 +183,7 @@ describe("persisting why a turn failed", () => {
     expect(row.error).not.toContain("internal_billing_ledger");
   });
 
-  async function agentRunThatDies(fault: "beforeRowDone" | "betweenSteps") {
+  async function agentRunThatDies(fault: "inSetup" | "beforeRowDone" | "betweenSteps") {
     const [conv] = await db.insert(conversations).values({ ownerId: userId, title: "dying run", kind: "agent" }).returning();
     convIds.push(conv.id);
     laterFault[fault] = true;
@@ -203,6 +214,12 @@ describe("persisting why a turn failed", () => {
     expect(replies[0].status).toBe("complete");
     expect(rows.at(-1)).toMatchObject({ authorType: "assistant", status: "error", error: TURN_FAILED, content: [] });
     expect(JSON.stringify(rows)).not.toContain("internal_billing_ledger");
+  });
+
+  it("answers the message of a run that died before its first request", async () => {
+    const rows = await agentRunThatDies("inSetup");
+    expect(rows.map((r) => r.authorType)).toEqual(["user", "assistant"]);
+    expect(rows[1]).toMatchObject({ status: "error", error: TURN_FAILED, content: [] });
   });
 
   it("marks the row that was streaming rather than leaving it streaming for good", async () => {
