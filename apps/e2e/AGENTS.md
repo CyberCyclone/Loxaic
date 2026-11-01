@@ -86,3 +86,4 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 - Always pass `--loxaic-data-dir`, in every mode, or a run writes into the developer's real Loxaic config. A data dir without a config lands on onboarding; seed one.
 - Values every process must agree on (pick dir, app data dir) are env vars minted with `??=` in `scripts/electron-env.ts`; a module-level `mkdtempSync` runs once per process.
 - `LOXAIC_TSNET_BIN` and `LOXAIC_DISABLE_UPDATES=1` are set on every Electron run; never remove them (real control plane, real release feed).
+- Red-prove `electron/mcp-catalog.spec.ts` only with no real app data at the default data dir: a child launched without `ELECTRON_RUN_AS_NODE` ignores `--loxaic-data-dir` and survives the run.

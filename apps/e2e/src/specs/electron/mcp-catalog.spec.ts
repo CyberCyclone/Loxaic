@@ -10,6 +10,10 @@
  * Runs in self-contained mode only (E2E_SELF_CONTAINED=1), the one mode that
  * runs the packaged server. Test needs no real Brave key: the handshake and
  * tool listing never reach Brave's API.
+ *
+ * A red run is not contained. A child started without the flag ignores
+ * --loxaic-data-dir and brings up the real app on the default data dir, and it
+ * outlives the connection: after one, stop it and check that folder.
  */
 import { browser } from '@wdio/globals';
 import { SELF_CONTAINED } from '../../../scripts/electron-env.ts';
