@@ -1595,6 +1595,10 @@ export interface SandboxRow {
    * sandbox can reach the internet — recorded then because it cannot change
    * for the sandbox's life; absent on rows that predate it. */
   limits?: { memory?: number; cpu?: number; network?: boolean } | null;
+  /** How it differs from what it would be given today, which a restart
+   * applies. Only when listed for one conversation, and absent from a server
+   * that predates it. */
+  pending_changes?: import("@loxaic/types").SandboxChange[];
   /** When this workspace would be deleted, or null when reaping is off (in
    * which case it is kept until the conversation is). Derived server-side from
    * the live policy, so it never advertises a date an admin has since moved. */
@@ -2466,6 +2470,15 @@ export async function changeConversationImage(
     method: "POST",
     body: JSON.stringify({ image }),
   });
+}
+
+/**
+ * Remakes a conversation's sandbox with today's settings, carrying its files
+ * across. Owner only, and refused (409) while anything runs on it, or 429 when
+ * the new size doesn't fit the owner's allocation.
+ */
+export async function restartConversationSandbox(conversationId: string): Promise<{ restarted: boolean }> {
+  return imageFetch(`/v1/conversations/${encodeURIComponent(conversationId)}/sandbox/restart`, { method: "POST" });
 }
 
 // ── Local executors (the user's own machines, via the desktop app) ────

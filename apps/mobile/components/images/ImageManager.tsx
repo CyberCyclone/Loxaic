@@ -272,7 +272,7 @@ function ImageRow({
             Limits for each sandbox: memory (MB), CPUs, processes
           </Text>
           <Text size="2xs" className="text-muted-foreground">
-            Processes applies to existing sandboxes too; memory and CPUs apply to new ones.
+            Processes applies to existing sandboxes too. Memory and CPUs apply to new ones, and to a chat that restarts its sandbox.
           </Text>
           <HStack space="xs">
             <Input className="flex-1">

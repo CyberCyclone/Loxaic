@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { eq, ne, and, isNull, desc, inArray, or, getTableColumns } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { conversationShares, conversations, usageRecords } from "@loxaic/db/schema";
@@ -45,6 +45,52 @@ import { getRun, getRunByConversation } from "../streams/registry.ts";
 import { listSubagents } from "../streams/runs/subagentRun.ts";
 import { latestTodos } from "../conversations/latest-todos.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
+
+/**
+ * Moves a conversation's sandbox to `next`, holding the conversation for the
+ * whole of it: a send arriving meanwhile is refused rather than run in a
+ * half-moved workspace. Answers what the route should send when it can't.
+ */
+async function replaceWhileClaimed(
+  reply: FastifyReply,
+  conversationId: string,
+  userId: string,
+  next: Workspace,
+  words: { busy: string; failed: string },
+): Promise<{ moved: boolean } | { error: string; code?: string }> {
+  // A stream id no stream has, like a rewind's.
+  const claim = {
+    streamId: `image-${randomUUID()}`,
+    conversationId,
+    userId,
+    abort: new AbortController(),
+    approvals: new Map(),
+  };
+  try {
+    claimConversation(claim);
+  } catch (err) {
+    if (err instanceof ConversationBusyError) {
+      reply.code(409);
+      return { error: words.busy, code: err.code };
+    }
+    throw err;
+  }
+  const timer = setTimeout(() => { claim.abort.abort(); }, imageSwitchTimeoutMs());
+  try {
+    return await replaceConversationSandbox(conversationId, next, claim.abort.signal);
+  } catch (err) {
+    // With the numbers, so the client can offer the Sandboxes screen (#254).
+    if (err instanceof SandboxLimitError) {
+      reply.code(429);
+      return { ...sandboxLimitBody(err), error: `${words.failed}: ${err.message}` };
+    }
+    reply.code(409);
+    return { error: `${words.failed}: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    clearTimeout(timer);
+    unregisterRun(claim.streamId);
+  }
+}
 
 export function conversationRoutes(app: FastifyInstance) {
   /**
@@ -313,41 +359,48 @@ export function conversationRoutes(app: FastifyInstance) {
     const { image: _previous, ...rest } = workspace;
     const next: Workspace = image ? { ...rest, image } : rest;
 
-    // Held for the whole switch, like a rewind's: a stream id no stream has.
-    const claim = {
-      streamId: `image-${randomUUID()}`,
-      conversationId,
-      userId,
-      abort: new AbortController(),
-      approvals: new Map(),
-    };
-    try {
-      claimConversation(claim);
-    } catch (err) {
-      if (err instanceof ConversationBusyError) {
-        reply.code(409);
-        return { error: "Stop the run first: the image can't change while it is running.", code: err.code };
-      }
-      throw err;
-    }
-    const timer = setTimeout(() => { claim.abort.abort(); }, imageSwitchTimeoutMs());
-    try {
-      await replaceConversationSandbox(conversationId, next, claim.abort.signal);
-    } catch (err) {
-      // With the numbers, so the client can offer the Sandboxes screen (#254).
-      if (err instanceof SandboxLimitError) {
-        reply.code(429);
-        return { ...sandboxLimitBody(err), error: `The image was not changed: ${err.message}` };
-      }
-      reply.code(409);
-      return { error: `The image was not changed: ${err instanceof Error ? err.message : String(err)}` };
-    } finally {
-      clearTimeout(timer);
-      unregisterRun(claim.streamId);
-    }
+    const replaced = await replaceWhileClaimed(reply, conversationId, userId, next, {
+      busy: "Stop the run first: the image can't change while it is running.",
+      failed: "The image was not changed",
+    });
+    if ("error" in replaced) return replaced;
     const stored = next.kind === "scratch" && !next.image ? null : next;
     announceConversationEvent({ type: "conversation.workspace", conversation_id: conversationId, workspace: stored });
     return { workspace: stored };
+  });
+
+  /**
+   * Remakes a conversation's sandbox as its workspace would be given it today:
+   * the settings a running container cannot take. The same move as changing
+   * the image, to the image it already has, so the same rules hold: owner
+   * only, never while anything runs, and nothing changes when it fails.
+   */
+  app.post<{ Params: { id: string } }>("/v1/conversations/:id/sandbox/restart", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const conversationId = request.params.id;
+    if (!(await hasRole(userId, conversationId, "owner"))) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    const row = await db.query.conversations.findFirst({
+      where: eq(conversations.id, conversationId),
+      columns: { kind: true, workspace: true },
+    });
+    if (row?.kind !== "agent") {
+      reply.code(400);
+      return { error: "Only agent conversations have a sandbox." };
+    }
+    const workspace = effectiveWorkspace(row.workspace);
+    if (workspace.kind === "local") {
+      reply.code(400);
+      return { error: "A folder on your own machine has no sandbox to restart." };
+    }
+    const replaced = await replaceWhileClaimed(reply, conversationId, userId, workspace, {
+      busy: "Stop the run first: the sandbox can't restart while it is running.",
+      failed: "The sandbox was not restarted",
+    });
+    if ("error" in replaced) return replaced;
+    return { restarted: replaced.moved };
   });
 
   /**

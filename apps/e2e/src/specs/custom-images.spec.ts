@@ -359,6 +359,41 @@ describe('custom sandbox images (#253)', function () {
     await shot('sandbox-process-limit-raised');
   });
 
+  it('offers a restart once a chat has older settings, keeping its files', async () => {
+    const admin = adminCreds();
+    await api(admin, 'PATCH', `/v1/admin/images/${sharedId}`, { limits: { memoryMb: 768 } });
+    await pauseAllMySandboxes(user);
+    await goToSurface('agent');
+    await startNewAgentRun();
+    await chooseImage(sharedId);
+    await runBash();
+    await expectNeverPresent(['agent.sandboxChanges.banner']);
+
+    const [conversation] = await listConversations(user);
+    const token = await apiToken(user);
+    const [before] = await listSandboxes(token, conversation.id);
+    await execInSandbox(token, before.id, 'echo restart-marker > /home/loxaic/repo/kept.txt');
+
+    // The chat looks again when a run ends.
+    await api(admin, 'PATCH', `/v1/admin/images/${sharedId}`, { limits: { memoryMb: 1024 } });
+    await sendMessage('try a command in the full sandbox');
+    await closeThreadKeyboard();
+    await waitForTextIn('chat.messageList', 'Tried it');
+    await waitForFreshText('agent.sandboxChanges.text', 'Memory 768 MB → 1 GB');
+    await shot('sandbox-restart-banner');
+
+    await tap('agent.sandboxChanges.restart');
+    await tap('agent.sandboxChanges.confirm.confirm');
+    await waitForAbsent('agent.sandboxChanges.banner', 60_000);
+    await shot('sandbox-restarted');
+
+    const [after] = await listSandboxes(token, conversation.id);
+    expect(after.id).not.toBe(before.id);
+    const inside = await execInSandbox(token, after.id, 'cat /home/loxaic/repo/kept.txt /sys/fs/cgroup/memory.max');
+    expect(inside.stdout).toContain('restart-marker');
+    expect(inside.stdout).toContain(String(1024 * 1024 * 1024));
+  });
+
   it('lets an admin give a shared image KVM, kept when its sizes are saved, and says when a host lacks it (#320)', async () => {
     const admin = adminCreds();
     const { kvm } = (await api(admin, 'GET', '/v1/admin/images')) as { kvm?: { visible: boolean } };

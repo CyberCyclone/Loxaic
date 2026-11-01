@@ -20,6 +20,7 @@ vi.mock("../../auth/middleware", () => ({
 }));
 
 const { conversationRoutes } = await import("../conversations.ts");
+const { sandboxRoutes } = await import("../sandbox.ts");
 const { claimConversation, unregisterRun } = await import("../../streams/registry.ts");
 const { watchConversationEvents } = await import("../../streams/watchers.ts");
 const { destroyConversationSandboxes, getConversationSandbox } = await import("../../agent/sandbox-manager.ts");
@@ -32,6 +33,7 @@ const editor = `img-editor-${randomUUID()}`;
 const ids = [owner, editor];
 const app = Fastify();
 conversationRoutes(app);
+sandboxRoutes(app);
 const savedPolicy = process.env.SANDBOX_CUSTOM_IMAGES;
 const savedMode = process.env.SANDBOX_MODE;
 const good = { missing: [], warnings: [] };
@@ -84,6 +86,96 @@ afterAll(async () => {
   await db.delete(sandboxImages).where(inArray(sandboxImages.createdBy, ids));
   await db.delete(user).where(inArray(user.id, ids));
   await app.close();
+});
+
+function restart(as: string, id: string) {
+  currentUser.id = as;
+  return app.inject({ method: "POST", url: `/v1/conversations/${id}/sandbox/restart` });
+}
+
+describe("restarting a conversation's sandbox", () => {
+  it("is the owner's alone: an editor of a shared conversation gets the same 404 as a stranger", async () => {
+    const id = await conversation("agent");
+    await db.insert(conversationShares).values({ conversationId: id, userId: editor, role: "editor", createdBy: owner });
+    expect((await restart(editor, id)).statusCode).toBe(404);
+    expect((await restart(`stranger-${randomUUID()}`, id)).statusCode).toBe(404);
+  });
+
+  it("refuses a chat and a folder on the user's own machine", async () => {
+    expect((await restart(owner, await conversation("chat"))).statusCode).toBe(400);
+    const local = { kind: "local", executorId: randomUUID(), executorName: "mac", path: "/x", isolation: "direct" } as Workspace;
+    expect((await restart(owner, await conversation("agent", local))).statusCode).toBe(400);
+  });
+
+  it("has nothing to do for a conversation with no sandbox yet", async () => {
+    const res = await restart(owner, await conversation("agent"));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ restarted: false });
+  });
+
+  it("refuses while anything runs on the conversation", async () => {
+    const id = await conversation("agent");
+    const claim = { streamId: `test-${randomUUID()}`, conversationId: id, userId: owner, abort: new AbortController(), approvals: new Map() };
+    claimConversation(claim);
+    try {
+      const res = await restart(owner, id);
+      expect(res.statusCode).toBe(409);
+      expect(res.json<{ error: string }>().error).toMatch(/can't restart while it is running/);
+    } finally {
+      unregisterRun(claim.streamId);
+    }
+  });
+
+  describe.skipIf(!dockerReady)("with a real container", () => {
+    function pending(id: string) {
+      currentUser.id = owner;
+      return app.inject({ method: "GET", url: `/v1/sandboxes?conversation_id=${id}` });
+    }
+
+    it("makes it to today's settings, with the same files, and the old one goes", async () => {
+      const id = await conversation("agent");
+      try {
+        const old = await getConversationSandbox(owner, id);
+        await old.writeFile(`${old.workdir}/kept.txt`, "still here");
+        // As one made when the default was smaller.
+        await db.update(sandboxes).set({ limits: { memory: 256, cpu: 1, network: false } }).where(eq(sandboxes.containerId, old.ref));
+
+        const before = (await pending(id)).json<{ pending_changes: unknown[] }[]>();
+        expect(before[0].pending_changes).toEqual([{ kind: "memory", fromMb: 256, toMb: 512 }]);
+
+        const res = await restart(owner, id);
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toEqual({ restarted: true });
+
+        const after = (await pending(id)).json<{ containerId: string; status: string; pending_changes: unknown[] }[]>();
+        expect(after[0].containerId).not.toBe(old.ref);
+        expect(after[0].status).toBe("running");
+        expect(after[0].pending_changes).toEqual([]);
+        const fresh = await getConversationSandbox(owner, id);
+        expect(fresh.ref).toBe(after[0].containerId);
+        expect(await fresh.readFile(`${fresh.workdir}/kept.txt`)).toBe("still here");
+        expect(await old.exists()).toBe(false);
+      } finally {
+        await destroyConversationSandboxes(id);
+      }
+    }, 120_000);
+
+    it("answers 429 with the numbers when today's size doesn't fit, and leaves the sandbox as it was", async () => {
+      const id = await conversation("agent");
+      try {
+        const old = await getConversationSandbox(owner, id);
+        await setAllocationOverride(owner, { memoryMb: 256 });
+        const res = await restart(owner, id);
+        expect(res.statusCode).toBe(429);
+        expect(res.json<{ error: string; code: string }>()).toMatchObject({ code: "sandbox_allocation" });
+        expect(res.json<{ error: string }>().error).toMatch(/^The sandbox was not restarted: /);
+        expect(await old.exists()).toBe(true);
+      } finally {
+        await clearAllocationOverride(owner);
+        await destroyConversationSandboxes(id);
+      }
+    }, 120_000);
+  });
 });
 
 describe("changing a conversation's image", () => {

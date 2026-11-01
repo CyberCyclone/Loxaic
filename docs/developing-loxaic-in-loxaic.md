@@ -19,7 +19,7 @@ It is an ordinary custom image. It replaces nothing and gets no special access, 
    - The package is public, so no login is needed. If it isn't, add a registry login for `ghcr.io` with a GitHub token that can read packages.
    - Wait for **Ready**.
 4. **Give the image room.** Set its limits to at least 16384 MB of memory, 8 CPUs and 8192 processes. An e2e lane runs a server, Postgres and a browser; the Android lane adds Gradle and an emulator.
-   - Press **Save limits**. Processes reaches the image's existing sandboxes at once; memory and CPUs apply to new ones.
+   - Press **Save limits**. Processes reaches the image's existing sandboxes at once. Memory and CPUs apply to new ones, and a chat already open offers **Restart sandbox** to pick them up.
    - `loxaic-test` refuses a lane under 8192 processes, because threads count against the limit and a lane that runs out leaves the sandbox unable to start anything.
 5. **For the Android lane,** turn on **Hardware virtualisation (KVM)** for the image.
    - This needs Loxaic's Docker host to have `/dev/kvm`, which means a Linux machine with virtualisation on. Docker Desktop on a Mac has none.

@@ -40,6 +40,19 @@ export type WorkspaceIsolation = "direct" | "container";
  * re-checked each time, so these fields describe the choice and grant nothing.
  * Absent means the built-in image.
  */
+/**
+ * One way a conversation's sandbox differs from what it would be given today,
+ * which only a new container picks up (a restart). Process limits are not
+ * here: they reach a sandbox by themselves.
+ */
+export type SandboxChange =
+  | { kind: "memory"; fromMb: number; toMb: number }
+  | { kind: "cpus"; from: number; to: number }
+  | { kind: "network"; to: boolean }
+  | { kind: "kvm"; to: boolean }
+  /** Its image has been pulled again since this sandbox was made. */
+  | { kind: "image" };
+
 export interface WorkspaceImage {
   id: string;
   scope: "shared" | "personal";

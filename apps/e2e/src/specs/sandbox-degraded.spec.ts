@@ -5,7 +5,7 @@
  */
 import { adminCreds, provisionAdmin } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { tap, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { tap, waitForFreshText, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   goToSurface,
   openSandboxSettings,
@@ -100,15 +100,15 @@ describe('sandbox degraded UX', () => {
     await startNewAgentRun();
     await tap('agent.mode.auto');
     await sendMessage('write a file called notes');
-    await waitForTextIn('agent.run.status', 'Done', 90_000);
+    await waitForFreshText('agent.run.status', 'Done', 90_000);
     await waitForVisible('agent.network.banner');
 
     await patchSandboxSettings({ allowNetwork: true });
     await goToSurface('chat');
     await goToSurface('agent');
     await waitForVisible('agent.network.banner');
-    await waitForTextIn('agent.network.banner', 'keeps the network it was created with');
-    await waitForTextIn('agent.network.banner', 'start a new conversation');
+    await waitForFreshText('agent.network.detail', 'keeps the network it was created with until its sandbox restarts');
+    await waitForFreshText('agent.sandboxChanges.text', 'Network on');
     await shot('sandbox-network-on-existing-workspace-banner');
 
     // A new conversation has no workspace yet, so it gets what the setting

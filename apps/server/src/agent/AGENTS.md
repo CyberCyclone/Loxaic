@@ -9,6 +9,7 @@ The agent's server-side pieces: builtin tool execution (`executor.ts`), the per-
 - `stopAllSandboxes` also sweeps every `running` row in the database; never call it from test cleanup. Use `destroyConversationSandboxes(id)`, and pass `ownerId`/`kind` to `reapAbandonedSandboxes` in tests.
 - An entry in `active` is a claim; tests of sweep behaviour must evict it with `__forgetActiveSandboxForTest`.
 - Every path that makes a sandbox running (create, resume, image switch, `POST /v1/sandboxes`) reserves its real limits with `reserveSandbox` and releases after the row says `running`; wake a paused sandbox only through `wake()`. Never pause a sandbox to make room (#254), and never pause one whose conversation, or a sub-agent working in it, has a run.
+- A setting a container can't take in place is reported by `pendingSandboxChanges`, and applied only by the restart route (`replaceConversationSandbox` under the conversation's claim); keep Loxaic's own image out of it, since it moves with every upgrade.
 - `createConfigFor` names the conversation owner as the sandbox `ownerId` and egress identity, never the sender, and resolves a workspace's custom image against that owner too.
 
 ## Builtin tools (executor.ts)

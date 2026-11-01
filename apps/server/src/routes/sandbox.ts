@@ -10,6 +10,7 @@ import {
   configNeed,
   networkFor,
   pauseSandbox,
+  pendingSandboxChanges,
   reserveSandbox,
 } from "../agent/sandbox-manager.ts";
 import { allocationFor, rowNeed, usageOf } from "../agent/allocation.ts";
@@ -44,10 +45,12 @@ export function sandboxRoutes(app: FastifyInstance) {
     // policy the reaper will actually apply — see sandboxReapAt(). Null means
     // reaping is switched off, which the UI must render as "kept", never as an
     // unknown date.
-    return rows.map((row) => ({
+    return Promise.all(rows.map(async (row) => ({
       ...row,
       reap_at: row.status === "destroyed" ? null : sandboxReapAt(row.lastUsedAt)?.toISOString() ?? null,
-    }));
+      // For one chat only: it takes a read per row, and only a chat shows it.
+      ...(conversation_id ? { pending_changes: await pendingSandboxChanges(row) } : {}),
+    })));
   });
 
   /**

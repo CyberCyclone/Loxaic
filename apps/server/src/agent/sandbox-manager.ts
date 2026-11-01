@@ -3,7 +3,8 @@ import { conversations, sandboxes } from "@loxaic/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { CreateSandboxConfig, SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
 import { SandboxGoneError } from "../sandbox/errors.ts";
-import type { Workspace } from "@loxaic/types";
+import type { SandboxChange, Workspace } from "@loxaic/types";
+import { sandboxChanges, specOfRow, type SandboxSpec } from "./sandbox-changes.ts";
 import { loadWorkspace } from "./workspace.ts";
 import { dropConversationCopies } from "./checkpoints.ts";
 import { getConnection } from "../github/connection.ts";
@@ -719,6 +720,8 @@ function sandboxRowValues(
       cpu: (config.limits?.cpu ?? 1e9) / 1e9,
       ...(config.limits?.pids ? { pids: config.limits.pids } : {}),
       network: networkFor(kind),
+      // Only a custom image can have it, so only there is it worth comparing.
+      ...(config.image ? { kvm: config.image.kvm === true } : {}),
     },
   };
 }
@@ -843,6 +846,44 @@ export async function replaceConversationSandbox(
   } finally {
     release();
   }
+}
+
+/**
+ * How this sandbox differs from what its workspace would be given today, for
+ * the chat to offer a restart. Empty for anything a restart could not fix or
+ * could not do: a sandbox that is not a container, a workspace on someone's
+ * own machine, and an image that can no longer be used.
+ */
+export async function pendingSandboxChanges(row: {
+  ownerId: string;
+  conversationId: string | null;
+  provider: string;
+  status: string;
+  image: string;
+  limits: unknown;
+}): Promise<SandboxChange[]> {
+  if (row.provider !== "container" || !row.conversationId) return [];
+  if (row.status !== "running" && row.status !== "stopped") return [];
+  const workspace = (await loadWorkspace(row.conversationId))?.workspace;
+  if (!workspace || workspace.kind === "local") return [];
+  const { findImage, readLimits, DEFAULT_IMAGE_LIMITS } = await import("../images/store.ts");
+  const now: SandboxSpec = {
+    memoryMb: DEFAULT_IMAGE_LIMITS.memoryMb,
+    cpus: DEFAULT_IMAGE_LIMITS.cpus,
+    network: networkFor("container"),
+  };
+  if (workspace.image) {
+    const { useRefusal } = await import("../images/access.ts");
+    const image = await findImage(workspace.image.id);
+    const usable = useRefusal(image, getSandboxSettings().customImages, row.ownerId, { github: workspace.kind === "github" }) === null;
+    if (!image?.digest || !usable) return [];
+    const limits = image.ownerId === null ? (readLimits(image.limits) ?? DEFAULT_IMAGE_LIMITS) : DEFAULT_IMAGE_LIMITS;
+    now.memoryMb = limits.memoryMb;
+    now.cpus = limits.cpus;
+    now.kvm = limits.kvm;
+    now.image = image.digest;
+  }
+  return sandboxChanges(specOfRow(row), now);
 }
 
 /**

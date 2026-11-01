@@ -372,5 +372,8 @@ describe.skipIf(!dockerReady)("custom images against a real registry", () => {
     expect(info.HostConfig.Memory).toBe(768 * 1024 * 1024);
     expect(info.HostConfig.NanoCpus).toBe(5e8);
     expect(info.HostConfig.PidsLimit).toBe(200);
+    // Recorded, so the chat can tell once the image's setting moves.
+    const row = await db.query.sandboxes.findFirst({ where: eq(sandboxes.containerId, handle.ref) });
+    expect(row?.limits).toMatchObject({ kvm: false });
   }, 300_000);
 });
