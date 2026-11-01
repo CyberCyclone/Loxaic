@@ -33,6 +33,7 @@ The per-run `Toolset` (builtins plus the user's MCP servers), approval policy, M
 - stdio children get only `PATH`/`HOME` + row env + secrets, never `process.env`.
 - HTTP transports re-run the SSRF guard on every request unless the user confirmed `allowPrivateNetwork`.
 - Spawn catalog servers (`catalog.ts`, stdio-only) from the installed package's bin (e.g. `@brave/brave-search-mcp-server`), never `npx`.
+- A catalog server's launch comes from `resolveLaunch()` at connect (`stdioLaunch`), never from its row, and sets `ELECTRON_RUN_AS_NODE`.
 - There is no built-in GitHub MCP server; GitHub goes through git/gh and the egress proxy.
 
 ## Tests

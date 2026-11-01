@@ -6,6 +6,8 @@ import path from "node:path";
  * dependency and the user supplies only its credentials. Launch commands
  * resolve the installed package's bin directly (never `npx`): the exact
  * audited version from the lockfile runs, offline, with no cold-start install.
+ * They are resolved at connect (`stdioLaunch`), never stored: the path carries
+ * the package's version, so a stored one breaks at the next dependency bump.
  *
  * GitHub is not here. Agents reach it with `git` and `gh` in their workspace,
  * through the egress proxy (egress/), which holds the token.
@@ -17,7 +19,7 @@ export interface CatalogEntry {
   description: string;
   transport: "stdio";
   secretKeys: { env: string; label: string }[];
-  resolveLaunch(): { command: string; args: string[] };
+  resolveLaunch(): { command: string; args: string[]; env: Record<string, string> };
 }
 
 const require = createRequire(import.meta.url);
@@ -42,6 +44,10 @@ export const BUILTIN_CATALOG: CatalogEntry[] = [
       return {
         command: process.execPath,
         args: [resolveBin("@brave/brave-search-mcp-server", "brave-search-mcp-server")],
+        // process.execPath is the Electron binary in a packaged build, and a
+        // stdio child does not inherit process.env. Without this it starts as
+        // a whole Electron app instead of Node. Plain Node ignores it.
+        env: { ELECTRON_RUN_AS_NODE: "1" },
       };
     },
   },

@@ -3,6 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { db, eq } from "@loxaic/db";
 import { mcpServers } from "@loxaic/db/schema";
+import { catalogEntry } from "./catalog.ts";
 import { mcpFetch } from "./http-fetch.ts";
 import { decryptSecrets, redact } from "./secrets.ts";
 import { MAX_TOOLS_PER_SERVER, sanitizeToolMeta, type SanitizedToolMeta } from "./sanitize.ts";
@@ -59,6 +60,31 @@ function asStringRecord(value: unknown): Record<string, string> {
   return out;
 }
 
+/**
+ * What a stdio server is started with. A catalog server's launch comes from the
+ * catalog on every connect and its row's `command` and `args` are ignored, so
+ * rows from before they stopped being stored survive a version bump.
+ */
+export function stdioLaunch(
+  row: McpServerRow,
+  secrets: Record<string, string>,
+): { command: string; args: string[]; env: Record<string, string> } {
+  const launch = catalogEntry(row.builtinKey)?.resolveLaunch();
+  const command = launch?.command ?? row.command;
+  if (!command) throw new Error("stdio MCP server has no command configured");
+  const args = launch?.args ?? (Array.isArray(row.args) ? (row.args as unknown[]).map(String) : []);
+  // Deliberately NOT process.env: the child sees only what it needs, so
+  // the server process can never read the host's own secrets.
+  const env: Record<string, string> = {
+    ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
+    ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
+    ...launch?.env,
+    ...asStringRecord(row.env),
+    ...secrets,
+  };
+  return { command, args, env };
+}
+
 async function connect(userId: string, row: McpServerRow): Promise<Entry> {
   const secrets = rowSecrets(row);
   const redactions: Record<string, string> = { ...secrets };
@@ -66,17 +92,7 @@ async function connect(userId: string, row: McpServerRow): Promise<Entry> {
 
   try {
     if (row.transport === "stdio") {
-      if (!row.command) throw new Error("stdio MCP server has no command configured");
-      const args = Array.isArray(row.args) ? (row.args as unknown[]).map(String) : [];
-      // Deliberately NOT process.env: the child sees only what it needs, so
-      // the server process can never read the host's own secrets.
-      const env: Record<string, string> = {
-        ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
-        ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
-        ...asStringRecord(row.env),
-        ...secrets,
-      };
-      const transport = new StdioClientTransport({ command: row.command, args, env, stderr: "ignore" });
+      const transport = new StdioClientTransport({ ...stdioLaunch(row, secrets), stderr: "ignore" });
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
     } else {
       if (!row.url) throw new Error("http MCP server has no URL configured");
