@@ -31,7 +31,7 @@ import { CARD_VALUE_MAX_HEIGHT, ToolCallDetails } from '@/components/chat/ToolCa
 import { TRUNCATE_TEXT, WRAP_ANYWHERE } from '@/lib/truncate';
 import { revealHidden } from '@/lib/toolDetails';
 import { Button, ButtonText } from '@/components/ui/button';
-import { allocationNoticeText } from '@/lib/sandboxAllocation';
+import { allocationNoticeText, processLimitNoticeText } from '@/lib/sandboxAllocation';
 
 const TOOL_ICONS: Record<string, typeof FileText> = {
   fs_read: FileText,
@@ -166,16 +166,19 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
           {permissionBadge(tool.permission)}
         </Text>
       ) : null}
-      {/* A sandbox refused for a full allocation (#254) is the person's to
-          fix, not the model's: the way out shows outside the collapsed body. */}
-      {tool.notice?.kind === 'sandbox_allocation' ? (
+      {/* A sandbox refused for a full allocation (#254), or at its process
+          limit, is the person's to fix, not the model's: the way out shows
+          outside the collapsed body. */}
+      {tool.notice ? (
         <HStack space="sm" className="items-center px-3 pb-2">
           <Text
             testID={tool.callId ? `chat.toolCall.allocation.${tool.callId}` : undefined}
             size="xs"
             className="min-w-0 flex-1 shrink text-muted-foreground"
           >
-            {allocationNoticeText(tool.notice.reason)}
+            {tool.notice.kind === 'sandbox_allocation'
+              ? allocationNoticeText(tool.notice.reason)
+              : processLimitNoticeText(tool.notice.limit)}
           </Text>
           <Button
             testID={tool.callId ? `chat.toolCall.manageSandboxes.${tool.callId}` : undefined}

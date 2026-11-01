@@ -912,10 +912,84 @@ async function wake(
       if (release) await handle.stop().catch(() => undefined);
       throw err;
     }
+    await syncProcessLimit(handle, row.id);
     return true;
   } finally {
     release?.();
   }
+}
+
+/** The process limit a sandbox of this workspace gets today: its shared
+ * image's, or the default. Null when its image's row has gone, which leaves
+ * nothing to follow. */
+async function processLimitFor(workspace: Workspace | null): Promise<number | null> {
+  const { findImage, readLimits, DEFAULT_IMAGE_LIMITS } = await import("../images/store.ts");
+  const chosen = workspace && "image" in workspace ? workspace.image : undefined;
+  if (!chosen) return DEFAULT_IMAGE_LIMITS.pids;
+  const row = await findImage(chosen.id);
+  if (!row) return null;
+  return row.ownerId === null ? (readLimits(row.limits)?.pids ?? DEFAULT_IMAGE_LIMITS.pids) : DEFAULT_IMAGE_LIMITS.pids;
+}
+
+async function recordProcessLimit(rowId: string, pids: number): Promise<void> {
+  await db
+    .update(sandboxes)
+    .set({ limits: sql`coalesce(${sandboxes.limits}, '{}'::jsonb) || ${JSON.stringify({ pids })}::jsonb` })
+    .where(eq(sandboxes.id, rowId));
+}
+
+/**
+ * Brings a woken sandbox up to its image's process limit, for a change made
+ * while it was paused (applyImageProcessLimit reaches the running ones).
+ * Unlike memory and CPUs, this is no part of what an allocation counts, so it
+ * can follow without a new reservation. Best-effort: a sandbox on its old
+ * limit still works, which beats a wake that fails over this.
+ */
+export async function syncProcessLimit(handle: SandboxHandle, rowId: string): Promise<void> {
+  if (!handle.setProcessLimit) return;
+  try {
+    const rows = await db
+      .select({ limits: sandboxes.limits, workspace: conversations.workspace })
+      .from(sandboxes)
+      .leftJoin(conversations, eq(conversations.id, sandboxes.conversationId))
+      .where(eq(sandboxes.id, rowId));
+    const row = rows.at(0);
+    if (!row) return;
+    const pids = await processLimitFor(row.workspace as Workspace | null);
+    if (pids === null || (row.limits as { pids?: number } | null)?.pids === pids) return;
+    await handle.setProcessLimit(pids);
+    await recordProcessLimit(rowId, pids);
+  } catch (err) {
+    console.warn(`could not update sandbox ${rowId}'s process limit: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Applies a shared image's new process limit to its running sandboxes, in
+ * place. Paused ones pick it up when they wake. A sandbox that cannot be
+ * updated keeps its old limit, and the save it came from still stands.
+ */
+export async function applyImageProcessLimit(imageId: string, pids: number): Promise<void> {
+  const rows = await db
+    .select({ id: sandboxes.id, containerId: sandboxes.containerId })
+    .from(sandboxes)
+    .innerJoin(conversations, eq(conversations.id, sandboxes.conversationId))
+    .where(and(
+      eq(sandboxes.status, "running"),
+      eq(sandboxes.provider, "container"),
+      sql`${conversations.workspace}->'image'->>'id' = ${imageId}`,
+    ));
+  if (rows.length === 0) return;
+  const provider = await getProviderByKind("container");
+  await Promise.all(rows.map(async (row) => {
+    try {
+      const handle = await provider.attach(row.containerId);
+      await handle.setProcessLimit?.(pids);
+      await recordProcessLimit(row.id, pids);
+    } catch (err) {
+      console.warn(`could not update sandbox ${row.id}'s process limit: ${(err as Error).message}`);
+    }
+  }));
 }
 
 /** Records a use of a row still `running`; false when it no longer is. */

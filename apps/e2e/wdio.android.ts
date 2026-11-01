@@ -12,7 +12,7 @@
  * that same localhost URL (EXPO_PUBLIC_* values are inlined at bundle time, not
  * read at runtime); see apps/e2e/README.md.
  */
-import { PORT, standup, teardown } from './scripts/standup.ts';
+import { PORT, standup, stopRunOnFailure, teardown } from './scripts/standup.ts';
 import {
   adbReverse,
   adbReverseRemove,
@@ -56,14 +56,14 @@ export const config: WebdriverIO.Config = {
     },
   ],
 
-  onPrepare: async function onPrepare() {
+  onPrepare: stopRunOnFailure(async () => {
     await standup();
     // After stand-up, so the port being forwarded is one that already answers.
     adbReverse(PORT);
     // The attachments spec picks the first photo out of the system picker, so
     // the media store has to have one.
     seedAndroidPhoto(IMAGE_FIXTURE);
-  },
+  }),
 
   onComplete: async function onComplete() {
     adbReverseRemove(PORT);

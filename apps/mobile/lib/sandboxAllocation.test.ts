@@ -3,6 +3,7 @@ import type { AllocatedSandbox } from '@loxaic/api-client';
 import {
   allocationBars,
   allocationNoticeText,
+  processLimitNoticeText,
   allocationSource,
   allocationSummary,
   anyOverridden,
@@ -154,6 +155,12 @@ describe('allocationNoticeText', () => {
     expect(allocationNoticeText('count')).toContain('Pause a sandbox');
     expect(allocationNoticeText('memory')).toContain('Pause a sandbox');
     expect(allocationNoticeText('too_big')).toContain('Only an administrator');
+  });
+});
+
+describe('processLimitNoticeText', () => {
+  it('names the limit and the way out', () => {
+    expect(processLimitNoticeText(100)).toBe('This sandbox reached its limit of 100 processes. Pause it to end them; your files are kept.');
   });
 });
 

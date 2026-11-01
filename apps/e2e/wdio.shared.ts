@@ -5,7 +5,7 @@
  */
 import type { Options } from '@wdio/types';
 import { shot } from './src/helpers/screenshot.ts';
-import { standup, teardown } from './scripts/standup.ts';
+import { standup, stopRunOnFailure, teardown } from './scripts/standup.ts';
 
 export const sharedConfig: Partial<WebdriverIO.Config> = {
   runner: 'local',
@@ -33,9 +33,7 @@ export const sharedConfig: Partial<WebdriverIO.Config> = {
     timeout: 180_000,
   },
 
-  onPrepare: async function onPrepare() {
-    await standup();
-  },
+  onPrepare: stopRunOnFailure(standup),
 
   // A failed step is exactly when a picture is worth most, so capture one
   // without the spec having to ask.

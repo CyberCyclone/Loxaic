@@ -118,6 +118,9 @@ importers:
       wdio-electron-service:
         specifier: ^9.2.1
         version: 9.2.1(electron@44.9.3)(expect-webdriverio@6.1.0)(webdriverio@9.32.0(puppeteer-core@22.15.0))
+      webdriverio:
+        specifier: ^9.32.0
+        version: 9.32.0(puppeteer-core@22.15.0)
 
   apps/mobile:
     dependencies:

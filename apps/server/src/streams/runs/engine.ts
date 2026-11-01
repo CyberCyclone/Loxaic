@@ -2356,6 +2356,7 @@ async function runOneToolCall(
     ...(permission ? { permission } : {}),
     ...(images ? { images } : {}),
     ...(result.browser ? { browser: true } : {}),
+    ...(result.notice ? { notice: result.notice } : {}),
   });
   return {
     output: result.output,
@@ -2364,6 +2365,7 @@ async function runOneToolCall(
     ...(permission ? { permission } : {}),
     ...(images ? { images, imagesSentToModel } : {}),
     ...(result.browser ? { browser: true } : {}),
+    ...(result.notice ? { notice: result.notice } : {}),
   };
 }
 

@@ -51,12 +51,13 @@ export interface PermissionCheckNote {
  * wake because its owner's running sandboxes fill their allocation, so a
  * client offers the Sandboxes screen. `reason` is "too_big" when the sandbox
  * alone exceeds the whole allocation (only an admin can help), otherwise
- * "count", "memory" or "cpus".
+ * "count", "memory" or "cpus". `sandbox_processes`: the sandbox is at its
+ * process limit, so nothing can start in it and the model cannot help; pausing
+ * it from the same screen ends every process.
  */
-export interface ToolNotice {
-  kind: "sandbox_allocation";
-  reason: "too_big" | "count" | "memory" | "cpus";
-}
+export type ToolNotice =
+  | { kind: "sandbox_allocation"; reason: "too_big" | "count" | "memory" | "cpus" }
+  | { kind: "sandbox_processes"; limit: number };
 
 /** Why a `bash` call ran (or did not) without anyone being asked. Absent on a
  * call a person approved, and from a server that predates it. */

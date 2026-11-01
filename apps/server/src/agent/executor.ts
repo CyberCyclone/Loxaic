@@ -1,8 +1,10 @@
 import posix from "node:path/posix";
 import type { SandboxHandle } from "../sandbox/provider.ts";
+import { execFailure, SandboxProcessLimitError } from "../sandbox/errors.ts";
 import type { FileDiff, Todo, ToolName } from "@loxaic/agent";
 import { QUESTION_LIMITS } from "@loxaic/agent";
 import { parseTodoList } from "@loxaic/types";
+import type { ToolNotice } from "@loxaic/types";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { BlockedTargetError, guardedFetch, type GuardedResponse } from "./address-guard.ts";
 
@@ -26,6 +28,8 @@ export interface ToolResult {
   /** web_fetch loaded the page in the conversation's browser (#281), whether
    * or not that worked, so the person can tell it from a plain fetch. */
   browser?: true;
+  /** Why it failed, when that is the person's to act on. */
+  notice?: ToolNotice;
 }
 
 /**
@@ -125,8 +129,16 @@ export async function executeTool(
         return { ok: false, output: `Unknown tool: ${tool}` };
     }
   } catch (err) {
-    return { ok: false, output: `Error: ${(err as Error).message}` };
+    return {
+      ok: false,
+      output: `Error: ${(err as Error).message}`,
+      ...(err instanceof SandboxProcessLimitError ? { notice: processLimitNotice(err.limit) } : {}),
+    };
   }
+}
+
+function processLimitNotice(limit: number): ToolNotice {
+  return { kind: "sandbox_processes", limit };
 }
 
 // ── Plan ──────────────────────────────────────────────────
@@ -218,7 +230,7 @@ async function runFsRead(handle: SandboxHandle, args: Record<string, unknown>): 
     "_", String(offset), String(end), path,
   ]);
   if (res.exitCode !== 0) {
-    throw new Error(res.stderr.trim() || `read failed (exit ${String(res.exitCode)})`);
+    throw execFailure(res, `read failed (exit ${String(res.exitCode)})`);
   }
 
   const total = Number.parseInt(res.stderr.trim(), 10) || 0;
@@ -249,7 +261,8 @@ async function runFsRead(handle: SandboxHandle, args: Record<string, unknown>): 
 async function readOrNull(handle: SandboxHandle, path: string): Promise<string | null> {
   try {
     return await handle.readFile(path);
-  } catch {
+  } catch (err) {
+    if (err instanceof SandboxProcessLimitError) throw err;
     return null;
   }
 }
@@ -319,6 +332,7 @@ async function runBash(
   return {
     ok: res.exitCode === 0,
     output: `${body}${body ? "\n" : ""}[exit ${String(res.exitCode)}]`,
+    ...(res.processLimit !== undefined ? { notice: processLimitNotice(res.processLimit) } : {}),
   };
 }
 
@@ -333,6 +347,7 @@ async function runGrep(handle: SandboxHandle, args: Record<string, unknown>): Pr
     "_", pattern, searchPath,
   ], { workdir: handle.workdir, timeoutMs: 30_000 });
 
+  if (res.processLimit !== undefined) throw execFailure(res, "grep failed");
   if (res.stdout.trim() === "") {
     return { ok: true, output: res.stderr.trim() || `No matches for /${pattern}/ in ${searchPath}` };
   }
@@ -348,6 +363,7 @@ async function runGlob(handle: SandboxHandle, args: Record<string, unknown>): Pr
     "_", pattern, searchPath,
   ], { workdir: handle.workdir, timeoutMs: 30_000 });
 
+  if (res.processLimit !== undefined) throw execFailure(res, "glob failed");
   if (res.stdout.trim() === "") {
     return { ok: true, output: res.stderr.trim() || `No files match ${pattern} under ${searchPath}` };
   }

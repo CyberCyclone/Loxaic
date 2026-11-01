@@ -34,7 +34,7 @@ export interface ImageLimits {
 }
 
 /** Today's defaults for every sandbox (container-engine.ts's DEFAULT_LIMITS). */
-export const DEFAULT_IMAGE_LIMITS: ImageLimits = { memoryMb: 512, cpus: 1, pids: 100, kvm: false };
+export const DEFAULT_IMAGE_LIMITS: ImageLimits = { memoryMb: 512, cpus: 1, pids: 4096, kvm: false };
 
 /** The bounds an admin may set a shared image's limits within. */
 export const LIMIT_BOUNDS = {

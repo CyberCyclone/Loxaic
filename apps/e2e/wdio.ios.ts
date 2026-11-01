@@ -10,7 +10,7 @@
  * requirement. That is why iOS needs neither an `adb reverse` equivalent nor
  * the cleartext-traffic opt-in Android does.
  */
-import { standup, teardown } from './scripts/standup.ts';
+import { standup, stopRunOnFailure, teardown } from './scripts/standup.ts';
 import {
   iosAppPath,
   requireAppiumDrivers,
@@ -63,12 +63,12 @@ export const config: WebdriverIO.Config = {
     },
   ],
 
-  onPrepare: async function onPrepare() {
+  onPrepare: stopRunOnFailure(async () => {
     await standup();
     // The attachments spec picks the first photo out of PHPicker, so the
     // library has to have one. Cheap and idempotent enough to always do.
     seedIosPhoto(IOS_DEVICE, IMAGE_FIXTURE, process.env.E2E_IOS_VERSION);
-  },
+  }),
 
   // Per **session**, not per run. onPrepare fires once for the whole suite, so
   // resetting there only cleans up before the first spec file: the moment that

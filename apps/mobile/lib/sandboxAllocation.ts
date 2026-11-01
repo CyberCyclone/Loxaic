@@ -270,8 +270,13 @@ export function allocationSummary(allocation: SandboxAllocation, used: SandboxUs
 
 /** What a tool card says when its sandbox was refused for the allocation
  * (#254): the full text is in the result; this is the line beside the way out. */
-export function allocationNoticeText(reason: ToolNotice['reason']): string {
+export function allocationNoticeText(reason: Extract<ToolNotice, { kind: 'sandbox_allocation' }>['reason']): string {
   return reason === 'too_big'
     ? 'This sandbox is larger than your whole allocation. Only an administrator can raise it.'
     : 'Your sandbox allocation is full. Pause a sandbox to make room, then try again.';
+}
+
+/** For a sandbox at its process limit: nothing can run in it until something ends. */
+export function processLimitNoticeText(limit: number): string {
+  return `This sandbox reached its limit of ${String(limit)} processes. Pause it to end them; your files are kept.`;
 }

@@ -3,6 +3,7 @@
    synchronous stubs (no real I/O to await) — that's the point of a fake. */
 import { describe, expect, it } from "vitest";
 import { executeTool, resolvePath } from "../executor.ts";
+import { processLimitMessage, SandboxProcessLimitError } from "../../sandbox/errors.ts";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../../sandbox/provider.ts";
 
 /**
@@ -303,5 +304,47 @@ describe("executeTool — no sandbox available", () => {
     const result = await executeTool(null, "todo_write", { todos: [{ id: "1", text: "a", status: "pending" }] });
     expect(result.ok).toBe(true);
     expect(result.todos).toHaveLength(1);
+  });
+});
+
+describe("executeTool — a sandbox at its process limit", () => {
+  const refused: ExecResult = {
+    stdout: "OCI runtime exec failed: exec failed: unable to start container process: procReady not received\r\n",
+    stderr: `${processLimitMessage(64)}\n`,
+    exitCode: 128,
+    truncated: false,
+    timedOut: false,
+    processLimit: 64,
+  };
+  const notice = { kind: "sandbox_processes", limit: 64 };
+
+  it.each([
+    ["bash", { command: "echo hi" }],
+    ["fs_read", { path: "a.txt" }],
+    ["grep", { pattern: "x" }],
+    ["glob", { pattern: "*" }],
+  ] as const)("%s fails with the notice and says why", async (tool, args) => {
+    const { handle, setNextExec } = makeFakeHandle();
+    setNextExec(refused);
+    const result = await executeTool(handle, tool, args);
+    expect(result.ok).toBe(false);
+    expect(result.notice).toEqual(notice);
+    expect(result.output).toContain(processLimitMessage(64));
+  });
+
+  it("fs_edit and fs_write report it rather than a missing file", async () => {
+    const { handle } = makeFakeHandle();
+    handle.readFile = async () => { throw new SandboxProcessLimitError(processLimitMessage(64), 64); };
+    const edit = await executeTool(handle, "fs_edit", { path: "a.txt", oldText: "a", newText: "b" });
+    expect(edit.notice).toEqual(notice);
+    expect(edit.output).toContain(processLimitMessage(64));
+    const write = await executeTool(handle, "fs_write", { path: "a.txt", content: "b" });
+    expect(write.notice).toEqual(notice);
+  });
+
+  it("raises no notice for an ordinary failure", async () => {
+    const { handle, setNextExec } = makeFakeHandle();
+    setNextExec({ stdout: "", stderr: "nope", exitCode: 1, truncated: false, timedOut: false });
+    expect((await executeTool(handle, "bash", { command: "false" })).notice).toBeUndefined();
   });
 });

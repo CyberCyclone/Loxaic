@@ -21,6 +21,7 @@ Custom sandbox images (#253): registry logins (`logins.ts`), image rows and thei
 - Make `/home/loxaic/repo` with `putArchive` before start, owned by the uid:gid the check found; Docker otherwise creates a missing `WorkingDir` owned by root.
 - Refuse an image carrying `loxaic.*` labels: a container inherits them, and `loxaic.executor` hides it from the orphan sweep.
 - Keep `check.ts`'s required list in step with what the tools run unconditionally (the exec wrapper, the file tools, checkpoints, instruction and skill reads); a missing tool breaks a run silently.
+- A saved `limits.pids` reaches the image's existing sandboxes (`applyImageProcessLimit` for running ones, `wake()` for paused); memory and CPUs never do, because allocations count them.
 - A failed pull leaves the last good `digest` and `check` usable; usability is "digest present and check passed", never the latest `status`.
 
 ## Changing a conversation's image

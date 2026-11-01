@@ -18,6 +18,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authenticate, requireAdmin } from "../auth/middleware";
 import { getSandboxSettings } from "../settings.ts";
+import { applyImageProcessLimit } from "../agent/sandbox-manager.ts";
 import { manageRefusal, hasGit, scopeAllowed, type ImageScope } from "../images/access.ts";
 import { deleteLogin, listLogins, saveLogin, type LoginOwner } from "../images/logins.ts";
 import { parseRegistry, ReferenceError } from "../images/reference.ts";
@@ -184,7 +185,12 @@ export function imageRoutes(app: FastifyInstance) {
       if (body.limits !== undefined && !(await mayWrite(reply, def.scope))) return;
       try {
         const updated = await updateImage(owner, request.params.id, body);
-        return updated ?? fail(reply, 404, "Not found");
+        if (!updated) return fail(reply, 404, "Not found");
+        // Processes reach the image's existing sandboxes; memory and CPUs are
+        // counted against allocations, so only a new sandbox takes them.
+        const pids = (body.limits as { pids?: unknown } | undefined)?.pids;
+        if (pids !== undefined && updated.limits) await applyImageProcessLimit(updated.id, updated.limits.pids);
+        return updated;
       } catch (err) {
         return imageError(reply, err);
       }
