@@ -29,6 +29,7 @@ import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
 import { useEndpoint } from './useEndpoint';
 import { NOT_SENT_RECONNECTING, connectionState, disconnectedCopy, isOffline } from '@/lib/connection';
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
+import type { RunLimitsLink } from '@/lib/runLimits';
 import type { Conversation, Message, ChangedFile, Workspace, WorkspaceChoice } from '@/lib/types';
 import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
 import { applyRewound, rewindClearsLiveRun, restoreReportLine } from '@/lib/rewind';
@@ -102,6 +103,8 @@ export function useAgentSession(
   pendingStage?: { readonly current: number | undefined },
   /** As on `useChatSession`. */
   thinking?: { readonly current: ThinkingLevel | undefined },
+  /** As on `useChatSession`. */
+  runLimits?: { readonly current: RunLimitsLink | null },
 ) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
@@ -707,6 +710,12 @@ export function useAgentSession(
       } else if (event.type === 'conversation.mode') {
         // The owner picked or sent on another device (or this one).
         recordThreadMode(event.conversation_id, event.mode);
+      } else if (event.type === 'conversation.limits') {
+        // See useChatSession.
+        runLimits?.current?.onChange(event.conversation_id, {
+          stepLimitOff: event.step_limit_off,
+          loopCheckOff: event.loop_check_off,
+        });
       } else if (event.type === 'conversation.workspace') {
         // Its owner moved it to another image (#253), maybe on another
         // device: the pill and the Inspector follow.
@@ -819,7 +828,7 @@ export function useAgentSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, recordThreadMode, refreshThreadMode]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, recordThreadMode, refreshThreadMode, runLimits]);
 
   // The selector follows the thread on screen (#311): its live run's mode,
   // else its last one, on opening it, on a load and on a reconnect; and the
@@ -919,7 +928,7 @@ export function useAgentSession(
           // The implicit path: the server opens a scratch conversation on the
           // first send. Unchanged from before workspaces existed.
           if (
-            !sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId, pendingMcp?.current, pendingStage?.current, thinking?.current)
+            !sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId, pendingMcp?.current, pendingStage?.current, thinking?.current, runLimits?.current?.pending)
           ) {
             setRuns((prev) => prev.filter((r) => r.id !== localId));
             setActiveId(null);
@@ -940,7 +949,7 @@ export function useAgentSession(
           // in that window left the send on a closed socket — silently, since
           // trySend's false was discarded — with the optimistic run pending
           // forever. A lost socket is now the error the rollback below shows.
-          createConversation({ kind: 'agent', workspace: chosen, mcp_overrides: pendingMcp?.current })
+          createConversation({ kind: 'agent', workspace: chosen, mcp_overrides: pendingMcp?.current, run_limits: runLimits?.current?.pending })
             .then((created) => {
               const ws = wsRef.current;
               // The ninth slot (MCP choices) is empty here on purpose: they rode
@@ -979,7 +988,7 @@ export function useAgentSession(
       }
       return true;
     },
-    [mode, handleModeChange, setActiveId, showToast, pendingMcp, pendingStage, thinking, dismissStageCard],
+    [mode, handleModeChange, setActiveId, showToast, pendingMcp, pendingStage, thinking, runLimits, dismissStageCard],
   );
 
   /** Answers the run's newest message again (#166) — see useChatSession. In

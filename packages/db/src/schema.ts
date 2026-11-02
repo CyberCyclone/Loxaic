@@ -104,6 +104,11 @@ export const conversations = pgTable("conversations", {
    * was sent in, or last picked on its selector since: what the thread opens
    * in after a reload (#311). Null until either happens. */
   permissionMode: text("permission_mode", { enum: ["planning", "manual", "auto"] }),
+  /** Its owner turned off the step limit: `RunLimits` in packages/types. Chat
+   * and agent threads only; a routine's run stays bounded. */
+  stepLimitOff: boolean("step_limit_off").notNull().default(false),
+  /** As `stepLimitOff`, for the loop check. */
+  loopCheckOff: boolean("loop_check_off").notNull().default(false),
   /**
    * Set only on a `subagent` conversation: the conversation whose run spawned
    * it. No foreign key, like `messages.conversation_id` — erasing a parent

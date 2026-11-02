@@ -4,10 +4,13 @@ import {
   clearRunApproval,
   clearRunCheckin,
   clearRunQueuePosition,
+  onRunLimitsChange,
   registerRun,
   runActivityOf,
+  seedRunLimits,
   setRunApproval,
   setRunCheckin,
+  setRunLimits,
   setRunQueuePosition,
   takeRunCheckin,
   unregisterRun,
@@ -42,6 +45,33 @@ function makeHandle(overrides: Partial<RunHandle> = {}): RunHandle {
     ...overrides,
   };
 }
+
+describe("a run's limits", () => {
+  const off = { stepLimitOff: true, loopCheckOff: false };
+  const on = { stepLimitOff: false, loopCheckOff: false };
+
+  it("takes what its conversation says only if nobody has switched them yet", () => {
+    const handle = makeHandle();
+    seedRunLimits(handle, on);
+    expect(handle.limits).toEqual(on);
+
+    const switched = makeHandle();
+    setRunLimits(switched, off, "me");
+    seedRunLimits(switched, on);
+    expect(switched.limits).toEqual(off);
+  });
+
+  it("tells what is waiting who switched them, until it stops listening", () => {
+    const handle = makeHandle();
+    const heard: string[] = [];
+    const stop = onRunLimitsChange(handle, (by) => { heard.push(by); });
+    setRunLimits(handle, off, "me");
+    stop();
+    setRunLimits(handle, on, "me again");
+    expect(heard).toEqual(["me"]);
+    expect(handle.limits).toEqual(on);
+  });
+});
 
 describe("runActivityOf", () => {
   it("reads a plain run as running", () => {

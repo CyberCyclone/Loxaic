@@ -73,3 +73,37 @@ export const DEFAULT_LOOP_SENSITIVITY: LoopSensitivity = "normal";
 export function isLoopSensitivity(value: unknown): value is LoopSensitivity {
   return typeof value === "string" && (LOOP_SENSITIVITIES as readonly string[]).includes(value);
 }
+
+/**
+ * What a conversation's owner has turned off for its runs (chat and agent
+ * threads; a routine stays bounded). Each stops one kind of check-in, the step
+ * limit's or the loop check's, for as long as it is off, and can be turned back
+ * on at any point, mid-run included.
+ */
+export interface RunLimits {
+  stepLimitOff: boolean;
+  loopCheckOff: boolean;
+}
+
+/** Every limit on: what a run has until told otherwise, and what it falls back
+ * to when the conversation could not be read. */
+export const LIMITS_ON: RunLimits = { stepLimitOff: false, loopCheckOff: false };
+
+/** A `RunLimits` on the wire. Absent means left as it is, or on for a new
+ * conversation. */
+export interface RunLimitChoices {
+  step_limit_off?: boolean;
+  loop_check_off?: boolean;
+}
+
+/** An untrusted `run_limits` as what it asks for, dropping anything that is
+ * not a boolean; `undefined` when nothing is left. */
+export function normalizeRunLimits(value: unknown): RunLimitChoices | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { step_limit_off: stepLimit, loop_check_off: loopCheck } = value as Record<string, unknown>;
+  const choices: RunLimitChoices = {
+    ...(typeof stepLimit === "boolean" ? { step_limit_off: stepLimit } : {}),
+    ...(typeof loopCheck === "boolean" ? { loop_check_off: loopCheck } : {}),
+  };
+  return Object.keys(choices).length > 0 ? choices : undefined;
+}

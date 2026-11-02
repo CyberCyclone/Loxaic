@@ -200,5 +200,12 @@ describe('the composer + menu and per-chat MCP switches', () => {
     await waitForTextIn('composer.mcp.locked', 'owner');
     await shot('plus-menu-mcp-editor-locked');
     await closePlusMenu();
+
+    // The run limits are the owner's too.
+    await openPlusMenu();
+    await waitForTextIn('composer.plus.limits.locked', 'owner');
+    await tap('composer.plus.stepLimit');
+    await waitForSwitch('composer.plus.stepLimit', true);
+    await closePlusMenu();
   });
 });

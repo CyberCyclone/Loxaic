@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { resolveSessionFromToken } from "../auth/middleware";
-import { isThinkingLevel, normalizeMcpOverrides, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
+import { isThinkingLevel, normalizeMcpOverrides, normalizeRunLimits, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
 import { retryChatRun, startChatRun } from "../streams/runs/chatRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { resolveCommandSkill } from "../skills/resolve.ts";
@@ -125,6 +125,7 @@ export function chatWsHandler(app: FastifyInstance) {
             // A claim off the socket like any other field: normalised here,
             // and only ever applied to a conversation this send creates.
             mcpOverrides: normalizeMcpOverrides(msg.mcp_overrides),
+            runLimits: normalizeRunLimits(msg.run_limits),
             contextStage: normalizeContextStage(msg.context_stage),
             // Anything that is not one of the four words is dropped, not
             // forwarded: it becomes a request field on the model's backend.

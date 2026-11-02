@@ -5,8 +5,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import { CHECKIN_ANSWER_NUDGE, type ContentBlock, type StreamEventKind } from "@loxaic/types";
+import { CHECKIN_ANSWER_NUDGE, LIMITS_ON, type ContentBlock, type RunLimits, type StreamEventKind } from "@loxaic/types";
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
+import { applyRunLimits } from "../../../conversations/run-limits.ts";
 import { getRunByConversation } from "../../registry.ts";
 import { startAgentRun } from "../agentRun.ts";
 import { DEFAULT_MAX_ITERATIONS } from "../engine.ts";
@@ -117,10 +118,10 @@ describe("step check-ins", () => {
     }
   }
 
-  async function newConversation(): Promise<string> {
+  async function newConversation(limits: Partial<RunLimits> = {}): Promise<string> {
     const [conv] = await db
       .insert(conversations)
-      .values({ ownerId: userId, title: "checkin test", kind: "agent" })
+      .values({ ownerId: userId, title: "checkin test", kind: "agent", ...limits })
       .returning();
     convIds.push(conv.id);
     return conv.id;
@@ -521,5 +522,137 @@ describe("step check-ins", () => {
     await waitFor("the run to finish", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
     expect((await eventsOf(streamId)).filter((e) => e.kind === "steps.checkin")).toHaveLength(0);
     expect((await rowsOf(convId)).filter((r) => r.authorType === "tool")).toHaveLength(3);
+  });
+
+  describe("a conversation's own limits", () => {
+    const start = (convId: string, content: string) =>
+      startAgentRun({ userId, content, model: "llama-3.1-8b-instruct", mode: "auto", conversationId: convId });
+
+    it("runs past the window without asking when the step limit is off, and says so on each step", async () => {
+      await setMaxIterations(1);
+      useScenario("off", "plan in three steps", [todoStep("First"), todoStep("Second"), todoStep("Third")], "[Mock] planned.\n");
+      const convId = await newConversation({ stepLimitOff: true });
+      const { streamId } = await start(convId, "plan in three steps");
+
+      await waitFor("the run to finish", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
+      const events = await eventsOf(streamId);
+      expect(events.filter((e) => e.kind === "steps.checkin")).toHaveLength(0);
+      const iterations = events.filter((e) => e.kind === "iteration");
+      expect(iterations.length).toBeGreaterThanOrEqual(3);
+      expect(iterations.every((e) => e.unlimited === true)).toBe(true);
+      // A client catching up reads the same thing.
+      expect(broker().foldSnapshot(await broker().readFrom(streamId, 0)).iteration?.unlimited).toBe(true);
+      expect((await rowsOf(convId)).filter((r) => r.authorType === "tool")).toHaveLength(3);
+    });
+
+    it("still asks about a repeat with only the step limit off", async () => {
+      await setMaxIterations(1);
+      const same = todoStep("Investigate");
+      useScenario("step-off-loop", "go round in circles", [same, same, same, same], "[Mock] stopped.\n");
+      const convId = await newConversation({ stepLimitOff: true });
+      const { streamId } = await start(convId, "go round in circles");
+
+      await parkedRun(convId);
+      expect((await eventsOf(streamId)).find((e) => e.kind === "steps.checkin")).toMatchObject({ n: 3, reason: "loop" });
+    });
+
+    it("runs a repeat through with the loop check off, and still asks at the window's end", async () => {
+      await setMaxIterations(4);
+      const same = todoStep("Investigate");
+      useScenario("loop-off", "go round in circles", [same, same, same, same, same], "[Mock] stopped.\n");
+      const convId = await newConversation({ loopCheckOff: true });
+      const { streamId } = await start(convId, "go round in circles");
+
+      await parkedRun(convId);
+      expect((await eventsOf(streamId)).find((e) => e.kind === "steps.checkin")).toMatchObject({ n: 4, reason: "budget" });
+    });
+
+    it("runs a repeat past the window with both off", async () => {
+      await setMaxIterations(1);
+      const same = todoStep("Investigate");
+      useScenario("both-off", "go round in circles", [same, same, same, same], "[Mock] stopped.\n");
+      const convId = await newConversation({ stepLimitOff: true, loopCheckOff: true });
+      const { streamId } = await start(convId, "go round in circles");
+
+      await waitFor("the run to finish", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
+      expect((await eventsOf(streamId)).filter((e) => e.kind === "steps.checkin")).toHaveLength(0);
+      expect((await rowsOf(convId)).filter((r) => r.authorType === "tool")).toHaveLength(4);
+    });
+
+    it("answers a parked check-in when its switch is turned off, as that person", async () => {
+      await setMaxIterations(1);
+      useScenario("withdrawn", "plan in two steps", [todoStep("First"), todoStep("Second")], "[Mock] planned.\n");
+      const convId = await newConversation();
+      const { streamId } = await start(convId, "plan in two steps");
+
+      await parkedRun(convId);
+      applyRunLimits(userId, convId, { ...LIMITS_ON, stepLimitOff: true });
+
+      await waitFor("the run to finish", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
+      const events = await eventsOf(streamId);
+      expect(events.filter((e) => e.kind === "steps.checkin")).toHaveLength(1);
+      expect(events.find((e) => e.kind === "steps.decision")).toMatchObject({ decision: "continue", by: "user", n: 1 });
+      expect(broker().foldSnapshot(await broker().readFrom(streamId, 0)).pending_checkin).toBeUndefined();
+      expect((await rowsOf(convId)).filter((r) => r.authorType === "tool")).toHaveLength(2);
+    });
+
+    it("leaves a parked check-in waiting when the other switch is turned off", async () => {
+      await setMaxIterations(1);
+      useScenario("other", "plan in two steps", [todoStep("First"), todoStep("Second")], "[Mock] planned.\n");
+      const convId = await newConversation();
+      const { streamId } = await start(convId, "plan in two steps");
+
+      const run = await parkedRun(convId);
+      applyRunLimits(userId, convId, { ...LIMITS_ON, loopCheckOff: true });
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(run.stepsDecision).toBeDefined();
+      expect((await eventsOf(streamId)).some((e) => e.kind === "steps.decision")).toBe(false);
+    });
+
+    it("leaves another person's run alone, whoever owns the thread", async () => {
+      await setMaxIterations(1);
+      useScenario("sender", "plan in two steps", [todoStep("First"), todoStep("Second")], "[Mock] planned.\n");
+      const convId = await newConversation();
+      await start(convId, "plan in two steps");
+
+      const run = await parkedRun(convId);
+      applyRunLimits("someone-else", convId, { ...LIMITS_ON, stepLimitOff: true });
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(run.stepsDecision).toBeDefined();
+      expect(run.limits).toEqual(LIMITS_ON);
+    });
+
+    it("keeps a switch flipped while the run was starting over the row it read", async () => {
+      await setMaxIterations(1);
+      useScenario("race", "plan in two steps", [todoStep("First"), todoStep("Second")], "[Mock] planned.\n");
+      const convId = await newConversation();
+      const { streamId } = await start(convId, "plan in two steps");
+      // `startAgentRun` returns with the run registered and the loop not yet
+      // past its first await.
+      applyRunLimits(userId, convId, { ...LIMITS_ON, stepLimitOff: true });
+
+      await waitFor("the run to finish", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
+      expect((await eventsOf(streamId)).filter((e) => e.kind === "steps.checkin")).toHaveLength(0);
+    });
+
+    it("writes the choices a send that creates the conversation carries", async () => {
+      await setMaxIterations(1);
+      useScenario("first-send", "plan in two steps", [todoStep("First"), todoStep("Second")], "[Mock] planned.\n");
+      const { streamId, conversationId } = await startAgentRun({
+        userId,
+        content: "plan in two steps",
+        model: "llama-3.1-8b-instruct",
+        mode: "auto",
+        runLimits: { step_limit_off: true },
+      });
+      convIds.push(conversationId);
+
+      await waitFor("the run to finish", () => getRunByConversation(conversationId) === undefined, DEADLINE_MS);
+      expect((await eventsOf(streamId)).filter((e) => e.kind === "steps.checkin")).toHaveLength(0);
+      const row = await db.query.conversations.findFirst({ where: eq(conversations.id, conversationId) });
+      expect(row).toMatchObject({ stepLimitOff: true, loopCheckOff: false });
+    });
   });
 });

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eq, ne, and, isNull, desc, inArray, or, getTableColumns } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { conversationShares, conversations, usageRecords } from "@loxaic/db/schema";
-import { normalizeMcpOverrides, type ContextBreakdown, type Workspace, type WorkspaceImage } from "@loxaic/types";
+import { normalizeMcpOverrides, normalizeRunLimits, type ContextBreakdown, type Workspace, type WorkspaceImage } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
 import { deleteConversation } from "../conversations/delete.ts";
@@ -40,6 +40,7 @@ function publicConversation<T extends { instructions: unknown }>(row: T): Omit<T
   const { instructions, ...rest } = row;
   return { ...rest, instructions: summarizeInstructions(instructions) };
 }
+import { applyRunLimits, runLimitColumns } from "../conversations/run-limits.ts";
 import { getRun, getRunByConversation } from "../streams/registry.ts";
 import { listSubagents } from "../streams/runs/subagentRun.ts";
 import { latestTodos } from "../conversations/latest-todos.ts";
@@ -154,13 +155,15 @@ export function conversationRoutes(app: FastifyInstance) {
    */
   app.post("/v1/conversations", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const { title, kind, workspace, mcp_overrides } = (request.body ?? {}) as {
+    const { title, kind, workspace, mcp_overrides, run_limits } = (request.body ?? {}) as {
       title?: string;
       kind?: unknown;
       workspace?: unknown;
       /** MCP choices made before the conversation existed — the agent's
        * create-then-send path, when a workspace was chosen. */
       mcp_overrides?: unknown;
+      /** The same for run limits. */
+      run_limits?: unknown;
     };
     // Only the two kinds a client may open. Routines create their own rows
     // server-side and are not something a client creates by name.
@@ -195,6 +198,7 @@ export function conversationRoutes(app: FastifyInstance) {
         // A scratch workspace with a custom image (#253) is stored as itself.
         workspace: parsed && (parsed.kind !== "scratch" || parsed.image) ? parsed : null,
         mcpOverrides: normalizeMcpOverrides(mcp_overrides),
+        ...runLimitColumns(normalizeRunLimits(run_limits)),
       })
       .returning();
     return publicConversation(row);
@@ -203,9 +207,11 @@ export function conversationRoutes(app: FastifyInstance) {
   // Update conversation (per-conversation model preference / MCP overrides)
   app.patch<{ Params: { id: string } }>("/v1/conversations/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const { model_pref, mcp_overrides } = request.body as {
+    const { model_pref, mcp_overrides, step_limit_off, loop_check_off } = request.body as {
       model_pref?: { model?: string };
       mcp_overrides?: unknown;
+      step_limit_off?: unknown;
+      loop_check_off?: unknown;
     };
     // Anything that is not an object clears both lists, as a malformed body
     // always has; a server named in both lists is kept only as disabled.
@@ -221,23 +227,37 @@ export function conversationRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "Not found" };
     }
+    // Either one malformed refuses the whole request, rather than applying the
+    // other and answering as if both had been.
+    if ([step_limit_off, loop_check_off].some((v) => v !== undefined && typeof v !== "boolean")) {
+      reply.code(400);
+      return { error: "step_limit_off and loop_check_off are true or false" };
+    }
+    const limits = normalizeRunLimits({ step_limit_off, loop_check_off });
+    // What keeps an unattended routine bounded is not its owner's to turn off
+    // from a chat, and a sub-agent always runs bounded: the kind is checked in
+    // the write itself, so nothing can change it between a check and the write.
+    const idMatches = eq(conversations.id, request.params.id);
     const [row] = (await db
       .update(conversations)
       .set({
         ...(model_pref !== undefined ? { modelPref: model_pref } : {}),
         ...(mcpOverrides !== undefined ? { mcpOverrides } : {}),
+        ...runLimitColumns(limits),
         updatedAt: new Date(),
       })
-      .where(eq(conversations.id, request.params.id))
+      .where(limits ? and(idMatches, inArray(conversations.kind, ["chat", "agent"])) : idMatches)
       // The summary, not the snapshot — see the GET above.
       .returning({ ...getTableColumns(conversations), instructions: INSTRUCTIONS_SUMMARY_COLUMN })) as (
       | typeof conversations.$inferSelect
       | undefined
     )[];
     if (!row) {
-      reply.code(404);
-      return { error: "Not found" };
+      // The owner check above found it, so with limits asked for, it is the kind.
+      reply.code(limits ? 400 : 404);
+      return { error: limits ? "only chats and agent threads have run limits to turn off" : "Not found" };
     }
+    if (limits) applyRunLimits(userId, row.id, { stepLimitOff: row.stepLimitOff, loopCheckOff: row.loopCheckOff });
     return publicConversation(row);
   });
 

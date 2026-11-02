@@ -43,6 +43,8 @@ import { useThinkingChoice } from '@/hooks/useThinkingChoice';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { useMcpSwitches } from '@/hooks/useMcpSwitches';
+import { useRunLimits } from '@/hooks/useRunLimits';
+import type { RunLimitsLink } from '@/lib/runLimits';
 import { useContextStages } from '@/hooks/useContextStages';
 import { ContextStageModal } from '@/components/context/ContextStageModal';
 import { ContextSettingsSheet } from '@/components/context/ContextSettingsSheet';
@@ -55,6 +57,7 @@ export default function ChatScreen() {
   const router = useRouter();
   const breakpoint = useBreakpoint();
   const pendingMcpRef = useRef<McpOverrides | undefined>(undefined);
+  const runLimitsRef = useRef<RunLimitsLink | null>(null);
   // The context stage chosen for a chat that does not exist yet; read by the
   // session at send time, like the MCP choices above.
   const pendingStageRef = useRef<number | undefined>(undefined);
@@ -94,12 +97,13 @@ export default function ChatScreen() {
     returnedText,
     promotion,
     stageCard,
-  } = useChatSession(token, () => { void refreshModels(); }, undefined, pendingMcpRef, pendingStageRef, thinkingRef);
+  } = useChatSession(token, () => { void refreshModels(); }, undefined, pendingMcpRef, pendingStageRef, thinkingRef, runLimitsRef);
   // What the "/" palette offers here, most-used first (#283).
   const { skills, noteUsed: noteSkillUsed } = useSkills(activeId, streaming);
   // Read by the session at send time; see useChatSession's `pendingMcp`.
   const mcp = useMcpSwitches(token, activeId, 'chat', promotion);
   pendingMcpRef.current = mcp.pendingOverrides;
+  const runLimits = useRunLimits(token, activeId, promotion, runLimitsRef);
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
   const { recentModels, refreshRecentModels, bumpRecentModel } = useRecentModels(token);
@@ -380,6 +384,7 @@ export default function ChatScreen() {
           commandSeed={composerSeed}
           mcp={mcp}
           thinking={thinking.composer}
+          runLimits={runLimits}
           contextStage={
             stages.staged
               ? {

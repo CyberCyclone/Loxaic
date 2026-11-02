@@ -15,7 +15,7 @@ The stream log, run registry and conversation authorization shared by every run 
 ## Run registry
 
 - Every starter claims the conversation before writing (`claimConversation`: busy check + `registerRun`, synchronously, no await between). A rewind holds a `rewind-<uuid>` claim. Both refuse with `ConversationBusyError` (409 `conversation_busy`).
-- Mutate run state only through the registry mutators (`setRunApproval`/`clearRunApproval`, `setRunCheckin`/`takeRunCheckin`/`clearRunCheckin`, `setRunQueuePosition`/`clearRunQueuePosition`, `registerRun`/`unregisterRun`), never directly (e.g. `run.approvals.set`): they announce activity changes to watchers.
+- Mutate run state only through the registry mutators (`setRunApproval`/`clearRunApproval`, `setRunCheckin`/`takeRunCheckin`/`clearRunCheckin`, `setRunQueuePosition`/`clearRunQueuePosition`, `seedRunLimits`/`setRunLimits`, `registerRun`/`unregisterRun`), never directly (e.g. `run.approvals.set`): they announce activity changes to watchers.
 - `runActivityOf` owns the activity vocabulary and precedence: check-in → approval → queued → running.
 - A sub-agent counts as another conversation using a model only while running, under its parent's thread, never as the asking thread's own (`runsUsingModel`, `RunHandle.parentConversationId`; `recentUses`/`usesByThread` in `llama/`). Compare parent ids in SQL with `IS DISTINCT FROM`, never `<>` (null drops every row).
 
@@ -47,6 +47,7 @@ The stream log, run registry and conversation authorization shared by every run 
 
 ### Starters
 
+- A run reads its limits (`RunHandle.limits`, `StepGate`) every step, never from a value captured earlier; turning off what raised a parked check-in answers it (`checkinWithdrawn`). Only chat and agent threads have them (`loadRunLimits` checks the kind): a routine's run and every sub-agent stay bounded. Turning a limit off reaches only the sender's live run; turning one on reaches any.
 - Chat and Agent share `runToolLoop`; `chatRun.ts`/`agentRun.ts` differ only in setup and system prompt. Chat always has manual-mode approval semantics. Chat, agent and retry all start through `startRunOnRow`.
 - Call `assertModelUsable` in every starter beside `assertAttachmentsOwned`, before any row is written — it makes the provider allowlist a spending limit.
 - `recordModelUse` only on a send, keyed to the sender; never for compaction or the literal `"default"`. One SQL statement, awaited, skipped when unchanged.

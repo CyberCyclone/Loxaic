@@ -31,6 +31,8 @@ import { useRecentModels } from '@/hooks/useRecentModels';
 import { pickSelectedModel } from '@/lib/selectModel';
 import { useContextUsage } from '@/hooks/useContextUsage';
 import { useMcpSwitches } from '@/hooks/useMcpSwitches';
+import { useRunLimits } from '@/hooks/useRunLimits';
+import type { RunLimitsLink } from '@/lib/runLimits';
 import { useContextStages } from '@/hooks/useContextStages';
 import { ContextStageModal } from '@/components/context/ContextStageModal';
 import { ContextSettingsSheet } from '@/components/context/ContextSettingsSheet';
@@ -79,6 +81,7 @@ export default function AgentScreen() {
   const { config } = useServerConfig();
   const breakpoint = useBreakpoint();
   const pendingMcpRef = useRef<McpOverrides | undefined>(undefined);
+  const runLimitsRef = useRef<RunLimitsLink | null>(null);
   // The context stage chosen for a run that does not exist yet; read by the
   // session at send time, like the MCP choices above.
   const pendingStageRef = useRef<number | undefined>(undefined);
@@ -132,7 +135,7 @@ export default function AgentScreen() {
     promotion,
     stageCard,
     subAgents: subAgentState,
-  } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef, pendingStageRef, thinkingRef);
+  } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef, pendingStageRef, thinkingRef, runLimitsRef);
   // What the "/" palette offers here, most-used first (#283).
   const { skills, noteUsed: noteSkillUsed } = useSkills(activeId, busy);
   // This run's sub-agents: their cards, the list behind the ⋮ item, the open
@@ -204,6 +207,7 @@ export default function AgentScreen() {
   // Inspector. Read by the session at send time; see its `pendingMcp`.
   const mcp = useMcpSwitches(token, activeId, 'agent', promotion);
   pendingMcpRef.current = mcp.pendingOverrides;
+  const runLimits = useRunLimits(token, activeId, promotion, runLimitsRef);
   // Refetched whenever a run ends: a turn that used a tool is exactly what
   // creates a workspace, or brings a paused one back, and nothing else in the
   // stream says so.
@@ -655,6 +659,7 @@ export default function AgentScreen() {
                 onSkillUsed={noteSkillUsed}
                 mcp={mcp}
                 thinking={thinking.composer}
+                runLimits={runLimits}
                 onRunCommand={handleRunCommand}
                 commandSeed={commandSeed}
                 contextStage={

@@ -1343,6 +1343,11 @@ export interface Conversation {
    * what the thread opens in (#311). Null until a run or a pick records one;
    * absent on an older server. */
   permissionMode?: import("@loxaic/types").PermissionMode | null;
+  /** Whether its owner turned the step limit off. Absent on an older server,
+   * which means on. */
+  stepLimitOff?: boolean;
+  /** As `stepLimitOff`, for the loop check. */
+  loopCheckOff?: boolean;
   createdAt: string;
   updatedAt: string;
   /** What the caller may do here. Present on list and single-conversation
@@ -1660,6 +1665,8 @@ export async function createConversation(input: {
   workspace?: WorkspaceRequest;
   /** MCP choices made before the conversation existed. */
   mcp_overrides?: import("@loxaic/types").McpOverrides;
+  /** Run limits turned off before the conversation existed. */
+  run_limits?: import("@loxaic/types").RunLimitChoices;
 }): Promise<Conversation> {
   const res = await authedFetch("/v1/conversations", {
     method: "POST",
@@ -1758,6 +1765,8 @@ export async function updateConversation(
   patch: {
     model_pref?: import("@loxaic/types").ModelPref;
     mcp_overrides?: import("@loxaic/types").McpOverrides;
+    step_limit_off?: boolean;
+    loop_check_off?: boolean;
   },
 ): Promise<Conversation> {
   return (
@@ -2964,6 +2973,8 @@ export function sendChatMessage(
   contextStage?: number,
   /** How hard to think, from the composer's `+` menu. Every send carries it. */
   thinkingLevel?: import("@loxaic/types").ThinkingLevel,
+  /** Run limits turned off before the conversation existed; as `mcpOverrides`. */
+  runLimits?: import("@loxaic/types").RunLimitChoices,
 ): boolean {
   return trySend(ws, {
     type: "chat.send",
@@ -2976,6 +2987,7 @@ export function sendChatMessage(
     ...(mcpOverrides ? { mcp_overrides: mcpOverrides } : {}),
     ...(contextStage !== undefined ? { context_stage: contextStage } : {}),
     ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+    ...(runLimits ? { run_limits: runLimits } : {}),
   });
 }
 
@@ -2995,6 +3007,8 @@ export function sendAgentMessage(
   contextStage?: number,
   /** As on `sendChatMessage`. */
   thinkingLevel?: import("@loxaic/types").ThinkingLevel,
+  /** As on `sendChatMessage`. */
+  runLimits?: import("@loxaic/types").RunLimitChoices,
 ): boolean {
   return trySend(ws, {
     type: "agent.send",
@@ -3008,6 +3022,7 @@ export function sendAgentMessage(
     ...(mcpOverrides ? { mcp_overrides: mcpOverrides } : {}),
     ...(contextStage !== undefined ? { context_stage: contextStage } : {}),
     ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+    ...(runLimits ? { run_limits: runLimits } : {}),
   });
 }
 

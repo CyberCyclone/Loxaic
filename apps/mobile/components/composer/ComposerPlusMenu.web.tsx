@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ComponentRef, type React
 import { Modal, StyleSheet } from 'react-native';
 import { Brain, Check, ChevronLeft, ChevronRight, Layers, Paperclip, Plug, Plus } from 'lucide-react-native';
 import { Pressable } from '@/components/ui/pressable';
+import { Box } from '@/components/ui/box';
 import { Icon } from '@/components/ui/icon';
 import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
@@ -16,6 +17,7 @@ import {
 } from '@/lib/submenuPlacement';
 import type { ComposerPlusMenuProps } from './ComposerPlusMenu';
 import { McpServerList } from './McpServerList';
+import { RunLimitRows } from './RunLimitRows';
 import { levelChangeRereads, NO_THINKING_REASON, selectedThinkingOption, thinkingOptions } from '@/lib/thinking';
 
 /** Which row's submenu is open. */
@@ -58,6 +60,7 @@ export function ComposerPlusMenu({
   mcp,
   contextSettings = null,
   thinking = null,
+  runLimits = null,
   disabled = false,
   onOpenChange,
 }: ComposerPlusMenuProps) {
@@ -251,6 +254,16 @@ export function ComposerPlusMenu({
                 onHoverIn={() => { openSub('mcp', 'hover'); }}
                 onHoverOut={scheduleCloseSub}
               />
+            ) : null}
+            {runLimits ? (
+              <div
+                onMouseEnter={() => {
+                  if (sub) scheduleCloseSub();
+                }}
+              >
+                <Box className="my-1 h-px bg-border" />
+                <RunLimitRows limits={runLimits} />
+              </div>
             ) : null}
           </Panel>
         ) : null}

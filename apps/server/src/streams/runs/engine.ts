@@ -17,7 +17,9 @@ import {
   type CheckinReason,
   type ContentBlock,
   type ContextBreakdown,
+  LIMITS_ON,
   type LoopSensitivity,
+  type RunLimits,
   type StepsDecision,
   type TimeoutBasis,
   type TurnUsage,
@@ -104,7 +106,9 @@ import { countShownScreenshots, screenshotMessage, screenshotTurnsOf, SCREENSHOT
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
-import { clearRunApproval, clearRunCheckin, clearRunQueuePosition, getRun, onRunModeChange, setRunApproval, setRunCheckin, setRunQueuePosition, unregisterRun } from "../registry.ts";
+import { clearRunApproval, clearRunCheckin, clearRunQueuePosition, getRun, onRunLimitsChange, onRunModeChange, seedRunLimits, setRunApproval, setRunCheckin, setRunQueuePosition, takeRunCheckin, unregisterRun } from "../registry.ts";
+import { loadRunLimits } from "../../conversations/run-limits.ts";
+import { checkinWithdrawn, StepGate } from "./step-gate.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
@@ -227,6 +231,7 @@ export function toolResultMessageForPrompt(callId: string, name: string | undefi
  * data, and a value that arrived any other way (a migration, a hand-edited
  * row, a future admin tool) must not be able to remove the only brake auto
  * mode has. A failed lookup falls back to the default, never to "unlimited".
+ * The one way past it is a conversation's owner saying so (`RunLimits`).
  */
 export function clampMaxIterations(value: number): number {
   return Math.min(MAX_MAX_ITERATIONS, Math.max(MIN_MAX_ITERATIONS, value));
@@ -565,6 +570,9 @@ export async function runToolLoop(ctx: {
   // one the run was built for — its system prompt, its tools and the planning
   // nudge — since Planning never changes mid-run (`liveModeAfter`).
   const liveMode = (): PermissionMode => getRun(streamId)?.mode ?? mode;
+  // What the conversation's owner has turned off, as of now: either can change
+  // mid-run, so never held in a local (`setRunLimits`).
+  const liveLimits = (): RunLimits => getRun(streamId)?.limits ?? LIMITS_ON;
   // Whose workspace the tools run in, and whose MCP choices apply.
   const workspaceConvId = ctx.role?.parentConvId ?? convId;
   const checkpointTurn: CheckpointTurn = ctx.checkpointTurn ?? { conversationId: workspaceConvId, turnMessageId: ctx.userMsgId };
@@ -587,6 +595,11 @@ export async function runToolLoop(ctx: {
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
     // again on the next line.
     const { maxIterations, allowlist, waits } = await loadRunPrefs(userId);
+    // A sub-agent is seeded with every limit on already. Re-read after the
+    // await: the run may have been stopped meanwhile.
+    const startingLimits = await loadRunLimits(convId);
+    const limitsHandle = getRun(streamId);
+    if (limitsHandle) seedRunLimits(limitsHandle, startingLimits);
     // The sender's command rules (permissions/bash/rules.ts), for the run:
     // "Allow always" adds to this list as well as the table, so the rest of
     // the run stops asking too.
@@ -824,7 +837,7 @@ export async function runToolLoop(ctx: {
     // client can render "7/100" and then "104/200" without having to track
     // how many windows have been granted.
     let budgetEnd = maxIterations;
-    const detector = new LoopDetector(loopDetectorOptions(waits.loopSensitivity));
+    const gate = new StepGate(new LoopDetector(loopDetectorOptions(waits.loopSensitivity)), maxIterations);
     // Whether the todo list has gone stale — see todo-staleness.ts. Seeded from
     // the replay, so a list written in an earlier turn counts, and seeded again
     // when the run compacts: a list now only in the summary is not reminded about.
@@ -872,7 +885,7 @@ export async function runToolLoop(ctx: {
     // Unbounded: the window is a checkpoint, not a ceiling — every exit from
     // this loop now returns or breaks deliberately.
     for (let iteration = 1; ; iteration++) {
-      producer.emit({ kind: "iteration", n: iteration, max: budgetEnd });
+      producer.emit({ kind: "iteration", n: iteration, max: budgetEnd, ...(liveLimits().stepLimitOff ? { unlimited: true as const } : {}) });
 
       const assistantMsgId = uuid();
       // The model's window; whether a load sits inside this request's TTFT (no
@@ -1725,8 +1738,9 @@ export async function runToolLoop(ctx: {
         const oldest = recentCalls.keys().next().value;
         if (oldest !== undefined) recentCalls.delete(oldest);
       }
-      const hit = detector.push(iterationKey);
-      const reason: CheckinReason | null = hit ? "loop" : iteration >= budgetEnd ? "budget" : null;
+      const verdict = gate.afterStep(iterationKey, iteration, budgetEnd, liveLimits());
+      const { hit, reason } = verdict;
+      budgetEnd = verdict.budgetEnd;
       if (!reason) continue;
 
       // A sub-agent asks nobody. Its parent is parked waiting on it and the
@@ -1745,6 +1759,7 @@ export async function runToolLoop(ctx: {
         kind: "steps.checkin",
         n: iteration,
         max: budgetEnd,
+        ...(verdict.unlimited ? { unlimited: true as const } : {}),
         reason,
         ...(hit ? { pattern: hit.unit.flatMap((k) => (recentCalls.get(k) ?? []).map((tool) => ({ tool }))) } : {}),
         timeout_ms: deadline.ms,
@@ -1758,7 +1773,7 @@ export async function runToolLoop(ctx: {
       let outcome: { decision: StepsDecision; byUserId: string | null };
       try {
         outcome = asksNobody ? { decision: "answer", byUserId: null } : await slot.yieldWhile(async () => {
-          const answered = await waitForStepsDecision(streamId, abort.signal, deadline.ms);
+          const answered = await waitForStepsDecision(streamId, abort.signal, deadline.ms, reason);
           const byPerson = answered.kind === "continue" || answered.kind === "answer";
           // The ladder: nobody answered, so this is decided by how many in a
           // row have gone unanswered — carry on for the first few, then wrap
@@ -1804,8 +1819,7 @@ export async function runToolLoop(ctx: {
       }
 
       if (outcome.decision === "continue") {
-        budgetEnd = iteration + maxIterations;
-        detector.reset();
+        budgetEnd = gate.keepGoing(iteration);
         continue;
       }
 
@@ -2591,7 +2605,7 @@ type CheckinOutcome =
  * check-in outstanding and it is addressed by `stream_id` — ours and unique,
  * unlike the model-supplied `call_id` an approval has to tolerate colliding.
  */
-function waitForStepsDecision(streamId: string, signal: AbortSignal, timeoutMs: number): Promise<CheckinOutcome> {
+function waitForStepsDecision(streamId: string, signal: AbortSignal, timeoutMs: number, reason: CheckinReason): Promise<CheckinOutcome> {
   return new Promise<CheckinOutcome>((resolve) => {
     if (signal.aborted) {
       resolve({ kind: "aborted" });
@@ -2608,6 +2622,7 @@ function waitForStepsDecision(streamId: string, signal: AbortSignal, timeoutMs: 
       done = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
+      stopWatchingLimits();
       // Through the registry, so the row stops saying "Waiting for you" the
       // moment the wait settles however it settles — including the engine's
       // own timeout, which no socket ever answers (#282).
@@ -2616,8 +2631,17 @@ function waitForStepsDecision(streamId: string, signal: AbortSignal, timeoutMs: 
     };
     const onAbort = () => { settle({ kind: "aborted" }); };
     const timer = setTimeout(() => { settle({ kind: "timeout" }); }, timeoutMs);
+    // Turning off what raised the question answers it, as that person pressing
+    // Keep going would. Through the same slot as a button, so the check-in
+    // clears and is told the same way, and the first answer still wins.
+    const withdraw = (byUserId: string) => {
+      if (checkinWithdrawn(reason, run.limits ?? LIMITS_ON)) takeRunCheckin(run)?.("continue", byUserId);
+    };
+    const stopWatchingLimits = onRunLimitsChange(run, withdraw);
     setRunCheckin(run, (decision, byUserId) => { settle({ kind: decision, byUserId }); });
     signal.addEventListener("abort", onAbort, { once: true });
+    // Switched between the step that earned this and the slot above.
+    withdraw(run.userId);
   });
 }
 

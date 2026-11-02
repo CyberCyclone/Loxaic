@@ -4,6 +4,7 @@ import { Text } from '@/components/ui/text';
 import { ModeSwitch } from './ModeSwitch';
 import type { AgentMode } from '@/lib/types';
 import type { RunState } from '@/hooks/useAgentSession';
+import { stepCount } from '@/lib/runLimits';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 // The words and colours live in lib so a thread-list row (#282) cannot
 // disagree with this header about what a state is called.
@@ -16,7 +17,7 @@ interface RunHeaderProps {
   /** Choosing a mode from the header (#266) — the row above the composer used
    * to be the only control, and it is gone now. */
   onModeChange: (mode: AgentMode) => void;
-  iteration: { n: number; max: number } | null;
+  iteration: { n: number; max: number; unlimited?: true } | null;
   /** Place in the inference queue, when this run is waiting for one. */
   queuePosition?: number | null;
 }
@@ -41,7 +42,7 @@ export function RunHeader({ title, state, mode, onModeChange, iteration, queuePo
           {/* Shown while parked too: the step count is what the check-in is
               *about*, so hiding it at exactly that moment is backwards. */}
           {(state === 'running' || state === 'awaiting_checkin') && iteration
-            ? ` · ${String(iteration.n)}/${String(iteration.max)}`
+            ? ` · ${stepCount(iteration)}`
             : ''}
           {state === 'queued' && queuePosition ? ` · #${String(queuePosition)}` : ''}
         </Text>

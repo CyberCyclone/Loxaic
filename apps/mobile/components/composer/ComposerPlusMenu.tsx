@@ -19,6 +19,8 @@ import {
 import { VStack } from '@/components/ui/vstack';
 import type { McpSwitches } from '@/hooks/useMcpSwitches';
 import { McpServerList } from './McpServerList';
+import { RunLimitRows } from './RunLimitRows';
+import type { RunLimitSwitches } from '@/hooks/useRunLimits';
 import { plusMenuPage, type PlusMenuPage } from '@/lib/plusMenuPage';
 import { levelChangeRereads, NO_THINKING_REASON, selectedThinkingOption, thinkingOptions } from '@/lib/thinking';
 import { SHEET_EXIT_MS } from '@/lib/sheetExit';
@@ -50,6 +52,9 @@ export interface ComposerPlusMenuProps {
   /** The thinking level; null leaves the row out (a routine's chat, whose
    * runs the server starts). */
   thinking?: ComposerThinking | null;
+  /** This conversation's step limit and loop check; null leaves them out (a
+   * routine's chat, which is what those keep bounded). */
+  runLimits?: RunLimitSwitches | null;
   /** An attachment is uploaded as soon as it is picked, and the MCP switches
    * are saved on the server, so there is nothing to do while it is
    * unreachable. */
@@ -75,6 +80,7 @@ export function ComposerPlusMenu({
   mcp,
   contextSettings = null,
   thinking = null,
+  runLimits = null,
   disabled = false,
   onOpenChange,
 }: ComposerPlusMenuProps) {
@@ -215,6 +221,12 @@ export function ComposerPlusMenu({
                     <ActionsheetItemText className="flex-1">MCP</ActionsheetItemText>
                     <ActionsheetIcon as={ChevronRight} />
                   </ActionsheetItem>
+                </>
+              ) : null}
+              {runLimits ? (
+                <>
+                  <Box className="my-1 h-px w-full bg-border" />
+                  <RunLimitRows limits={runLimits} />
                 </>
               ) : null}
             </>

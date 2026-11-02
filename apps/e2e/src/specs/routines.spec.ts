@@ -26,12 +26,14 @@ import { shot } from '../helpers/screenshot.ts';
 import { byTestId, platform, tap, typeInto, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   assistantModels,
+  closePlusMenu,
   createRoutine,
   goToSurface,
   listConversations,
   listRoutineConversations,
   listRoutines,
   mockEcho,
+  openPlusMenu,
   openThreadList,
   runRoutine,
   sendMessage,
@@ -135,6 +137,12 @@ describe('routines', () => {
     await sendMessage('and the day before');
     await waitForTextIn('chat.messageList', mockEcho('and the day before'));
     await shot('routine-continued');
+
+    // What keeps an unattended routine bounded is not offered here.
+    await openPlusMenu();
+    expect(await byTestId('composer.plus.stepLimit').isDisplayed().catch(() => false)).toBe(false);
+    expect(await byTestId('composer.plus.loopCheck').isDisplayed().catch(() => false)).toBe(false);
+    await closePlusMenu();
 
     await waitForRunDone(creds, run.conversationId);
     // Both turns in the routine's own chat — and the follow-up answered on the

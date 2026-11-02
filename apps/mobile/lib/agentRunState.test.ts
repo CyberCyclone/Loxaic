@@ -167,6 +167,23 @@ describe('per-conversation run state', () => {
   });
 });
 
+describe('a step limit turned off', () => {
+  it('stays off through a loop check-in, which names the step too', () => {
+    const levels = fold({}, 'A', [
+      { kind: 'iteration', n: 3, max: 4, unlimited: true },
+      { kind: 'steps.checkin', n: 3, max: 4, unlimited: true, reason: 'loop' },
+    ]);
+    expect(runLevelOf(levels, 'A').iteration).toEqual({ n: 3, max: 4, unlimited: true });
+  });
+
+  it('follows each step, so turning it back on shows', () => {
+    const off = fold({}, 'A', [{ kind: 'iteration', n: 7, max: 57, unlimited: true }]);
+    expect(runLevelOf(off, 'A').iteration).toEqual({ n: 7, max: 57, unlimited: true });
+    const on = fold(off, 'A', [{ kind: 'iteration', n: 8, max: 57 }]);
+    expect(runLevelOf(on, 'A').iteration).toEqual({ n: 8, max: 57 });
+  });
+});
+
 describe('the run’s mode (#311)', () => {
   const modeEvent = (mode: 'manual' | 'auto' | 'planning'): StreamEventKind => ({ kind: 'run.mode', mode });
 

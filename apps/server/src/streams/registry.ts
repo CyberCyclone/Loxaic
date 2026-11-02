@@ -1,4 +1,4 @@
-import type { PermissionMode, RunActivity, StepsDecision } from "@loxaic/types";
+import type { PermissionMode, RunActivity, RunLimits, StepsDecision } from "@loxaic/types";
 import { announceRunActivity } from "./watchers.ts";
 
 /**
@@ -70,6 +70,16 @@ export interface RunHandle {
   /** The approvals waiting in this run, each told to decide its call again
    * when the mode changes. Through `onRunModeChange` only. */
   modeListeners?: Set<() => void>;
+  /**
+   * What its conversation's owner has turned off, as it stands now. The tool
+   * loop reads it every step. Absent until the loop has read the conversation,
+   * and meaning every limit on. Written only by `seedRunLimits` and
+   * `setRunLimits`.
+   */
+  limits?: RunLimits;
+  /** A check-in waiting in this run, told when the limits change. Through
+   * `onRunLimitsChange` only. */
+  limitListeners?: Set<(byUserId: string) => void>;
 }
 
 /**
@@ -120,6 +130,27 @@ export function onRunModeChange(handle: RunHandle, listener: () => void): () => 
   handle.modeListeners ??= new Set();
   handle.modeListeners.add(listener);
   return () => { handle.modeListeners?.delete(listener); };
+}
+
+/**
+ * The limits a run starts with, read from its conversation. A no-op once it has
+ * any: a switch flipped between that read and this write is the newer of the two.
+ */
+export function seedRunLimits(handle: RunHandle, limits: RunLimits): void {
+  handle.limits ??= limits;
+}
+
+/** Change a live run's limits, and tell a check-in it is waiting on. */
+export function setRunLimits(handle: RunHandle, limits: RunLimits, byUserId: string): void {
+  handle.limits = limits;
+  for (const listener of [...(handle.limitListeners ?? [])]) listener(byUserId);
+}
+
+/** Be told when the run's limits change; returns the way to stop. */
+export function onRunLimitsChange(handle: RunHandle, listener: (byUserId: string) => void): () => void {
+  handle.limitListeners ??= new Set();
+  handle.limitListeners.add(listener);
+  return () => { handle.limitListeners?.delete(listener); };
 }
 
 /**

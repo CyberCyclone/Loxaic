@@ -7,6 +7,7 @@ import { db, eq, inArray } from "@loxaic/db";
 import { conversationShares, conversations, messages, sandboxes, usageRecords, user } from "@loxaic/db/schema";
 import {
   COMPACTION_CONTINUE_NUDGE,
+  LIMITS_ON,
   MAX_SUBAGENTS_PER_MESSAGE,
   SUBAGENT_LOST_ERROR,
   SUBAGENT_TOOL_NAME,
@@ -16,6 +17,7 @@ import {
 import { isToolName } from "@loxaic/agent";
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
 import { NotFoundError, actingRole, assertConversationAccess, resolveAccess } from "../../authz.ts";
+import { applyRunLimits } from "../../../conversations/run-limits.ts";
 import { getRun, getRunByConversation, registerRun, unregisterRun } from "../../registry.ts";
 import { startAgentRun } from "../agentRun.ts";
 import { startChatRun } from "../chatRun.ts";
@@ -701,6 +703,36 @@ describe("sub-agents", () => {
       expect(childModes).toEqual(["manual", "auto"]);
       expect((await snapshotOf(streamId)).subagents?.[0]?.pending_approval).toBeUndefined();
       // The write ran, in the parent's sandbox: this suite's own to remove.
+      await destroyConversationSandboxes(convId);
+    } finally {
+      for (const [key, value] of [["SANDBOX_MODE", sandbox.mode], ["SANDBOX_HOST_ROOT", sandbox.root]] as const) {
+        if (value === undefined) Reflect.deleteProperty(process.env, key);
+        else process.env[key] = value;
+      }
+    }
+  }, 40_000);
+
+  it("keeps a child bounded, whatever its parent's switches say", async () => {
+    const sandbox = { mode: process.env.SANDBOX_MODE, root: process.env.SANDBOX_HOST_ROOT };
+    process.env.SANDBOX_MODE = "host";
+    process.env.SANDBOX_HOST_ROOT = path.join(dir, "sandboxes");
+    try {
+      const convId = await newConversation();
+      await db.update(conversations).set({ stepLimitOff: true }).where(eq(conversations.id, convId));
+      const streamId = await agentRun(convId, "Use a sub-agent: write a file called notes", "manual");
+      await waitFor("the child to wait on an approval", async () =>
+        (await snapshotOf(streamId)).subagents?.[0]?.pending_approval !== undefined,
+      );
+      const [child] = await childrenOf(convId);
+      const handle = getRun((child.subagent as SubAgentInfo).streamId);
+      expect(handle?.limits).toEqual(LIMITS_ON);
+
+      applyRunLimits(userId, convId, { stepLimitOff: true, loopCheckOff: true });
+      expect(getRunByConversation(convId)?.limits).toEqual({ stepLimitOff: true, loopCheckOff: true });
+      expect(handle?.limits).toEqual(LIMITS_ON);
+
+      await changeRunMode(userId, convId, "auto");
+      await waitFor("the parent to end", ended(convId));
       await destroyConversationSandboxes(convId);
     } finally {
       for (const [key, value] of [["SANDBOX_MODE", sandbox.mode], ["SANDBOX_HOST_ROOT", sandbox.root]] as const) {
