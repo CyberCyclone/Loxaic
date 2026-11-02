@@ -79,3 +79,17 @@ export function checkinStepLine(checkin: { n: number; max: number; unlimited?: t
 export function stepCount(iteration: { n: number; max: number; unlimited?: true }): string {
   return iteration.unlimited ? String(iteration.n) : `${String(iteration.n)}/${String(iteration.max)}`;
 }
+
+/**
+ * A queue that starts each change once the one before has settled, failed
+ * ones included. Two quick toggles otherwise race to the server, which can
+ * store the first after the second; in order, what is stored is the last.
+ */
+export function changesInOrder(): <T>(send: () => Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve();
+  return (send) => {
+    const sent = tail.then(send);
+    tail = sent.catch(() => undefined);
+    return sent;
+  };
+}

@@ -227,23 +227,17 @@ export function conversationRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "Not found" };
     }
-    const limits = normalizeRunLimits({ step_limit_off, loop_check_off });
-    if ((step_limit_off !== undefined || loop_check_off !== undefined) && !limits) {
+    // Either one malformed refuses the whole request, rather than applying the
+    // other and answering as if both had been.
+    if ([step_limit_off, loop_check_off].some((v) => v !== undefined && typeof v !== "boolean")) {
       reply.code(400);
       return { error: "step_limit_off and loop_check_off are true or false" };
     }
-    if (limits) {
-      // What keeps an unattended routine bounded is not its owner's to turn
-      // off from a chat, and a sub-agent's limits are its parent's.
-      const conversation = await db.query.conversations.findFirst({
-        where: eq(conversations.id, request.params.id),
-        columns: { kind: true },
-      });
-      if (conversation?.kind !== "chat" && conversation?.kind !== "agent") {
-        reply.code(400);
-        return { error: "only chats and agent threads have run limits to turn off" };
-      }
-    }
+    const limits = normalizeRunLimits({ step_limit_off, loop_check_off });
+    // What keeps an unattended routine bounded is not its owner's to turn off
+    // from a chat, and a sub-agent always runs bounded: the kind is checked in
+    // the write itself, so nothing can change it between a check and the write.
+    const idMatches = eq(conversations.id, request.params.id);
     const [row] = (await db
       .update(conversations)
       .set({
@@ -252,15 +246,16 @@ export function conversationRoutes(app: FastifyInstance) {
         ...runLimitColumns(limits),
         updatedAt: new Date(),
       })
-      .where(eq(conversations.id, request.params.id))
+      .where(limits ? and(idMatches, inArray(conversations.kind, ["chat", "agent"])) : idMatches)
       // The summary, not the snapshot — see the GET above.
       .returning({ ...getTableColumns(conversations), instructions: INSTRUCTIONS_SUMMARY_COLUMN })) as (
       | typeof conversations.$inferSelect
       | undefined
     )[];
     if (!row) {
-      reply.code(404);
-      return { error: "Not found" };
+      // The owner check above found it, so with limits asked for, it is the kind.
+      reply.code(limits ? 400 : 404);
+      return { error: limits ? "only chats and agent threads have run limits to turn off" : "Not found" };
     }
     if (limits) applyRunLimits(userId, row.id, { stepLimitOff: row.stepLimitOff, loopCheckOff: row.loopCheckOff });
     return publicConversation(row);

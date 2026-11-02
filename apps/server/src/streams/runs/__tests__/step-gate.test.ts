@@ -30,7 +30,9 @@ describe("StepGate", () => {
     const h = gate();
     h.afterStep("a", 1, 1, stepLimitOff);
     h.afterStep("a", 2, 1, stepLimitOff);
-    expect(h.afterStep("a", 3, 1, stepLimitOff).reason).toBe("loop");
+    // And says the limit was off, from the limits that decided it.
+    expect(h.afterStep("a", 3, 1, stepLimitOff)).toMatchObject({ reason: "loop", unlimited: true });
+    expect(gate().afterStep("a", 5, 5, LIMITS_ON)).toMatchObject({ reason: "budget", unlimited: false });
   });
 
   it("slides the window while the step limit is off, so turning it back on grants a full one", () => {

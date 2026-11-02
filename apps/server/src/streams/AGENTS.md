@@ -47,7 +47,7 @@ The stream log, run registry and conversation authorization shared by every run 
 
 ### Starters
 
-- A run reads its limits (`RunHandle.limits`, `StepGate`) every step, never from a value captured earlier; turning off what raised a parked check-in answers it (`checkinWithdrawn`). Only chat and agent threads have them: a routine's run stays bounded.
+- A run reads its limits (`RunHandle.limits`, `StepGate`) every step, never from a value captured earlier; turning off what raised a parked check-in answers it (`checkinWithdrawn`). Only chat and agent threads have them (`loadRunLimits` checks the kind): a routine's run and every sub-agent stay bounded. Turning a limit off reaches only the sender's live run; turning one on reaches any.
 - Chat and Agent share `runToolLoop`; `chatRun.ts`/`agentRun.ts` differ only in setup and system prompt. Chat always has manual-mode approval semantics. Chat, agent and retry all start through `startRunOnRow`.
 - Call `assertModelUsable` in every starter beside `assertAttachmentsOwned`, before any row is written — it makes the provider allowlist a spending limit.
 - `recordModelUse` only on a send, keyed to the sender; never for compaction or the literal `"default"`. One SQL statement, awaited, skipped when unchanged.

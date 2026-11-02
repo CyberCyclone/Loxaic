@@ -12,7 +12,7 @@ import type {
   ThinkingLevel,
   Workspace,
 } from "@loxaic/types";
-import { SUBAGENT_LOST_ERROR } from "@loxaic/types";
+import { LIMITS_ON, SUBAGENT_LOST_ERROR } from "@loxaic/types";
 import type { PermissionMode } from "@loxaic/agent";
 import type { SubagentOutcome } from "./subagent-policy.ts";
 import { stripControl } from "../../mcp/sanitize.ts";
@@ -25,7 +25,7 @@ import { getSandboxMode } from "../../sandbox/provider.ts";
 import type { StreamProducer } from "../broker.ts";
 import { turnErrorText } from "../error-text.ts";
 import { getStreamBroker } from "../index.ts";
-import { getRun, registerRun, startModeLog, type RunHandle } from "../registry.ts";
+import { getRun, registerRun, seedRunLimits, startModeLog, type RunHandle } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 import { chatWorkspaceDescription } from "./chatRun.ts";
 import { runToolLoop } from "./engine.ts";
@@ -373,9 +373,11 @@ export async function runSubagent(
     model: call.model,
     parentConversationId: parent.convId,
     mode,
-    limits: getRun(parent.streamId)?.limits,
   };
   registerRun(handle);
+  // Bounded whatever the parent's switches say: a child asks nobody, so its
+  // step window is what makes it wrap up (`asksNobody` in engine.ts).
+  seedRunLimits(handle, LIMITS_ON);
   startModeLog(handle, (next) => { childProducer.emit({ kind: "run.mode", mode: next }); });
   starting.delete(streamId);
   announceNewRun(childId, streamId);

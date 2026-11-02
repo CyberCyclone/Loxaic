@@ -595,8 +595,8 @@ export async function runToolLoop(ctx: {
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
     // again on the next line.
     const { maxIterations, allowlist, waits } = await loadRunPrefs(userId);
-    // A sub-agent has its parent's already. Re-read after the await: the run
-    // may have been stopped meanwhile.
+    // A sub-agent is seeded with every limit on already. Re-read after the
+    // await: the run may have been stopped meanwhile.
     const startingLimits = await loadRunLimits(convId);
     const limitsHandle = getRun(streamId);
     if (limitsHandle) seedRunLimits(limitsHandle, startingLimits);
@@ -1759,7 +1759,7 @@ export async function runToolLoop(ctx: {
         kind: "steps.checkin",
         n: iteration,
         max: budgetEnd,
-        ...(liveLimits().stepLimitOff ? { unlimited: true as const } : {}),
+        ...(verdict.unlimited ? { unlimited: true as const } : {}),
         reason,
         ...(hit ? { pattern: hit.unit.flatMap((k) => (recentCalls.get(k) ?? []).map((tool) => ({ tool }))) } : {}),
         timeout_ms: deadline.ms,

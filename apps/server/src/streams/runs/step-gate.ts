@@ -19,6 +19,9 @@ export interface StepVerdict {
   reason: CheckinReason | null;
   /** The window's end from here on. */
   budgetEnd: number;
+  /** Whether the step limit was off for this step: what a check-in it raised
+   * says, from the same limits that decided it. */
+  unlimited: boolean;
 }
 
 export class StepGate {
@@ -42,7 +45,7 @@ export class StepGate {
     }
     const end = limits.stepLimitOff ? iteration + this.maxIterations : budgetEnd;
     const reason: CheckinReason | null = hit ? "loop" : iteration >= end ? "budget" : null;
-    return { hit, reason, budgetEnd: end };
+    return { hit, reason, budgetEnd: end, unlimited: limits.stepLimitOff };
   }
 
   /** "Keep going": a fresh window from this step, and no memory of the repeats

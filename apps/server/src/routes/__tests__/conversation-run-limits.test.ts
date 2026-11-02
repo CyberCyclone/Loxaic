@@ -3,6 +3,7 @@ import { v4 as uuid } from "uuid";
 import Fastify from "fastify";
 import { db, eq } from "@loxaic/db";
 import { conversations, conversationShares, user } from "@loxaic/db/schema";
+import { LIMITS_ON } from "@loxaic/types";
 
 /**
  * A conversation's step limit and loop check: stored per conversation, its
@@ -17,6 +18,7 @@ vi.mock("../../auth/middleware", () => ({
 const { conversationRoutes } = await import("../conversations.ts");
 const { registerRun, unregisterRun } = await import("../../streams/registry.ts");
 const { watchConversationEvents } = await import("../../streams/watchers.ts");
+const { loadRunLimits } = await import("../../conversations/run-limits.ts");
 
 const owner = `test-run-limits-${uuid()}`;
 const editor = `test-run-limits-${uuid()}`;
@@ -66,9 +68,12 @@ describe("PATCH /v1/conversations/:id, run limits", () => {
     }
   });
 
-  it("refuses anything but true or false", async () => {
+  it("refuses anything but true or false, even beside one that is", async () => {
     const id = await conversation("chat");
     expect((await patch(id, { step_limit_off: "yes" })).statusCode).toBe(400);
+    expect((await patch(id, { step_limit_off: "yes", loop_check_off: true })).statusCode).toBe(400);
+    const row = await db.query.conversations.findFirst({ where: eq(conversations.id, id) });
+    expect(row).toMatchObject({ stepLimitOff: false, loopCheckOff: false });
   });
 
   it("is the owner's: an editor gets the same 404 as a stranger", async () => {
@@ -107,6 +112,37 @@ describe("PATCH /v1/conversations/:id, run limits", () => {
       stop();
       unregisterRun(handle.streamId);
     }
+  });
+
+  it("turns a limit back on in a run someone else sent, but never off", async () => {
+    const id = await conversation("chat");
+    await patch(id, { step_limit_off: true });
+    const handle = {
+      streamId: uuid(), conversationId: id, userId: editor, abort: new AbortController(), approvals: new Map(),
+      limits: { stepLimitOff: true, loopCheckOff: false },
+    };
+    registerRun(handle);
+    try {
+      await patch(id, { loop_check_off: true });
+      expect(handle.limits).toEqual({ stepLimitOff: true, loopCheckOff: false });
+      await patch(id, { step_limit_off: false });
+      expect(handle.limits).toEqual({ stepLimitOff: false, loopCheckOff: false });
+    } finally {
+      unregisterRun(handle.streamId);
+    }
+  });
+});
+
+describe("loadRunLimits", () => {
+  it("is every limit on for a routine or a sub-agent, whatever its columns say", async () => {
+    for (const kind of ["routine", "subagent"] as const) {
+      const id = await conversation(kind);
+      await db.update(conversations).set({ stepLimitOff: true, loopCheckOff: true }).where(eq(conversations.id, id));
+      expect(await loadRunLimits(id)).toEqual(LIMITS_ON);
+    }
+    const chat = await conversation("chat");
+    await db.update(conversations).set({ stepLimitOff: true }).where(eq(conversations.id, chat));
+    expect(await loadRunLimits(chat)).toEqual({ stepLimitOff: true, loopCheckOff: false });
   });
 });
 

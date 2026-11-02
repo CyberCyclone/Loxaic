@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LIMITS_ON, normalizeRunLimits } from '@loxaic/types';
-import { checkinStepLine, limitsOf, limitsToSend, runLimitRows, sameLimits, stepCount } from './runLimits';
+import { changesInOrder, checkinStepLine, limitsOf, limitsToSend, runLimitRows, sameLimits, stepCount } from './runLimits';
 
 describe('limitsOf', () => {
   it('has every limit on for a server that sends neither', () => {
@@ -76,5 +76,24 @@ describe('normalizeRunLimits', () => {
 
   it('is nothing for anything else', () => {
     for (const value of [undefined, null, 'x', 1, {}, { step_limit_off: 1 }]) expect(normalizeRunLimits(value)).toBeUndefined();
+  });
+});
+
+describe('changesInOrder', () => {
+  it('starts each change only once the one before has settled, a failed one included', async () => {
+    const send = changesInOrder();
+    const log: string[] = [];
+    let finishFirst = (): void => undefined;
+    const first = send(() => new Promise<void>((_, reject) => {
+      log.push('first sent');
+      finishFirst = () => { log.push('first failed'); reject(new Error('offline')); };
+    }));
+    const second = send(() => { log.push('second sent'); return Promise.resolve('stored'); });
+    await Promise.resolve();
+    expect(log).toEqual(['first sent']);
+    finishFirst();
+    await expect(first).rejects.toThrow('offline');
+    await expect(second).resolves.toBe('stored');
+    expect(log).toEqual(['first sent', 'first failed', 'second sent']);
   });
 });

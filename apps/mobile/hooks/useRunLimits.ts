@@ -3,7 +3,7 @@ import { getConversation, updateConversation } from '@loxaic/api-client';
 import { LIMITS_ON, type RunLimits } from '@loxaic/types';
 import { useServerReachable } from '@/lib/connection';
 import { carriesChoices, toggleTarget, type Promotion } from '@/lib/mcpSwitches';
-import { limitsOf, limitsToSend, runLimitRows, sameLimits, type RunLimitKey, type RunLimitRow, type RunLimitsLink } from '@/lib/runLimits';
+import { changesInOrder, limitsOf, limitsToSend, runLimitRows, sameLimits, type RunLimitKey, type RunLimitRow, type RunLimitsLink } from '@/lib/runLimits';
 import { useToastHelper } from './useToastHelper';
 
 export interface RunLimitSwitches {
@@ -37,6 +37,9 @@ export function useRunLimits(
   const prev = useRef<{ id: string | null | undefined; target: 'pending' | 'patch' }>({ id: undefined, target: 'pending' });
   const promotionRef = useRef(promotion);
   promotionRef.current = promotion;
+  // One at a time, so the server stores the last choice, not whichever
+  // request happened to land last.
+  const [send] = useState(changesInOrder);
 
   useEffect(() => {
     const before = prev.current;
@@ -67,11 +70,18 @@ export function useRunLimits(
         // A switch flipped while the send was in flight, or a server that
         // ignored it on the send.
         if (carried && !sameLimits(stored, carried)) {
-          const updated = await updateConversation(conversationId, {
-            step_limit_off: carried.stepLimitOff,
-            loop_check_off: carried.loopCheckOff,
-          });
-          if (!cancelled()) setLimits(limitsOf(updated));
+          try {
+            const updated = await send(() => updateConversation(conversationId, {
+              step_limit_off: carried.stepLimitOff,
+              loop_check_off: carried.loopCheckOff,
+            }));
+            if (!cancelled()) setLimits(limitsOf(updated));
+          } catch {
+            if (cancelled()) return;
+            // The switches say what the server holds, not what it refused.
+            setLimits(stored);
+            showToast('Could not update this conversation');
+          }
         } else {
           setLimits(stored);
         }
@@ -85,7 +95,7 @@ export function useRunLimits(
     return () => {
       live.cancelled = true;
     };
-  }, [token, conversationId, target]);
+  }, [token, conversationId, target, send, showToast]);
 
   const toggle = useCallback(
     (key: RunLimitKey, on: boolean) => {
@@ -94,13 +104,13 @@ export function useRunLimits(
       limitsRef.current = next;
       setLimits(next);
       if (toggleTarget(conversationId) === 'pending' || conversationId === null) return;
-      updateConversation(conversationId, key === 'stepLimitOff' ? { step_limit_off: !on } : { loop_check_off: !on }).catch(() => {
+      send(() => updateConversation(conversationId, key === 'stepLimitOff' ? { step_limit_off: !on } : { loop_check_off: !on })).catch(() => {
         // Only undo this toggle if nothing has changed since.
         setLimits((cur) => (cur === next ? before : cur));
         showToast('Could not update this conversation');
       });
     },
-    [conversationId, showToast],
+    [conversationId, send, showToast],
   );
 
   link.current = {

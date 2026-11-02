@@ -712,7 +712,7 @@ describe("sub-agents", () => {
     }
   }, 40_000);
 
-  it("gives a child its parent's limits, and switches it with the parent", async () => {
+  it("keeps a child bounded, whatever its parent's switches say", async () => {
     const sandbox = { mode: process.env.SANDBOX_MODE, root: process.env.SANDBOX_HOST_ROOT };
     process.env.SANDBOX_MODE = "host";
     process.env.SANDBOX_HOST_ROOT = path.join(dir, "sandboxes");
@@ -725,10 +725,11 @@ describe("sub-agents", () => {
       );
       const [child] = await childrenOf(convId);
       const handle = getRun((child.subagent as SubAgentInfo).streamId);
-      expect(handle?.limits).toMatchObject({ stepLimitOff: true, loopCheckOff: false });
+      expect(handle?.limits).toEqual(LIMITS_ON);
 
-      applyRunLimits(userId, convId, { ...LIMITS_ON, loopCheckOff: true });
-      expect(handle?.limits).toEqual({ stepLimitOff: false, loopCheckOff: true });
+      applyRunLimits(userId, convId, { stepLimitOff: true, loopCheckOff: true });
+      expect(getRunByConversation(convId)?.limits).toEqual({ stepLimitOff: true, loopCheckOff: true });
+      expect(handle?.limits).toEqual(LIMITS_ON);
 
       await changeRunMode(userId, convId, "auto");
       await waitFor("the parent to end", ended(convId));
