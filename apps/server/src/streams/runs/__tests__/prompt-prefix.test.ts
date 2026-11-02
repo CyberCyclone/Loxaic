@@ -625,6 +625,10 @@ describe("a tool result Postgres would refuse replays identically", () => {
       match: "read the odd bytes",
       steps: [{ tool: "todo_write", args: { todos: [{ status: "pending", id: "1", text: "step one" }] } }],
       finalText: "[Mock] read.\n",
+    }, {
+      match: "write the odd args",
+      steps: [{ tool: "todo_write", args: { todos: [{ status: "pending", id: "1", text: "odd\u0000args" }] } }],
+      finalText: "[Mock] written.\n",
     }]));
     process.env.MOCK_SCENARIOS_FILE = file;
     __resetMockScenariosForTest();
@@ -640,6 +644,13 @@ describe("a tool result Postgres would refuse replays identically", () => {
     toolOutput.next = "binary\u0000bytes and a cut emoji \ud83d";
     const convId = await turn("read the odd bytes");
     expect(requests.at(-1)?.some((m) => m.includes("binary\ufffdbytes and a cut emoji \ufffd"))).toBe(true);
+    await turn("thanks, what is next?", convId);
+    expectEachRequestExtendsTheLast();
+  });
+
+  it("sends a tool call's arguments as stored, too", async () => {
+    const convId = await turn("write the odd args");
+    expect(requests.at(-1)?.some((m) => m.includes("odd\ufffdargs"))).toBe(true);
     await turn("thanks, what is next?", convId);
     expectEachRequestExtendsTheLast();
   });

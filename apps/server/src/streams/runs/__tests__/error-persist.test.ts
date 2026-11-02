@@ -11,6 +11,7 @@ import { startCompactRun } from "../compactRun.ts";
 import { capErrorText, MAX_ERROR_TEXT_CHARS, TURN_FAILED } from "../../error-text.ts";
 import type * as Skills from "../../../skills/session.ts";
 import type * as TodoStalenessModule from "../todo-staleness.ts";
+import type * as AutoCompact from "../auto-compact.ts";
 import type * as UsageRecord from "../usage-record.ts";
 
 /** A failure of our own inside the turn, standing in for the database write
@@ -32,14 +33,27 @@ vi.mock("../../../inference/prompt-reuse.ts", async (importOriginal) => {
 });
 
 /** Faults past the point a stream's own failure handling covers: one before a
- * step's row is finished, one after it and its tools are done. */
-const laterFault = vi.hoisted(() => ({ inSetup: false, beforeRowDone: false, betweenSteps: false, message: 'relation "internal_billing_ledger" does not exist' }));
+ * step's row is finished, one after it and its tools are done, one after a
+ * final answer is stored. `before` runs just ahead of the throw: a stop
+ * arriving as something falls over. */
+const laterFault = vi.hoisted(() => ({
+  inSetup: false,
+  beforeRowDone: false,
+  betweenSteps: false,
+  afterAnswer: false,
+  before: null as (() => void) | null,
+  message: 'relation "internal_billing_ledger" does not exist',
+}));
+function throwLaterFault(): never {
+  laterFault.before?.();
+  throw new Error(laterFault.message);
+}
 vi.mock("../../../skills/session.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof Skills>();
   return {
     ...actual,
     prepareRunSkills: (...args: Parameters<typeof actual.prepareRunSkills>) => {
-      if (laterFault.inSetup) throw new Error(laterFault.message);
+      if (laterFault.inSetup) throwLaterFault();
       return actual.prepareRunSkills(...args);
     },
   };
@@ -49,7 +63,7 @@ vi.mock("../usage-record.ts", async (importOriginal) => {
   return {
     ...actual,
     turnDraftUsage: (...args: Parameters<typeof actual.turnDraftUsage>) => {
-      if (laterFault.beforeRowDone) throw new Error(laterFault.message);
+      if (laterFault.beforeRowDone) throwLaterFault();
       return actual.turnDraftUsage(...args);
     },
   };
@@ -62,12 +76,23 @@ vi.mock("../todo-staleness.ts", async (importOriginal) => {
     const tracker = fromHistory(...args);
     const endIteration = tracker.endIteration.bind(tracker);
     tracker.endIteration = () => {
-      if (laterFault.betweenSteps) throw new Error(laterFault.message);
+      if (laterFault.betweenSteps) throwLaterFault();
       endIteration();
     };
     return tracker;
   };
   return actual;
+});
+vi.mock("../auto-compact.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof AutoCompact>();
+  return {
+    ...actual,
+    // Only the one at the end of a turn, which runs once the answer is stored.
+    fillDecision: (...args: Parameters<typeof actual.fillDecision>) => {
+      if (laterFault.afterAnswer && args[0].phase === "after_turn") throwLaterFault();
+      return actual.fillDecision(...args);
+    },
+  };
 });
 
 /**
@@ -183,14 +208,18 @@ describe("persisting why a turn failed", () => {
     expect(row.error).not.toContain("internal_billing_ledger");
   });
 
-  async function agentRunThatDies(fault: "inSetup" | "beforeRowDone" | "betweenSteps") {
+  async function agentRunThatDies(
+    fault: "inSetup" | "beforeRowDone" | "betweenSteps" | "afterAnswer",
+    opts: { stop?: boolean; content?: string } = {},
+  ) {
     const [conv] = await db.insert(conversations).values({ ownerId: userId, title: "dying run", kind: "agent" }).returning();
     convIds.push(conv.id);
     laterFault[fault] = true;
+    if (opts.stop) laterFault.before = () => { getRunByConversation(conv.id)?.abort.abort(); };
     try {
       await startAgentRun({
         userId,
-        content: "make a plan for this work",
+        content: opts.content ?? "make a plan for this work",
         model: "llama-3.1-8b-instruct",
         mode: "auto",
         conversationId: conv.id,
@@ -199,6 +228,7 @@ describe("persisting why a turn failed", () => {
       await waitFor("the run to end", () => getRunByConversation(conv.id) === undefined);
     } finally {
       laterFault[fault] = false;
+      laterFault.before = null;
     }
     return db
       .select()
@@ -227,6 +257,30 @@ describe("persisting why a turn failed", () => {
     const replies = rows.filter((r) => r.authorType === "assistant");
     expect(replies).toHaveLength(1);
     expect(replies[0]).toMatchObject({ status: "error", error: TURN_FAILED });
+    // What had streamed stays, as the person watched it arrive.
+    expect(replies[0].content).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "text" })]));
+  });
+
+  it("answers a stored reply when the run dies after it, rather than beside it", async () => {
+    const rows = await agentRunThatDies("afterAnswer", { content: "hello there" });
+    const replies = rows.filter((r) => r.authorType === "assistant");
+    expect(replies).toHaveLength(2);
+    expect(replies[0].status).toBe("complete");
+    expect(replies[1]).toMatchObject({ status: "error", error: TURN_FAILED, parentId: replies[0].id });
+  });
+
+  it("adds no error to the thread when a stop is what broke the run", async () => {
+    const rows = await agentRunThatDies("betweenSteps", { stop: true });
+    expect(rows.filter((r) => r.status === "error")).toEqual([]);
+    expect(rows.filter((r) => r.authorType === "assistant").every((r) => r.status === "complete")).toBe(true);
+  });
+
+  it("ends a reply cut short by a stop cancelled, with what it had", async () => {
+    const rows = await agentRunThatDies("beforeRowDone", { stop: true });
+    const replies = rows.filter((r) => r.authorType === "assistant");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ status: "cancelled", error: null });
+    expect(replies[0].content).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "text" })]));
   });
 
   it("stores the backend's reason on a failed compaction", async () => {

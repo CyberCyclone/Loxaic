@@ -3,7 +3,7 @@ import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, user } from "@loxaic/db/schema";
 import type { ContentBlock } from "@loxaic/types";
-import { toolResultMessageForPrompt } from "../engine.ts";
+import { assistantMessageForPrompt, toolCallsForPrompt, toolResultMessageForPrompt } from "../engine.ts";
 import { jsonbSafe } from "../jsonb-safe.ts";
 
 describe("jsonbSafe", () => {
@@ -22,6 +22,13 @@ describe("jsonbSafe", () => {
 
   it("is what the prompt sends too, or the replay of a stored result would differ from the request", () => {
     expect(toolResultMessageForPrompt("c", "t", "a\u0000b").content).toBe("a\ufffdb");
+  });
+
+  it("is what the model's own text and arguments are sent as, since their row went through it", () => {
+    expect(assistantMessageForPrompt("cut \ud83d", []).content).toBe("cut \ufffd");
+    const [call] = toolCallsForPrompt([{ id: "c\u0000", name: "bash", args: { command: "a\u0000b" } }]);
+    expect(call.id).toBe("c\ufffd");
+    expect(call.function.arguments).toBe(JSON.stringify({ command: "a\ufffdb" }));
   });
 
   it("is idempotent, so the prompt and the row can each apply it and still match", () => {

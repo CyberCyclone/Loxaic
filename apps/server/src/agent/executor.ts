@@ -6,7 +6,7 @@ import { QUESTION_LIMITS } from "@loxaic/agent";
 import { attachmentClass, MAX_DOCUMENT_BYTES, parseTodoList } from "@loxaic/types";
 import type { ToolNotice } from "@loxaic/types";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
-import { sniffMime } from "../files/storage.ts";
+import { documentBytesMatch, sniffMime } from "../files/storage.ts";
 import { BlockedTargetError, guardedFetch, type GuardedResponse } from "./address-guard.ts";
 
 /** Tools that need a live sandbox; the rest run in-process on the server. */
@@ -643,38 +643,92 @@ function tooLarge(url: URL, bytes: number | null): ToolResult {
  */
 const NUL = "\u0000";
 
+/** Enough of a body to tell a document's signature (`documentBytesMatch`). */
+const DOCUMENT_HEAD_BYTES = 16;
+
 /**
- * A document's bytes to text: `document` and `unlabelled` responses. Buffered
- * whole, under a cap, because a parser needs all of it; a PDF's index of
- * its contents is at the end, so the first part alone reads as damaged.
+ * Which document a `document` or `unlabelled` response holds, from its first
+ * bytes, or null when it is not one. A label must agree with the bytes, as an
+ * upload's must (`documentBytesMatch`), so no extractor sees bytes that only
+ * claim to be a document. Unlabelled bytes are a document only when they are
+ * a PDF: a zip says nothing about which kind it is.
+ */
+export function fetchedDocumentMime(contentType: string, head: Buffer): string | null {
+  if (classifyFetchBody(contentType) === "document") {
+    const mime = mimeOf(contentType);
+    return documentBytesMatch(mime, head) ? mime : null;
+  }
+  return sniffMime(head) === "application/pdf" ? "application/pdf" : null;
+}
+
+/**
+ * A `document` or `unlabelled` response. Its first bytes decide: a document is
+ * buffered whole, under a cap, because a parser needs all of it (a PDF's index
+ * is at the end); anything else is read as text under the text cap, so a
+ * mislabelled page or an unlabelled log is never held whole.
+ *
+ * `timer` is the fetch's: `extend` once the body is known to be a document,
+ * `stop` once it has arrived, so reading it is not on the download's clock.
  */
 async function readFetchedDocument(
   response: GuardedResponse,
   url: URL,
   contentType: string,
-  signal: AbortSignal | undefined,
+  runSignal: AbortSignal | undefined,
   readDocument: DocumentReader | undefined,
+  timer: { extend(): void; stop(): void },
 ): Promise<ToolResult> {
-  const declared = Number(response.headers.get("content-length"));
-  if (declared > MAX_DOCUMENT_BYTES) {
-    await response.body?.cancel().catch(() => undefined);
-    return tooLarge(url, declared);
+  if (!response.body) return { ok: true, output: extractFetchText("", contentType, false) };
+  const reader = (response.body as WebReadableStream<Uint8Array>).getReader();
+  let bytes: Buffer;
+  let over: boolean;
+  let mime: string | null;
+  try {
+    const head = await readUpTo(reader, [], DOCUMENT_HEAD_BYTES - 1);
+    mime = fetchedDocumentMime(contentType, Buffer.concat(head.chunks));
+    if (mime) {
+      const declared = Number(response.headers.get("content-length"));
+      if (declared > MAX_DOCUMENT_BYTES) return tooLarge(url, declared);
+      timer.extend();
+    }
+    ({ bytes, over } = await readUpTo(reader, head.chunks, mime ? MAX_DOCUMENT_BYTES : WEB_FETCH_MAX_RAW_BYTES));
+  } finally {
+    await reader.cancel().catch(() => undefined);
   }
-  const bytes = await readBoundedBytes(response, MAX_DOCUMENT_BYTES);
-  if (!bytes) return tooLarge(url, null);
+  timer.stop();
 
-  const labelled = classifyFetchBody(contentType) === "document";
-  const mime = labelled ? mimeOf(contentType) : sniffMime(bytes.subarray(0, 16));
-  if (!mime || attachmentClass(mime) !== "document") {
+  if (!mime) {
     if (bytes.includes(0)) return notReadable(url, contentType);
-    // Nothing said what it is, and it reads as text.
-    const text = new TextDecoder("utf-8").decode(bytes.subarray(0, WEB_FETCH_MAX_RAW_BYTES));
-    return { ok: true, output: extractFetchText(text, contentType, bytes.length > WEB_FETCH_MAX_RAW_BYTES) };
+    // Not a document, and it reads as text: a login page served as a PDF, say.
+    return { ok: true, output: extractFetchText(new TextDecoder("utf-8").decode(bytes), contentType, over) };
   }
+  if (over) return tooLarge(url, null);
   if (!readDocument) return { ok: false, output: `Documents can't be read here, so ${url.href} was not.` };
-  const read = await readDocument(bytes, mime, signal);
+  const read = await readDocument(bytes, mime, runSignal);
   if (!read.ok) return { ok: false, output: `${url.href}: ${read.reason}` };
   return { ok: true, output: extractFetchText(read.text, "text/plain", false) };
+}
+
+/**
+ * Reads on from `chunks` until more than `maxBytes` have arrived or the body
+ * ends. `bytes` stops at `maxBytes`; `over` says there was more. Streamed for
+ * the reason `readBoundedText` is: a Content-Length is only a claim. The
+ * caller cancels the reader.
+ */
+async function readUpTo(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  chunks: Uint8Array[],
+  maxBytes: number,
+): Promise<{ chunks: Uint8Array[]; bytes: Buffer; over: boolean }> {
+  let read = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  while (read <= maxBytes) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    read += value.length;
+  }
+  const all = Buffer.concat(chunks);
+  return { chunks, bytes: all.subarray(0, maxBytes), over: all.length > maxBytes };
 }
 
 /** What the plain fetch saw, for deciding whether the browser should try. */
@@ -767,10 +821,15 @@ async function plainFetch(
       return { result: notReadable(url, contentType), signal: reached };
     }
     if (kind !== "text") {
-      clearTimeout(timer);
-      timeoutMs = WEB_FETCH_DOCUMENT_TIMEOUT_MS;
-      timer = setTimeout(() => { controller.abort(); }, timeoutMs);
-      return { result: await readFetchedDocument(response, url, contentType, signal, readDocument), signal: reached };
+      const documentTimer = {
+        extend: () => {
+          clearTimeout(timer);
+          timeoutMs = WEB_FETCH_DOCUMENT_TIMEOUT_MS;
+          timer = setTimeout(() => { controller.abort(); }, timeoutMs);
+        },
+        stop: () => { clearTimeout(timer); },
+      };
+      return { result: await readFetchedDocument(response, url, contentType, runSignal, readDocument, documentTimer), signal: reached };
     }
     const { text: bodyText, truncated: rawTruncated } = await readBoundedText(response);
     if (bodyText.includes(NUL)) return { result: notReadable(url, contentType), signal: reached };
@@ -848,26 +907,6 @@ async function runWebFetch(
   const rendered = await renderedFetch(url, renderer, false, decision.reason);
   if (rendered.ok) return rendered;
   return { ...rendered, output: `${plain.result.output}\nThe browser fallback failed too: ${rendered.output}` };
-}
-
-/** A response's bytes, or null past `maxBytes`. Streamed for the reason
- * `readBoundedText` is: a Content-Length is only a claim. */
-async function readBoundedBytes(response: GuardedResponse, maxBytes: number): Promise<Buffer | null> {
-  if (!response.body) return Buffer.alloc(0);
-  const reader = (response.body as WebReadableStream<Uint8Array>).getReader();
-  const chunks: Uint8Array[] = [];
-  let read = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) return Buffer.concat(chunks);
-      read += value.length;
-      if (read > maxBytes) return null;
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
 }
 
 /**

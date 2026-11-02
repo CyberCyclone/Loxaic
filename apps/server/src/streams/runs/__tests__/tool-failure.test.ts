@@ -188,6 +188,10 @@ describe("a failed tool call does not end the run", () => {
 
     const results = (await blocks(convId)).flatMap(({ block }) => (block.kind === "tool_result" ? [block] : []));
     expect(results.map((r) => r.output)).toEqual(["found\ufffdthis"]);
+    // The live card reads as the reload will.
+    const live = JSON.stringify(await getStreamBroker().readFrom(streamOf.get(convId) ?? "", 0));
+    expect(live).toContain(JSON.stringify("found\ufffdthis"));
+    expect(live).not.toContain(JSON.stringify("found\u0000this"));
     expect((await blocks(convId)).at(-1)).toMatchObject({ block: { kind: "text", text: "Read the report." } });
   });
 
@@ -218,7 +222,7 @@ describe("a failed tool call does not end the run", () => {
     }
   });
 
-  it("reads as stopped, not failed, when the throw is a stop arriving", async () => {
+  it("reads as stopped while running, not failed, when the throw is a stop arriving", async () => {
     scenario("tool throw stop", [{ calls: [TODO("first"), TODO("second")] }], "Must not be reached.");
     fault.on = true;
     const convId = await run("tool throw stop", (id) => {
@@ -227,8 +231,10 @@ describe("a failed tool call does not end the run", () => {
 
     const stored = await blocks(convId);
     const results = stored.flatMap(({ block }) => (block.kind === "tool_result" ? [block] : []));
+    // The first was running, so it may have done part of its work; only the
+    // second never started.
     expect(results.map((r) => r.output)).toEqual([
-      "Stopped by the user before this tool call ran.",
+      "Stopped by the user while this tool call was running, so it may have done part of its work.",
       "Stopped by the user before this tool call ran.",
     ]);
     expect(stored.some(({ block }) => block.kind === "text" && block.text === "Must not be reached.")).toBe(false);
@@ -245,5 +251,19 @@ describe("a failed tool call does not end the run", () => {
     expect(results).toHaveLength(2);
     expect(results.every((r) => r.ok === false && r.output === TOOL_FAILED)).toBe(true);
     expect(stored.at(-1)).toMatchObject({ block: { kind: "text", text: "Answered without them." } });
+  });
+
+  it("keeps a sub-agent call's own refusal when the rest of its group falls over", async () => {
+    const good = { tool: SUBAGENT_TOOL_NAME, args: { description: "look", prompt: "look around" } };
+    const noPrompt = { tool: SUBAGENT_TOOL_NAME, args: { description: "look" } };
+    scenario("sub-agent throw mixed", [{ calls: [good, noPrompt] }], "Answered without them.");
+    fault.subagent = true;
+    const convId = await run("sub-agent throw mixed");
+
+    const results = (await blocks(convId)).flatMap(({ block }) => (block.kind === "tool_result" ? [block] : []));
+    expect(results.map((r) => [r.ok, r.output])).toEqual([
+      [false, TOOL_FAILED],
+      [false, "A sub-agent needs a `prompt`: the complete task, with everything it needs to know."],
+    ]);
   });
 });

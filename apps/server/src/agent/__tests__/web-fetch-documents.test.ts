@@ -53,15 +53,33 @@ describe("web_fetch on a file", () => {
     "/huge.pdf": (res) => {
       res.setHeader("content-type", "application/pdf");
       res.setHeader("content-length", String(MAX_DOCUMENT_BYTES + 1));
-      res.write("%PDF-");
+      res.write(PDF);
     },
     "/lying.pdf": (res) => {
       res.setHeader("content-type", "application/pdf");
+      res.write(PDF);
       const chunk = Buffer.alloc(1024 * 1024);
       for (let i = 0; i <= MAX_DOCUMENT_BYTES / chunk.length; i++) res.write(chunk);
       res.end();
     },
     "/slow.pdf": (res) => { res.setHeader("content-type", "application/pdf"); res.write("%PDF-"); },
+    // Labels that the bytes don't back.
+    "/elf.pdf": (res) => { res.setHeader("content-type", "application/pdf"); res.end(Buffer.from("\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0rest")); },
+    "/elf.docx": (res) => {
+      res.setHeader("content-type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.end(Buffer.from("\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0rest"));
+    },
+    "/login.pdf": (res) => {
+      res.setHeader("content-type", "application/pdf");
+      res.end("<html><body><p>Sign in to read this report.</p></body></html>");
+    },
+    // A text body past the document cap, with no useful type.
+    "/big.log": (res) => {
+      res.setHeader("content-type", "application/octet-stream");
+      const line = Buffer.from("a log line\n".repeat(100_000));
+      for (let read = 0; read <= MAX_DOCUMENT_BYTES; read += line.length) res.write(line);
+      res.end();
+    },
   };
 
   beforeAll(async () => {
@@ -134,6 +152,37 @@ describe("web_fetch on a file", () => {
 
   it("reads an unlabelled body as text when that is what it is", async () => {
     expect(await fetchUrl("/notes")).toEqual({ ok: true, output: "plain words" });
+  });
+
+  it.each([
+    ["/elf.pdf", "application/pdf"],
+    ["/elf.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  ])("never hands the reader %s, whose bytes are not what its label says", async (path, mime) => {
+    const result = await fetchUrl(path);
+    expect(result).toEqual({ ok: false, output: `${base}${path} is a binary file (${mime}). web_fetch reads text, web pages and documents.` });
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("reads a page served as a PDF as the page it is", async () => {
+    const result = await fetchUrl("/login.pdf");
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("Sign in to read this report.");
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("reads an unlabelled text body past the document cap as truncated text", async () => {
+    const result = await fetchUrl("/big.log");
+    expect(result.ok).toBe(true);
+    expect(result.output).toMatch(/^a log line\n/);
+    expect(result.output).toContain("[truncated");
+  });
+
+  it("gives the reader the run's own signal, so the download's clock can't stop it", async () => {
+    const run = new AbortController();
+    await fetchUrl("/manual.pdf", run.signal);
+    expect(reader.mock.calls[0][2]).toBe(run.signal);
+    await fetchUrl("/manual.pdf");
+    expect(reader.mock.calls[1][2]).toBeUndefined();
   });
 
   it("refuses a declared size over the limit before reading it", async () => {

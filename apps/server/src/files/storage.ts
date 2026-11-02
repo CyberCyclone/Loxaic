@@ -469,7 +469,7 @@ function isZipHeader(head: Buffer): boolean {
  * need is because they are *served back* to a browser, and a document never is
  * inline — the serve route forces `attachment` for everything but images.
  */
-function documentBytesMatch(mime: string, head: Buffer): boolean {
+export function documentBytesMatch(mime: string, head: Buffer): boolean {
   if (mime === "application/pdf") return sniffMime(head) === "application/pdf";
   if (mime === "application/rtf" || mime === "text/rtf") {
     return head.length >= 5 && head.subarray(0, 5).toString("latin1") === "{\\rtf";

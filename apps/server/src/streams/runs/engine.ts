@@ -199,10 +199,12 @@ function canonicalJson(value: unknown): string {
 }
 
 export function toolCallsForPrompt(calls: { id: string; name: string; args: unknown }[]): ToolCall[] {
+  // jsonbSafe for the reason toolResultMessageForPrompt's is: the stored row
+  // went through it, so the live request must too.
   return calls.map((c) => ({
-    id: c.id,
+    id: jsonbSafe(c.id),
     type: "function" as const,
-    function: { name: c.name, arguments: canonicalJson(c.args ?? {}) },
+    function: { name: jsonbSafe(c.name), arguments: canonicalJson(jsonbSafe(c.args ?? {})) },
   }));
 }
 
@@ -214,8 +216,9 @@ export function assistantMessageForPrompt(text: string, calls: ToolCall[]): Chat
   // `content: "Running it.\n"` during the run and `content: "Running it."` on
   // the next one, breaking the prefix at that message and recording
   // reusable_tokens: 0 for the turn after it. Whitespace-only text was worse:
-  // live sent "\n" (truthy) where the replay sent null.
-  const content = text.trim();
+  // live sent "\n" (truthy) where the replay sent null. jsonbSafe because the
+  // stored text went through it: a NUL or half an emoji would differ too.
+  const content = jsonbSafe(text.trim());
   // Key order matters as well as content: prompt fingerprints hash each
   // message with JSON.stringify, so two objects that differ only in key order
   // hash differently.
@@ -224,11 +227,17 @@ export function assistantMessageForPrompt(text: string, calls: ToolCall[]): Chat
 
 /**
  * What a tool call that threw reads as, on its card and to the model.
- * `RunSlotAbortedError` is thrown by a stop, and any other throw after a stop
- * is that stop tearing something down, so neither is a fault worth logging.
+ * `RunSlotAbortedError` is a stop at the call's approval, before it ran. Any
+ * other throw after a stop came while the call was running, and it may already
+ * have changed the workspace, so it never says the call didn't run.
  */
 function toolThrowText(err: unknown, stopped: boolean, label: string): string {
-  if (stopped || err instanceof RunSlotAbortedError) return STOPPED_BEFORE_RUN;
+  if (err instanceof RunSlotAbortedError) return STOPPED_BEFORE_RUN;
+  if (stopped) {
+    // An abort is the stop itself; anything else is worth a line.
+    if ((err as Error).name !== "AbortError") console.warn(`${label} after a stop:`, err);
+    return STOPPED_WHILE_RUNNING;
+  }
   console.error(`${label}:`, err);
   return TOOL_FAILED;
 }
@@ -236,7 +245,12 @@ function toolThrowText(err: unknown, stopped: boolean, label: string): string {
 export function toolResultMessageForPrompt(callId: string, name: string | undefined, output: string): ChatMessage {
   // The live request and the replay both pass through here, so the prefix
   // stays the same whatever the tool produced.
-  return { role: "tool", tool_call_id: callId, ...(name === undefined ? {} : { name }), content: jsonbSafe(output) };
+  return {
+    role: "tool",
+    tool_call_id: jsonbSafe(callId),
+    ...(name === undefined ? {} : { name: jsonbSafe(name) }),
+    content: jsonbSafe(output),
+  };
 }
 
 /**
@@ -626,15 +640,20 @@ export async function runToolLoop(ctx: {
   };
 
   let parentId = ctx.userMsgId;
-  // The assistant row a failure would leave saying "streaming" for good.
+  // The assistant row a failure would leave saying "streaming" for good, and
+  // what it has streamed so far, which the person watched arrive and keeps.
   let streamingMsgId: string | null = null;
+  let streamedSoFar = (): ContentBlock[] => [];
   // A run that dies past the model's own failures has only the stream's end
   // to say so, which is a toast for whoever is watching and nothing after a
   // reload: the thread just stops. So it goes in the thread too.
   const recordFailure = async (err: unknown): Promise<void> => {
     const error = shownTurnError(err);
     if (streamingMsgId) {
-      await db.update(messages).set({ status: "error", error }).where(eq(messages.id, streamingMsgId));
+      await db
+        .update(messages)
+        .set({ content: jsonbSafe(streamedSoFar()), status: "error", error })
+        .where(eq(messages.id, streamingMsgId));
       producer.emit({ kind: "message.end", message_id: streamingMsgId, status: "error", error });
       return;
     }
@@ -657,6 +676,17 @@ export async function runToolLoop(ctx: {
     });
     producer.emit({ kind: "message.start", message_id: id, author_type: "assistant", parent_id: parentId, lamport, model });
     producer.emit({ kind: "message.end", message_id: id, status: "error", error });
+  };
+  // A stop that broke something on its way out: the reply it cut short ends
+  // cancelled with what it had, as a stop mid-stream leaves it, never as an
+  // error, and nothing else is added to the thread.
+  const recordStop = async (): Promise<void> => {
+    if (!streamingMsgId) return;
+    await db
+      .update(messages)
+      .set({ content: jsonbSafe(streamedSoFar()), status: "cancelled" })
+      .where(eq(messages.id, streamingMsgId));
+    producer.emit({ kind: "message.end", message_id: streamingMsgId, status: "cancelled" });
   };
 
   try {
@@ -1161,6 +1191,13 @@ export async function runToolLoop(ctx: {
       let text = "";
       let thinking = "";
       let toolCalls: ToolCall[] = [];
+      const streamedBlocks = (): ContentBlock[] => {
+        const out: ContentBlock[] = [];
+        if (thinking) out.push({ kind: "thinking", text: thinking });
+        if (text) out.push({ kind: "text", text });
+        return out;
+      };
+      streamedSoFar = streamedBlocks;
       let doneResult: CompletionResult | null = null;
 
       const breakdownMeta = {
@@ -1265,9 +1302,7 @@ export async function runToolLoop(ctx: {
         // phrasing, which is different for every runtime.
         const raw = (err as Error).message;
         const backendText = hadImages ? (visionErrorMessage(raw) ?? raw) : raw;
-        const blocks: ContentBlock[] = [];
-        if (thinking) blocks.push({ kind: "thinking", text: thinking });
-        if (text) blocks.push({ kind: "text", text });
+        const blocks = streamedBlocks();
         // Stored as well as emitted: the event reaches only the clients
         // watching right now, and a reload used to show a bare empty reply.
         // A cancel stores nothing — a user stop is not an error.
@@ -1344,9 +1379,8 @@ export async function runToolLoop(ctx: {
       }
 
       // Persist the assistant turn as ordered blocks: thinking, prose, calls.
-      const blocks: ContentBlock[] = [];
-      if (thinking) blocks.push({ kind: "thinking", text: thinking });
-      if (text) blocks.push({ kind: "text", text });
+      const blocks = streamedBlocks();
+      streamedSoFar = () => blocks;
       for (const call of toolCalls) {
         blocks.push({
           kind: "tool_call",
@@ -1366,7 +1400,9 @@ export async function runToolLoop(ctx: {
         .update(messages)
         .set({ content: blocks.length ? jsonbSafe(blocks) : [{ kind: "text", text: "" }], status: "complete" })
         .where(eq(messages.id, assistantMsgId));
+      // From here a failure is a reply to this one, not beside it.
       streamingMsgId = null;
+      parentId = assistantMsgId;
 
       /**
        * Ends the turn as a success, from whichever branch got there.
@@ -1472,7 +1508,6 @@ export async function runToolLoop(ctx: {
         toolCalls.map((c) => ({ id: c.id, name: c.function.name, args: safeParseArgs(c.function.arguments) })),
       );
       chatMessages.push(assistantMessageForPrompt(text, promptCalls));
-      parentId = assistantMsgId;
 
       if (answerNow) {
         // The request went out with `tool_choice: "none"` and the backend
@@ -1600,45 +1635,41 @@ export async function runToolLoop(ctx: {
         // sub-agent (or a chat run) that names it anyway falls through to the
         // unknown-tool answer below.
         if (subagents && call.function.name === SUBAGENT_TOOL_NAME && toolset.get(SUBAGENT_TOOL_NAME)) {
-          const group = [...toolCalls.entries()]
-            .filter(([, c]) => c.function.name === SUBAGENT_TOOL_NAME)
-            .map(([index, c]) => ({ index, call: c }));
-          try {
-            subagentOutcomes = await runSubagentGroup({
-              calls: group,
-              subagents,
-              parentModel: model,
-              slot,
-              parent: {
-                convId,
-                streamId,
-                userId,
-                mode: liveMode(),
-                surface: ctx.surface,
-                assistantMsgId,
-                producer,
-                signal: abort.signal,
-                thinkingLevel: ctx.thinkingLevel,
-                checkpointTurn,
-              },
-            });
-          } catch (err) {
-            // Every call in the group goes the same way, so each still gets
-            // the result its tool_call needs; see the per-call catch below.
-            const output = toolThrowText(err, isAborted(abort), `sub-agents failed in ${convId}`);
-            subagentOutcomes = new Map(group.map(({ index }) => [index, { output, ok: false }]));
-          }
+          // Never throws: every call gets the result its tool_call needs.
+          subagentOutcomes = await runSubagentGroup({
+            calls: [...toolCalls.entries()]
+              .filter(([, c]) => c.function.name === SUBAGENT_TOOL_NAME)
+              .map(([index, c]) => ({ index, call: c })),
+            subagents,
+            parentModel: model,
+            slot,
+            parent: {
+              convId,
+              streamId,
+              userId,
+              mode: liveMode(),
+              surface: ctx.surface,
+              assistantMsgId,
+              producer,
+              signal: abort.signal,
+              thinkingLevel: ctx.thinkingLevel,
+              checkpointTurn,
+            },
+          });
           const mine = subagentOutcomes.get(callIndex) ?? { output: SUBAGENT_NOT_RUN, ok: false };
+          // A child's report is a model's words: cleaned before the event, so
+          // the live card reads as the reload will.
+          const output = jsonbSafe(mine.output);
           producer.emit({
             kind: "tool.result",
             message_id: assistantMsgId,
             call_id: call.id,
             tool: call.function.name,
-            output: mine.output,
+            output,
             ok: mine.ok,
           });
-          resultBlocks.push({ kind: "tool_result", call_id: call.id, output: mine.output, ok: mine.ok });
-          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, mine.output));
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output, ok: mine.ok });
+          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
           continue;
         }
         let outcome: Awaited<ReturnType<typeof runOneToolCall>>;
@@ -1932,21 +1963,25 @@ export async function runToolLoop(ctx: {
       answerNow = true;
     }
   } catch (err) {
-    // The one error this function is allowed to expect. It means the user
-    // pressed stop while the run was waiting to get back into the queue after
-    // an approval, and the right response is the same one every other cancel
-    // gets. Anything else keeps propagating rather than being flattened into a
-    // cancelled turn that hides a real fault.
-    if (!(err instanceof RunSlotAbortedError)) {
-      // If the database is what failed this can fail too, and the stream's end
-      // still reports the run.
-      await recordFailure(err).catch((recordErr: unknown) => {
-        console.error(`recording a failed run in ${convId} failed:`, recordErr);
-      });
-      throw err;
+    // A stop: `RunSlotAbortedError` (the user pressed stop while the run waited
+    // to get back into the queue after an approval), or whatever a stop broke
+    // on its way out, such as an aborted call. Both get the response every
+    // other cancel gets. Anything else keeps propagating rather than being
+    // flattened into a cancelled turn that hides a real fault.
+    if (err instanceof RunSlotAbortedError || isAborted(abort)) {
+      if (!(err instanceof RunSlotAbortedError) && (err as Error).name !== "AbortError") {
+        console.warn(`run in ${convId} stopped, and failed on the way out:`, err);
+      }
+      await recordStop().catch(() => undefined);
+      await producer.end("cancelled").catch(() => undefined);
+      return;
     }
-    await producer.end("cancelled").catch(() => undefined);
-    return;
+    // If the database is what failed this can fail too, and the stream's end
+    // still reports the run.
+    await recordFailure(err).catch((recordErr: unknown) => {
+      console.error(`recording a failed run in ${convId} failed:`, recordErr);
+    });
+    throw err;
   } finally {
     // Before unregisterRun, so the next run in line starts against a registry
     // that no longer thinks this conversation is busy.
@@ -2027,12 +2062,13 @@ const SUBAGENT_NOT_RUN = "This sub-agent was not started.";
  *
  * Returns an outcome for **every** call it was given, by call index — a
  * refusal for one past the cap or with unusable arguments, the child's report
- * for one that ran. Never throws for a stop: `yieldWhile` re-enters the queue
+ * for one that ran. Never throws. A stop: `yieldWhile` re-enters the queue
  * after its work and throws for an aborted run, but by then every child has
  * ended and its outcome is in hand, so the throw is caught here and the caller
  * records what really happened. (The slot is not held after that throw, which
  * is the state the abort branch after the batch expects — the same one a stop
- * at an approval leaves.)
+ * at an approval leaves.) A fault fails only the calls it reached, so an
+ * outcome already settled keeps its own words.
  */
 async function runSubagentGroup(input: {
   calls: { index: number; call: ToolCall }[];
@@ -2041,34 +2077,50 @@ async function runSubagentGroup(input: {
   slot: RunSlot;
   parent: SubagentParent;
 }): Promise<Map<number, SubagentOutcome>> {
-  const { parseSubagentArgs, runSubagent } = await import("./subagentRun.ts");
+  const failed = (err: unknown): SubagentOutcome => ({
+    output: toolThrowText(err, input.parent.signal.aborted, `a sub-agent failed in ${input.parent.convId}`),
+    ok: false,
+  });
   const outcomes = new Map<number, SubagentOutcome>();
+  let loaded: typeof import("./subagentRun.ts");
+  try {
+    loaded = await import("./subagentRun.ts");
+  } catch (err) {
+    const outcome = failed(err);
+    for (const { index } of input.calls) outcomes.set(index, outcome);
+    return outcomes;
+  }
+  const { parseSubagentArgs, runSubagent } = loaded;
   const starting: { index: number; spec: SubagentCall }[] = [];
   for (const { index, call } of input.calls) {
     if (starting.length >= MAX_SUBAGENTS_PER_MESSAGE) {
       outcomes.set(index, { output: tooManySubagentsText(MAX_SUBAGENTS_PER_MESSAGE), ok: false });
       continue;
     }
-    const parsed = parseSubagentArgs(safeParseArgs(call.function.arguments));
-    if ("error" in parsed) {
-      outcomes.set(index, { output: parsed.error, ok: false });
-      continue;
+    try {
+      const parsed = parseSubagentArgs(safeParseArgs(call.function.arguments));
+      if ("error" in parsed) {
+        outcomes.set(index, { output: parsed.error, ok: false });
+        continue;
+      }
+      const chosen = subagentModelFor({
+        policy: input.subagents.policy,
+        parentModel: input.parentModel,
+        requested: parsed.model,
+        offered: input.subagents.offered,
+        routine: input.subagents.routine,
+      });
+      if ("error" in chosen) {
+        outcomes.set(index, { output: chosen.error, ok: false });
+        continue;
+      }
+      starting.push({
+        index,
+        spec: { callId: call.id, description: parsed.description, prompt: parsed.prompt, model: chosen.model },
+      });
+    } catch (err) {
+      outcomes.set(index, failed(err));
     }
-    const chosen = subagentModelFor({
-      policy: input.subagents.policy,
-      parentModel: input.parentModel,
-      requested: parsed.model,
-      offered: input.subagents.offered,
-      routine: input.subagents.routine,
-    });
-    if ("error" in chosen) {
-      outcomes.set(index, { output: chosen.error, ok: false });
-      continue;
-    }
-    starting.push({
-      index,
-      spec: { callId: call.id, description: parsed.description, prompt: parsed.prompt, model: chosen.model },
-    });
   }
   if (starting.length === 0) return outcomes;
 
@@ -2100,7 +2152,10 @@ async function runSubagentGroup(input: {
       settled.forEach((outcome, i) => outcomes.set(starting[i].index, outcome));
     });
   } catch (err) {
-    if (!(err instanceof RunSlotAbortedError)) throw err;
+    if (!(err instanceof RunSlotAbortedError)) {
+      const outcome = failed(err);
+      for (const { index } of starting) if (!outcomes.has(index)) outcomes.set(index, outcome);
+    }
   }
   return outcomes;
 }
@@ -2469,6 +2524,7 @@ type Gate =
   | { kind: "refused"; output: string; permission?: ToolPermission };
 
 const STOPPED_BEFORE_RUN = "Stopped by the user before this tool call ran.";
+const STOPPED_WHILE_RUNNING = "Stopped by the user while this tool call was running, so it may have done part of its work.";
 
 async function permissionGate(
   ctx: Parameters<typeof runOneToolCall>[0],
