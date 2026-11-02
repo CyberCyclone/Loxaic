@@ -676,6 +676,8 @@ export type StreamEventKind =
       kind: "steps.checkin";
       n: number;
       max: number;
+      /** As on `iteration`: a loop check-in on a run with no step limit. */
+      unlimited?: true;
       reason: CheckinReason;
       /** `loop` only: the repeating unit, oldest first — tool names alone.
        * Not the arguments: an `fs_write` loop is exactly what this exists to

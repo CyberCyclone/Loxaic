@@ -266,7 +266,7 @@ export class StreamBroker {
           pendingCheckin = question;
           // The question names the step it paused at, so a client that joins
           // mid-wait can show "104/200" rather than nothing.
-          iteration = { n: event.n, max: event.max };
+          iteration = { n: event.n, max: event.max, ...(event.unlimited ? { unlimited: true as const } : {}) };
           break;
         }
         case "steps.decision": {

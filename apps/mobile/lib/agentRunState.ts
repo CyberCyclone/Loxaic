@@ -173,7 +173,7 @@ export function runLevelAfterEvent(
         ...next,
         runState: 'awaiting_checkin',
         pendingCheckin: toPendingCheckin(event, now, undefined, streamId),
-        iteration: { n: event.n, max: event.max },
+        iteration: { n: event.n, max: event.max, ...(event.unlimited ? { unlimited: true as const } : {}) },
       };
     case 'steps.decision':
       // Someone answered — possibly on another device, possibly the timeout.

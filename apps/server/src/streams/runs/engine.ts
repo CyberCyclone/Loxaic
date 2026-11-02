@@ -1759,6 +1759,7 @@ export async function runToolLoop(ctx: {
         kind: "steps.checkin",
         n: iteration,
         max: budgetEnd,
+        ...(liveLimits().stepLimitOff ? { unlimited: true as const } : {}),
         reason,
         ...(hit ? { pattern: hit.unit.flatMap((k) => (recentCalls.get(k) ?? []).map((tool) => ({ tool }))) } : {}),
         timeout_ms: deadline.ms,
