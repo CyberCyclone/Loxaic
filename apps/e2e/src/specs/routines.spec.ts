@@ -181,6 +181,8 @@ describe('routines', () => {
     await openThreadList('routineChat');
     await waitForVisible(`threadList.item.${theirs.conversationId}`);
     expect(await byTestId(`threadList.item.${second.conversationId}`).isDisplayed().catch(() => false)).toBe(false);
+    // On a phone the list covers the back arrow the next case needs.
+    await tap(`threadList.item.${theirs.conversationId}`);
   });
 
   it('picks up a run that was already going when the screen opened', async () => {
