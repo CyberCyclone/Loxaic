@@ -39,12 +39,11 @@ const SETTINGS = { ctxSize: 16 * K };
 const STAGES = { enabled: true, whoMayChange: 'everyone', whenFull: 'extend', stages: [{ ctxSize: 64 * K }] };
 
 /**
- * A prompt no other conversation's last message can be found in. The fake
- * prices every "fill the context" the same, and the server's record of what
- * ran outlives a spec, so an earlier spec's conversation can end at this one's
- * token count. Only the last user message then tells the two apart, by being
- * found in the slot's text (`matchSlots`): an earlier spec's words inside these
- * would match this slot too, and with two matches nothing is saved.
+ * A prompt no other conversation's last message can be. The fake prices every
+ * "fill the context" the same, and the server keeps a day of what ran, across
+ * specs and runs, so an earlier conversation can end at this one's token count.
+ * Only the last user message then tells the two apart (`matchSlots`), and the
+ * same words sent by an earlier run cannot: nothing would be saved.
  */
 const RUN = Date.now().toString(36);
 const fillPrompt = (label: string) => `fill the context for ${label} (${RUN})`;

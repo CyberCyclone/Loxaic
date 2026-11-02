@@ -51,7 +51,7 @@ die() {
 # in the environment would be handed to every browser and server the run
 # starts. Lanes that download keep them.
 without_egress() {
-  env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u NO_PROXY -u no_proxy \
+  env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY -u all_proxy -u NO_PROXY -u no_proxy \
     -u SSL_CERT_FILE -u GIT_SSL_CAINFO -u CURL_CA_BUNDLE -u REQUESTS_CA_BUNDLE -u NODE_EXTRA_CA_CERTS \
     -u GH_TOKEN "$@"
 }
@@ -370,7 +370,8 @@ case "${1:-help}" in
   stop) shift; cmd_stop "$@" ;;
   pg) pg_start && echo "Postgres is running on localhost:5432 (database loxaic)" ;;
   __run) shift; cmd_run "$@" ;;
-  __boot-emulator) boot_emulator ;;
+  # selftest.sh only, with a stub emulator: no KVM check, which the android lane makes first.
+  __selftest-boot-emulator) boot_emulator ;;
   help | -h | --help) usage ;;
   *) usage; exit 1 ;;
 esac

@@ -95,11 +95,14 @@ async function scrollBackTo(text: string, how: ScrollInput): Promise<void> {
  * message can be in the list before the list's end is reached (a reconnect's
  * snapshot brings a recent run back ahead of its page), and the end is what
  * asks for the last page, so stopping at the message would wait forever.
+ * While a page is loading, a spinner stands in for the button, so the top is
+ * reached only when neither is there.
  */
 async function scrollBackToTheTop(how: ScrollInput): Promise<void> {
   await browser.waitUntil(
     async () => {
-      if (!(await isVisible('chat.history.loadOlder'))) return true;
+      const offered = (await isVisible('chat.history.loadOlder')) || (await isVisible('chat.history.loadingOlder'));
+      if (!offered) return true;
       await scrollBack(how);
       return false;
     },

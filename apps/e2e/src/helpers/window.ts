@@ -27,13 +27,15 @@ export async function setWindowSize(width: number, height: number): Promise<void
         win.setSize(w, h);
       }
     }, width, height);
-    await browser.waitUntil(async () => (await browser.execute(() => window.outerHeight)) === height, {
-      timeout: 5_000,
-      timeoutMsg: `the window never became ${String(height)} high`,
-    });
   } else {
     await browser.setWindowSize(width, height);
   }
+  // The renderer can still report the old size when the command returns, so
+  // two still readings of the old viewport would pass the wait below.
+  await browser.waitUntil(async () => (await browser.execute(() => window.outerHeight)) === height, {
+    timeout: 5_000,
+    timeoutMsg: `the window never became ${String(height)} high`,
+  });
   // The page lays out on its own resize event, a moment later, and what sizes
   // itself from `useWindowDimensions` a commit after that; a spec that measures
   // straight away measures the old layout. Wait for the viewport to hold still,
@@ -44,7 +46,7 @@ export async function setWindowSize(width: number, height: number): Promise<void
     const still = inner === last;
     last = inner;
     return still;
-  }, { timeout: 5_000, interval: 150 });
+  }, { timeout: 5_000, interval: 150, timeoutMsg: 'the viewport never held still after a resize' });
   await browser.execute(
     () => new Promise<void>((resolve) => { requestAnimationFrame(() => { requestAnimationFrame(() => { resolve(); }); }); }),
   );

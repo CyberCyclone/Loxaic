@@ -20,7 +20,7 @@
  * documents — and seeds the same state through the API instead, so the
  * navigation and history half still runs there.
  */
-import { browser } from '@wdio/globals';
+import { $, browser } from '@wdio/globals';
 import { provisionUser, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { byTestId, platform, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
@@ -181,8 +181,6 @@ describe('routines', () => {
     await openThreadList('routineChat');
     await waitForVisible(`threadList.item.${theirs.conversationId}`);
     expect(await byTestId(`threadList.item.${second.conversationId}`).isDisplayed().catch(() => false)).toBe(false);
-    // On a phone the list covers the back arrow the next case needs.
-    await tap(`threadList.item.${theirs.conversationId}`);
   });
 
   it('picks up a run that was already going when the screen opened', async () => {
@@ -312,6 +310,13 @@ async function seedRoutine(creds: Credentials, name: string, model: string): Pro
 }
 
 async function showRoutineRow(routine: E2ERoutine): Promise<void> {
+  // On a phone an open thread list covers the back arrow; choosing a chat in
+  // it closes it.
+  const listOpen = await byTestId('threadList.runNow').isDisplayed().catch(() => false);
+  if (listOpen && (await byTestId('routineChat.threadList.toggle').isExisting())) {
+    await $(threadItemSelector()).click();
+    await waitForAbsent('threadList.runNow');
+  }
   // On a phone a routine's chat has a back arrow where the menu button goes.
   if (await byTestId('routineChat.back').isDisplayed().catch(() => false)) {
     await tap('routineChat.back');
@@ -319,6 +324,19 @@ async function showRoutineRow(routine: E2ERoutine): Promise<void> {
   }
   await goToSurface('routines');
   await waitForVisible(`routines.open.${routine.id}`);
+}
+
+/** Any row of a thread list, whichever chat it is. */
+function threadItemSelector(): string {
+  switch (platform()) {
+    case 'web':
+    case 'electron':
+      return '[data-testid^="threadList.item."]';
+    case 'ios':
+      return '-ios predicate string:name BEGINSWITH "threadList.item."';
+    case 'android':
+      return 'android=new UiSelector().resourceIdMatches("threadList\\.item\\..*")';
+  }
 }
 
 async function openRoutine(routine: E2ERoutine): Promise<void> {

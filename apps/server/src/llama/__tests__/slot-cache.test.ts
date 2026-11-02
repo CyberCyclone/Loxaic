@@ -77,6 +77,19 @@ describe("matchSlots", () => {
     expect(matchSlots(slots, [use("a", 13), use("b", 13)], users)).toEqual(new Map([[0, "b"], [1, "a"]]));
   });
 
+  it("takes the prompt's final user turn, not a short message found earlier in it", () => {
+    const text = "<|user|>yes, go on<|assistant|>done<|user|>continue<|assistant|>";
+    const users = new Map([["a", "yes"], ["b", "continue"]]);
+    expect(matchSlots([slot({ text })], [use("a", 13), use("b", 13)], users)).toEqual(new Map([[0, "b"]]));
+  });
+
+  it("takes the whole message over one that is a prefix of it, and the prefix when it is all there is", () => {
+    const users = new Map([["a", "please fill the context"], ["b", "please fill the context again"]]);
+    const uses = [use("a", 13), use("b", 13)];
+    expect(matchSlots([slot({ text: "<|user|>please fill the context again<|assistant|>" })], uses, users)).toEqual(new Map([[0, "b"]]));
+    expect(matchSlots([slot({ text: "<|user|>please fill the context<|assistant|>" })], uses, users)).toEqual(new Map([[0, "a"]]));
+  });
+
   it("leaves out a slot nothing explains, one still ambiguous, a busy one and an empty one", () => {
     expect(matchSlots([slot({ tokens: 500 })], [use("a", 13)]).size).toBe(0);
     expect(matchSlots([slot({ text: "hi" })], [use("a", 13), use("b", 13)], new Map([["a", "hi"], ["b", "hi"]])).size).toBe(0);
