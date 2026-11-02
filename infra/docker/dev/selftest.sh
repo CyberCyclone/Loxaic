@@ -109,4 +109,17 @@ grep -q 'no usable /dev/kvm' <<<"$result" || fail "the Android lane did not expl
 grep -q 'status: failed' <<<"$result" || fail "the Android lane did not fail without KVM"
 pass "the Android lane explains a missing /dev/kvm"
 
+# The emulator would send the guest's every connection through an inherited
+# proxy, which refuses the address the app reaches the server by.
+fake="$(mktemp -d)"
+trap 'rm -rf "$fake"' EXIT
+# The stub keeps only the proxy variables it was started with.
+printf '#!/bin/sh\n{ env | grep -i "_proxy=" || true; } >"%s/emulator.env.tmp" && mv "%s/emulator.env.tmp" "%s/emulator.env"\n' "$fake" "$fake" "$fake" >"$fake/emulator"
+printf '#!/bin/sh\n[ -f "%s/emulator.env" ] && echo 1\n' "$fake" >"$fake/adb"
+chmod +x "$fake/emulator" "$fake/adb"
+http_proxy=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 PATH="$fake:$PATH" \
+  timeout 30 loxaic-test __selftest-boot-emulator >/dev/null || fail "the emulator did not boot from a stub"
+if [ -s "$fake/emulator.env" ]; then fail "the emulator inherited a proxy: $(cut -d= -f1 "$fake/emulator.env" | tr '\n' ' ')"; fi
+pass "the emulator boots without the egress proxy"
+
 echo "selftest passed"

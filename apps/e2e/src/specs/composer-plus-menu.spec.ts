@@ -150,11 +150,13 @@ describe('the composer + menu and per-chat MCP switches', () => {
   });
 
   it("drops an unsent new chat's choices rather than applying them to the thread opened next", async () => {
-    // The chat so far: Alpha switched off, Beta switched back on — both its
-    // own explicit choices.
+    // The chat so far: Beta switched back on, and Alpha switched off if the
+    // context popup's case ran (it is skipped on iOS) — its own explicit
+    // choices, read from the server rather than assumed.
     const [conv] = await listConversations(creds);
     const before = await conversationMcpOverrides(creds, conv.id);
-    expect(before).toMatchObject({ disabledServerIds: [alpha], enabledServerIds: [beta] });
+    const alphaOn = !(before?.disabledServerIds ?? []).includes(alpha);
+    expect(before).toMatchObject({ disabledServerIds: alphaOn ? [] : [alpha], enabledServerIds: [beta] });
 
     // A new chat, a choice made for it, and then no message after all.
     await startNewThread('chat');
@@ -169,7 +171,7 @@ describe('the composer + menu and per-chat MCP switches', () => {
     await openPlusMenu();
     await openMcpFromPlusMenu();
     await waitForSwitch(`composer.mcp.toggle.${beta}`, true);
-    await waitForSwitch(`composer.mcp.toggle.${alpha}`, false);
+    await waitForSwitch(`composer.mcp.toggle.${alpha}`, alphaOn);
     await closePlusMenu();
     // ...and they are still what the server holds, not the abandoned chat's.
     expect(await conversationMcpOverrides(creds, conv.id)).toEqual(before);

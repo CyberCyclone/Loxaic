@@ -124,9 +124,9 @@ export const MATCH_TEXT_CHARS = 120;
 /**
  * Which conversation each slot holds: the one whose last turn ended at the
  * slot's token count — and, when two could, the one whose last user message
- * (`lastUser`) is in the slot's prompt. A slot nothing explains, or still two,
- * is left out: warming the wrong conversation would save something nobody's
- * next turn extends. A conversation is matched once.
+ * (`lastUser`) is the slot's prompt's last user turn. A slot nothing explains,
+ * or still two, is left out: warming the wrong conversation would save
+ * something nobody's next turn extends. A conversation is matched once.
  */
 export function matchSlots(
   slots: readonly SlotView[],
@@ -137,12 +137,7 @@ export function matchSlots(
   const taken = new Set<string>();
   for (const slot of slots) {
     let near = usesNear(slot, uses);
-    if (near.length > 1) {
-      near = near.filter((u) => {
-        const said = lastUser.get(u.conversationId)?.trim().slice(0, MATCH_TEXT_CHARS);
-        return Boolean(said && slot.text?.includes(said));
-      });
-    }
+    if (near.length > 1) near = finalTurnOf(slot.text ?? "", near, lastUser);
     if (near.length !== 1) continue;
     const [use] = near;
     if (taken.has(use.conversationId)) continue;
@@ -150,6 +145,26 @@ export function matchSlots(
     out.set(slot.id, use.conversationId);
   }
   return out;
+}
+
+/**
+ * The uses whose last user message is the prompt's final user turn. A short
+ * message ("yes") can be found anywhere in another conversation's prompt, so
+ * being found is not enough: the prompt ends with its last user turn, and the
+ * message found latest is that turn. Two found at the same place are one
+ * message and a prefix of it ("please fill the context" in "please fill the
+ * context again"), and the longer is what is there.
+ */
+function finalTurnOf(text: string, near: readonly ConversationUse[], lastUser: ReadonlyMap<string, string>): ConversationUse[] {
+  const found = near.flatMap((u) => {
+    const said = lastUser.get(u.conversationId)?.trim().slice(0, MATCH_TEXT_CHARS);
+    const at = said ? text.lastIndexOf(said) : -1;
+    return said && at >= 0 ? [{ u, at, length: said.length }] : [];
+  });
+  const at = Math.max(...found.map((f) => f.at));
+  const there = found.filter((f) => f.at === at);
+  const length = Math.max(...there.map((f) => f.length));
+  return there.filter((f) => f.length === length).map((f) => f.u);
 }
 
 // ── Saved sets ──────────────────────────────────────────────────────────────

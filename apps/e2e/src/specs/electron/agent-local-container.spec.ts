@@ -34,6 +34,7 @@ import {
   chooseLocalWorkspace,
   goToSurface,
   listConversations,
+  requiresContainerEngine,
   sendMessage,
   signIn,
   startNewAgentRun,
@@ -72,6 +73,7 @@ describe('electron local workspace, container isolation', () => {
 
   before(async function () {
     this.timeout(60_000);
+    requiresContainerEngine(this, 'container isolation needs a container engine');
     await provisionUser(creds);
     await signIn(creds);
   });

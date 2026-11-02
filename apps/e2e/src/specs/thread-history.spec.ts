@@ -17,7 +17,7 @@
 import { browser } from '@wdio/globals';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, tap, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, isVisible, tap, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   chooseScratchWorkspace,
   goToSurface,
@@ -87,6 +87,26 @@ async function scrollBackTo(text: string, how: ScrollInput): Promise<void> {
       return false;
     },
     { timeout: 90_000, interval: 400, timeoutMsg: `scrolling back never reached "${text}"` },
+  );
+}
+
+/**
+ * Scrolls on to the top of the thread, until nothing older is offered. A
+ * message can be in the list before the list's end is reached (a reconnect's
+ * snapshot brings a recent run back ahead of its page), and the end is what
+ * asks for the last page, so stopping at the message would wait forever.
+ * While a page is loading, a spinner stands in for the button, so the top is
+ * reached only when neither is there.
+ */
+async function scrollBackToTheTop(how: ScrollInput): Promise<void> {
+  await browser.waitUntil(
+    async () => {
+      const offered = (await isVisible('chat.history.loadOlder')) || (await isVisible('chat.history.loadingOlder'));
+      if (!offered) return true;
+      await scrollBack(how);
+      return false;
+    },
+    { timeout: 30_000, interval: 400, timeoutMsg: 'scrolling to the top still offered earlier messages' },
   );
 }
 
@@ -160,7 +180,7 @@ describe('a thread longer than one page of history', () => {
 
       await scrollBackTo(first, how);
       // The whole thread is loaded now, so there is nothing older to offer.
-      await waitForGone('chat.history.loadOlder', 30_000);
+      await scrollBackToTheTop(how);
       // And the reader is still where they scrolled to: nothing snapped the
       // list back to the newest message when the page arrived.
       await scrollBack(how, 3000);
