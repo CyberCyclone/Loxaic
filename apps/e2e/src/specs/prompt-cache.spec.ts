@@ -39,6 +39,16 @@ const SETTINGS = { ctxSize: 16 * K };
 const STAGES = { enabled: true, whoMayChange: 'everyone', whenFull: 'extend', stages: [{ ctxSize: 64 * K }] };
 
 /**
+ * A prompt no other conversation has sent. The fake prices every "fill the
+ * context" the same, and the server's record of what ran stays across specs,
+ * so an earlier spec's conversation can end at this one's token count. Only
+ * the last user message then tells the two apart (`matchSlots`); with the same
+ * words nothing is matched and nothing is saved.
+ */
+const RUN = Date.now().toString(36);
+const fillPrompt = (label: string) => `please fill the context (${RUN} ${label})`;
+
+/**
  * Send, and on Android make sure it went: with the idle wait off (see
  * `before`), a tap can land before the button is enabled, and the text sits in
  * the composer. Only then is it tapped again, so nothing is sent twice.
@@ -141,7 +151,7 @@ describe('the prompt cache across a host-model reload', () => {
   it('a settings change that keeps the cache: the next turn loads it back, with the pill', async function () {
     this.timeout(4 * 60_000);
     await startNewThread();
-    await send('please fill the context');
+    await send(fillPrompt('settings'));
     await waitForTextIn('chat.messageList', 'Hello from');
     await dismissStageDialog();
     const conversation = await newestConversation();
@@ -178,7 +188,7 @@ describe('the prompt cache across a host-model reload', () => {
   it('an Unload and Load keep it too', async function () {
     this.timeout(4 * 60_000);
     await startNewThread();
-    await send('please fill the context again');
+    await send(fillPrompt('unload'));
     await waitForTextIn('chat.messageList', 'Hello from');
     await dismissStageDialog();
     const conversation = await newestConversation();
@@ -199,7 +209,7 @@ describe('the prompt cache across a host-model reload', () => {
     this.timeout(5 * 60_000);
     // A long conversation at the standard stage...
     await startNewThread();
-    await send('please fill the context, the long one');
+    await send(fillPrompt('long'));
     await waitForTextIn('chat.messageList', 'Hello from');
     await dismissStageDialog();
     const long = await newestConversation();
@@ -207,7 +217,7 @@ describe('the prompt cache across a host-model reload', () => {
     // ...and the modal that offers a larger stage says what it costs everyone.
     await patchModel(model, { contextStages: { ...STAGES, whenFull: 'compact' } });
     await startNewThread();
-    await send('please fill the context too');
+    await send(fillPrompt('modal'));
     // It opens once the reply is in, over it.
     await waitForVisible('context.stageModal', 60_000);
     await waitForTextIn('context.stageModal.cacheRebuilt', 'prompt cache is rebuilt');
@@ -239,7 +249,7 @@ describe('the prompt cache across a host-model reload', () => {
   it('a conversation no reload touched shows neither', async function () {
     this.timeout(3 * 60_000);
     await startNewThread();
-    await send('please fill the context, quietly');
+    await send(fillPrompt('quiet'));
     await waitForTextIn('chat.messageList', 'Hello from');
     await dismissStageDialog();
     const before = routerEvents().length;
@@ -260,7 +270,7 @@ describe('the prompt cache across a host-model reload', () => {
   it('a disk too full to keep the cache: the conversation says so, and so does the admin\'s Host models card', async function () {
     this.timeout(5 * 60_000);
     await startNewThread();
-    await send('please fill the context, with no room to keep it');
+    await send(fillPrompt('no room'));
     await waitForTextIn('chat.messageList', 'Hello from');
     await dismissStageDialog();
     const conversation = await newestConversation();

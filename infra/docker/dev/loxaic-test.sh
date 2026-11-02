@@ -119,7 +119,10 @@ emulator_up() {
 boot_emulator() {
   emulator_up && return 0
   echo "booting the emulator (a few minutes the first time)"
-  setsid nohup emulator -avd loxaic -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot-save \
+  # The emulator takes http_proxy as its own setting and sends all the guest's
+  # TCP through it, and the egress proxy refuses 10.0.2.2, the address the app
+  # reaches this machine's server by.
+  without_egress setsid nohup emulator -avd loxaic -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot-save \
     >"$STATE/emulator.log" 2>&1 </dev/null &
   local deadline=$((SECONDS + 600))
   until emulator_up; do
@@ -367,6 +370,7 @@ case "${1:-help}" in
   stop) shift; cmd_stop "$@" ;;
   pg) pg_start && echo "Postgres is running on localhost:5432 (database loxaic)" ;;
   __run) shift; cmd_run "$@" ;;
+  __boot-emulator) boot_emulator ;;
   help | -h | --help) usage ;;
   *) usage; exit 1 ;;
 esac

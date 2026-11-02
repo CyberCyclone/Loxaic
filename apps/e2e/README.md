@@ -555,6 +555,8 @@ there is no container engine. `E2E_SANDBOX_MODE=host` adapts stand-up to that:
 What host mode cannot have skips, with its reason (`requiresContainerEngine`):
 - **The engine itself:** the custom-image specs (`custom-images`, `custom-images-switch`), and
   `sandbox-settings`' engine picker and mode switch.
+- **Container isolation:** on Electron, `agent-local-container`, and `agent-local-instructions`'
+  container-isolated folder. Its direct cases still run.
 - **A mode switch:** `sandbox-degraded`, and `sandbox-bash`'s live switch to host mode.
 - **A sandbox without network** (a host sandbox always has it): the no-network cases in
   `bash-classifier`, `agent-live-mode` and `agent-github-workspace`. Their other cases, where the

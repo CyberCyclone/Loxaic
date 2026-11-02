@@ -27,6 +27,7 @@ import {
   goToSurface,
   listConversations,
   openInspector,
+  requiresContainerEngine,
   sendMessage,
   signIn,
   signOut,
@@ -167,6 +168,7 @@ describe('electron local workspace: a symlinked AGENTS.md leading out of the fol
 
   it('is never read on this machine for a container-isolated folder, and inside the container leads nowhere', async function () {
     this.timeout(8 * 60_000);
+    requiresContainerEngine(this, 'container isolation needs a container engine');
     await executorOnline();
     await goToSurface('agent');
     await startNewAgentRun();
