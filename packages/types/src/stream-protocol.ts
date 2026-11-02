@@ -953,6 +953,8 @@ export interface StreamSnapshot {
   pending_checkin?: {
     n: number;
     max: number;
+    /** As on `steps.checkin`. */
+    unlimited?: true;
     reason: CheckinReason;
     pattern?: { tool: string }[];
     on_timeout?: StepsDecision;

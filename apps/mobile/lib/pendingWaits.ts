@@ -26,6 +26,8 @@ export interface WaitDeadline {
 export interface PendingCheckin {
   n: number;
   max: number;
+  /** The step limit is off for this conversation, so `max` is no limit. */
+  unlimited?: true;
   reason: CheckinReason;
   pattern?: { tool: string }[];
   deadline?: WaitDeadline;
@@ -68,6 +70,7 @@ export function toPendingCheckin(
   src: WaitDeadlineFields & {
     n: number;
     max: number;
+    unlimited?: true;
     reason: CheckinReason;
     pattern?: { tool: string }[];
     on_timeout?: StepsDecision;
@@ -82,6 +85,7 @@ export function toPendingCheckin(
   return {
     n: src.n,
     max: src.max,
+    ...(src.unlimited ? { unlimited: true as const } : {}),
     reason: src.reason,
     ...(src.pattern ? { pattern: src.pattern } : {}),
     ...(deadline ? { deadline } : {}),

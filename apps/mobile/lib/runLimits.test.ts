@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LIMITS_ON, normalizeRunLimits } from '@loxaic/types';
-import { limitsOf, limitsToSend, runLimitRows, sameLimits, stepCount } from './runLimits';
+import { checkinStepLine, limitsOf, limitsToSend, runLimitRows, sameLimits, stepCount } from './runLimits';
 
 describe('limitsOf', () => {
   it('has every limit on for a server that sends neither', () => {
@@ -53,6 +53,18 @@ describe('stepCount', () => {
 
   it('drops a limit that is off', () => {
     expect(stepCount({ n: 7, max: 57, unlimited: true })).toBe('7');
+  });
+});
+
+describe('checkinStepLine', () => {
+  it('names the window a check-in counts towards', () => {
+    expect(checkinStepLine({ n: 4, max: 4 })).toMatch(/^Step 4 of 4 — /);
+  });
+
+  it('names none when the step limit is off', () => {
+    const line = checkinStepLine({ n: 3, max: 103, unlimited: true });
+    expect(line).toMatch(/^Step 3, with the step limit off for this chat — /);
+    expect(line).not.toContain('103');
   });
 });
 

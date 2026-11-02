@@ -9,6 +9,7 @@ import type { WaitDeadline } from '@/lib/pendingWaits';
 import { DeadlineCountdown } from './DeadlineCountdown';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { useServerReachable } from '@/lib/connection';
+import { checkinStepLine } from '@/lib/runLimits';
 
 /**
  * Shown when a run has paused to ask whether to keep going.
@@ -33,6 +34,8 @@ interface StepCheckInBannerProps {
   /** Steps taken so far, and the end of the current window. */
   n: number;
   max: number;
+  /** The step limit is off: only the loop check asks, and `max` is no limit. */
+  unlimited?: true;
   reason: CheckinReason;
   /** For a loop, the calls that keep repeating. */
   pattern?: { tool: string }[];
@@ -57,6 +60,7 @@ function describePattern(pattern: { tool: string }[]): string {
 export function StepCheckInBanner({
   n,
   max,
+  unlimited,
   reason,
   pattern,
   deadline,
@@ -104,8 +108,8 @@ export function StepCheckInBanner({
       </Text>
       {/* The window is worth saying out loud: it is a setting, and someone
           asked this every few minutes should be able to connect the two. */}
-      <Text size="xs" className="text-muted-foreground">
-        {`Step ${String(n)} of ${String(max)} — you can change how often I check in, and how long I wait, from Settings.`}
+      <Text testID="checkin.step" size="xs" className="text-muted-foreground">
+        {checkinStepLine({ n, max, ...(unlimited ? { unlimited } : {}) })}
       </Text>
       <DeadlineCountdown
         kind="checkin"

@@ -65,6 +65,15 @@ export function runLimitRows(limits: RunLimits): RunLimitRow[] {
   ];
 }
 
+/** The check-in banner's line about where the run is. With the step limit off
+ * only the loop check asks, and the window it would count towards means nothing. */
+export function checkinStepLine(checkin: { n: number; max: number; unlimited?: true }): string {
+  const where = checkin.unlimited
+    ? `Step ${String(checkin.n)}, with the step limit off for this chat`
+    : `Step ${String(checkin.n)} of ${String(checkin.max)}`;
+  return `${where} — you can change how often I check in, and how long I wait, from Settings.`;
+}
+
 /** The run header's step count. With the step limit off there is no limit to
  * count towards, and the `max` a run still sends means nothing. */
 export function stepCount(iteration: { n: number; max: number; unlimited?: true }): string {

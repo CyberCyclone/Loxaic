@@ -200,6 +200,7 @@ describe('a chat turns its own step limit and loop check off and on', () => {
     await waitForTextIn('agent.run.status', 'Waiting for you · 3');
     const status = await byTestId('agent.run.status').getText();
     if (status.includes('/')) throw new Error(`a run with no step limit still counts towards one: "${status}"`);
+    await waitForTextIn('checkin.step', 'Step 3, with the step limit off');
     await shot('run-limits-count-with-no-limit');
 
     await tap('checkin.stop');

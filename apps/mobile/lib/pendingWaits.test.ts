@@ -80,6 +80,8 @@ describe('prompt keys', () => {
     // A model's call ids repeat across runs; the run tells them apart.
     expect(approvalKey({ ...a, streamId: 's2' })).not.toBe(approvalKey(a));
     const c = toPendingCheckin({ n: 100, max: 100, reason: 'budget' }, 0, undefined, 's1');
+    expect(c.unlimited).toBeUndefined();
+    expect(toPendingCheckin({ n: 3, max: 103, unlimited: true, reason: 'loop' }, 0).unlimited).toBe(true);
     expect(checkinKey(c)).toBe('s1:100');
     expect(checkinKey({ ...c, streamId: 's2' })).not.toBe(checkinKey(c));
     expect(checkinKey({ ...c, n: 200 })).not.toBe(checkinKey(c));
