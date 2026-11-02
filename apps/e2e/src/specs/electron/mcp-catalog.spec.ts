@@ -20,7 +20,7 @@ import { SELF_CONTAINED } from '../../../scripts/electron-env.ts';
 import { listMcpServers, openMcpServers, signUp } from '../../helpers/app.ts';
 import { uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { tap, typeInto, waitForTextIn } from '../../helpers/selectors.ts';
+import { byTestId, tap, typeInto, waitForTextIn } from '../../helpers/selectors.ts';
 
 describe('electron built-in MCP server', () => {
   before(function skipUnlessSelfContained() {
@@ -46,7 +46,11 @@ describe('electron built-in MCP server', () => {
 
     await tap(`mcp.serverTest.${id}`);
     await waitForTextIn(`mcp.serverRow.${id}`, 'Connected', 30_000);
-    await waitForTextIn(`mcp.serverRow.${id}`, 'tools', 5_000);
+    // The tool-count chip, which only shows once the listing returned tools.
+    await browser.waitUntil(async () => /\b[1-9]\d* tools?\b/.test(await byTestId(`mcp.serverRow.${id}`).getText()), {
+      timeout: 5_000,
+      timeoutMsg: '[e2e] Brave Search connected but listed no tools',
+    });
     await shot('mcp-brave-connected');
   });
 });

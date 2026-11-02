@@ -5,6 +5,7 @@ import { db, eq } from "@loxaic/db";
 import { mcpServers, user } from "@loxaic/db/schema";
 import { dropEntry, listServerTools, stdioLaunch, type McpServerRow } from "../client-manager.ts";
 import { catalogEntry } from "../catalog.ts";
+import { encryptSecrets } from "../secrets.ts";
 
 process.env.MCP_ENCRYPTION_KEY ??= "mcp-catalog-launch-test-key";
 
@@ -60,9 +61,16 @@ describe("stdioLaunch", () => {
     expect(launch.env).not.toHaveProperty("ELECTRON_RUN_AS_NODE");
   });
 
-  it("falls back to the row for a key the catalog no longer has", () => {
-    const launch = stdioLaunch(row({ builtinKey: "retired", command: "/usr/bin/server", args: ["a"] }), {});
-    expect(launch).toMatchObject({ command: "/usr/bin/server", args: ["a"] });
+  it("never lets a row unset what the catalog's launch needs", () => {
+    const launch = stdioLaunch(row({ builtinKey: "brave", env: { ELECTRON_RUN_AS_NODE: "" } }), {
+      ELECTRON_RUN_AS_NODE: "0",
+    });
+    expect(launch.env.ELECTRON_RUN_AS_NODE).toBe("1");
+  });
+
+  it("refuses a built-in the catalog no longer has, whatever its row stored", () => {
+    const retired = row({ builtinKey: "retired", command: process.execPath, args: [STALE_PATH] });
+    expect(() => stdioLaunch(retired, {})).toThrow('built-in MCP server "retired" is not in this version');
   });
 
   it("refuses a row with nothing to start", () => {
@@ -100,12 +108,73 @@ describe("connecting to a row stored by an older build", () => {
       })
       .returning();
 
-    const tools = await listServerTools(userId, stale);
-    await dropEntry(userId, stale.id);
+    let tools;
+    try {
+      tools = await listServerTools(userId, stale);
+    } finally {
+      await dropEntry(userId, stale.id);
+    }
 
     expect(tools.map((t) => t.name)).toContain("brave_web_search");
     const after = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, stale.id) });
     expect(after?.lastError).toBeNull();
     expect(after?.lastConnectedAt).not.toBeNull();
+  }, 20_000);
+
+  it("records the end of what a server that will not start wrote to stderr, secrets redacted", async () => {
+    const secret = "sekrit-value-1234";
+    const script = `process.stderr.write("x".repeat(3000) + " cannot start: " + process.env.TOKEN, () => process.exit(3))`;
+    const [broken] = await db
+      .insert(mcpServers)
+      .values({
+        ownerId: userId,
+        name: "Broken",
+        slug: "broken",
+        transport: "stdio",
+        command: process.execPath,
+        args: ["-e", script],
+        secrets: encryptSecrets({ TOKEN: secret }),
+      })
+      .returning();
+
+    try {
+      await expect(listServerTools(userId, broken)).rejects.toThrow("cannot start: [redacted]");
+    } finally {
+      await dropEntry(userId, broken.id);
+    }
+
+    const after = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, broken.id) });
+    expect(after?.lastError).toContain("(stderr: ");
+    expect(after?.lastError).toMatch(/cannot start: \[redacted\]\)$/);
+    expect(after?.lastError).not.toContain(secret);
+    expect(after?.lastError?.length).toBeLessThan(600);
+  }, 20_000);
+
+  it("never reports part of a secret the cut would have split", async () => {
+    const secret = "sekrit-value-1234";
+    // Without redacting first, the reported tail would start with "-1234".
+    const script = `process.stderr.write(process.env.TOKEN + "y".repeat(495), () => process.exit(3))`;
+    const [broken] = await db
+      .insert(mcpServers)
+      .values({
+        ownerId: userId,
+        name: "Split",
+        slug: "split",
+        transport: "stdio",
+        command: process.execPath,
+        args: ["-e", script],
+        secrets: encryptSecrets({ TOKEN: secret }),
+      })
+      .returning();
+
+    try {
+      await expect(listServerTools(userId, broken)).rejects.toThrow();
+    } finally {
+      await dropEntry(userId, broken.id);
+    }
+
+    const after = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, broken.id) });
+    expect(after?.lastError).toContain("yyyy)");
+    expect(after?.lastError).not.toContain("1234");
   }, 20_000);
 });

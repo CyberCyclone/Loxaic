@@ -30,10 +30,11 @@ The per-run `Toolset` (builtins plus the user's MCP servers), approval policy, M
 ## Credentials and transports
 
 - Encrypt credentials with AES-256-GCM (`secrets.ts`, key `MCP_ENCRYPTION_KEY`, fallback `BETTER_AUTH_SECRET`) and `redact()` them out of every error path.
-- stdio children get only `PATH`/`HOME` + row env + secrets, never `process.env`.
+- stdio children get only `PATH`/`HOME` + row env + secrets (+ the catalog launch's env, last), never `process.env`.
 - HTTP transports re-run the SSRF guard on every request unless the user confirmed `allowPrivateNetwork`.
 - Spawn catalog servers (`catalog.ts`, stdio-only) from the installed package's bin (e.g. `@brave/brave-search-mcp-server`), never `npx`.
-- A catalog server's launch comes from `resolveLaunch()` at connect (`stdioLaunch`), never from its row, and sets `ELECTRON_RUN_AS_NODE`.
+- A catalog server's launch comes from `resolveLaunch()` at connect (`stdioLaunch`), never from its row, and sets `ELECTRON_RUN_AS_NODE`; a `builtinKey` missing from the catalog refuses to start.
+- Every stdio connect error carries the child's stderr tail, redacted before it is cut.
 - There is no built-in GitHub MCP server; GitHub goes through git/gh and the egress proxy.
 
 ## Tests

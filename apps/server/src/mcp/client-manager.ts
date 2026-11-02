@@ -1,3 +1,4 @@
+import type { Stream } from "node:stream";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -69,30 +70,65 @@ export function stdioLaunch(
   row: McpServerRow,
   secrets: Record<string, string>,
 ): { command: string; args: string[]; env: Record<string, string> } {
-  const launch = catalogEntry(row.builtinKey)?.resolveLaunch();
-  const command = launch?.command ?? row.command;
-  if (!command) throw new Error("stdio MCP server has no command configured");
-  const args = launch?.args ?? (Array.isArray(row.args) ? (row.args as unknown[]).map(String) : []);
+  if (row.builtinKey) {
+    // Never the row's own launch: older rows hold one that starts Electron
+    // without the flag.
+    const entry = catalogEntry(row.builtinKey);
+    if (!entry) throw new Error(`built-in MCP server "${row.builtinKey}" is not in this version of Loxaic`);
+    const launch = entry.resolveLaunch();
+    return { command: launch.command, args: launch.args, env: childEnv(row, secrets, launch.env) };
+  }
+  if (!row.command) throw new Error("stdio MCP server has no command configured");
+  const args = Array.isArray(row.args) ? (row.args as unknown[]).map(String) : [];
+  return { command: row.command, args, env: childEnv(row, secrets, {}) };
+}
+
+function childEnv(row: McpServerRow, secrets: Record<string, string>, launchEnv: Record<string, string>) {
   // Deliberately NOT process.env: the child sees only what it needs, so
-  // the server process can never read the host's own secrets.
-  const env: Record<string, string> = {
+  // the server process can never read the host's own secrets. The launch's
+  // own env goes last, so a row cannot unset what the catalog needs.
+  return {
     ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
     ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
-    ...launch?.env,
     ...asStringRecord(row.env),
     ...secrets,
+    ...launchEnv,
   };
-  return { command, args, env };
+}
+
+/** How much of a stdio child's stderr a failed connect reports. */
+const STDERR_TAIL_CHARS = 500;
+
+/**
+ * Keep the end of what a stdio child writes to stderr, so a failed connect
+ * says why rather than only "Connection closed". Listening also keeps the pipe
+ * drained, so a chatty server never blocks on a full buffer.
+ */
+function keepStderrTail(stream: Stream | null, redactions: Record<string, string>): () => string {
+  // Kept well past what is reported, and redacted before the cut: a secret
+  // split by the cut would otherwise survive as a fragment.
+  let raw = "";
+  stream?.on("data", (chunk: Buffer | string) => {
+    raw = (raw + chunk.toString()).slice(-STDERR_TAIL_CHARS * 4);
+  });
+  return () =>
+    redact(raw, redactions)
+      // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+      .replace(/[\u0000-\u001f\u007f\s]+/g, " ")
+      .trim()
+      .slice(-STDERR_TAIL_CHARS);
 }
 
 async function connect(userId: string, row: McpServerRow): Promise<Entry> {
   const secrets = rowSecrets(row);
   const redactions: Record<string, string> = { ...secrets };
   const client = new Client({ name: "loxaic", version: "1.0.0" });
+  let stderrTail = (): string => "";
 
   try {
     if (row.transport === "stdio") {
-      const transport = new StdioClientTransport({ ...stdioLaunch(row, secrets), stderr: "ignore" });
+      const transport = new StdioClientTransport({ ...stdioLaunch(row, secrets), stderr: "pipe" });
+      stderrTail = keepStderrTail(transport.stderr, redactions);
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
     } else {
       if (!row.url) throw new Error("http MCP server has no URL configured");
@@ -107,7 +143,9 @@ async function connect(userId: string, row: McpServerRow): Promise<Entry> {
     }
   } catch (err) {
     await client.close().catch(() => undefined);
-    const message = redact(err instanceof Error ? err.message : String(err), redactions);
+    const stderr = stderrTail();
+    const reason = err instanceof Error ? err.message : String(err);
+    const message = redact(stderr ? `${reason} (stderr: ${stderr})` : reason, redactions);
     await recordConnectResult(row.id, message);
     throw new Error(`Could not connect to MCP server "${row.name}": ${message}`);
   }
