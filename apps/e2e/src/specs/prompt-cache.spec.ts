@@ -39,14 +39,15 @@ const SETTINGS = { ctxSize: 16 * K };
 const STAGES = { enabled: true, whoMayChange: 'everyone', whenFull: 'extend', stages: [{ ctxSize: 64 * K }] };
 
 /**
- * A prompt no other conversation has sent. The fake prices every "fill the
- * context" the same, and the server's record of what ran stays across specs,
- * so an earlier spec's conversation can end at this one's token count. Only
- * the last user message then tells the two apart (`matchSlots`); with the same
- * words nothing is matched and nothing is saved.
+ * A prompt no other conversation's last message can be found in. The fake
+ * prices every "fill the context" the same, and the server's record of what
+ * ran outlives a spec, so an earlier spec's conversation can end at this one's
+ * token count. Only the last user message then tells the two apart, by being
+ * found in the slot's text (`matchSlots`): an earlier spec's words inside these
+ * would match this slot too, and with two matches nothing is saved.
  */
 const RUN = Date.now().toString(36);
-const fillPrompt = (label: string) => `please fill the context (${RUN} ${label})`;
+const fillPrompt = (label: string) => `fill the context for ${label} (${RUN})`;
 
 /**
  * Send, and on Android make sure it went: with the idle wait off (see
