@@ -137,30 +137,47 @@ describe('a chat turns its own step limit and loop check off and on', () => {
     });
   }
 
-  it('counts steps with no limit while it is off, and pauses again once it is back on, mid-run', async function () {
+  it('counts steps with no limit while it is off', async function () {
+    this.timeout(3 * 60_000);
+    await patchPrefs(creds, { maxIterations: 1 });
+    await newThread('agent');
+    await flip(STEP_LIMIT, false);
+    await sendMessage(LOOP_SCENARIO_PROMPT);
+
+    // The loop check is still on, and a run waiting on it shows its count.
+    await waitForVisible('checkin.banner', 90_000);
+    await waitForTextIn('checkin.reason', 'loop');
+    await waitForTextIn('agent.run.status', 'Waiting for you · 3');
+    const status = await byTestId('agent.run.status').getText();
+    if (status.includes('/')) throw new Error(`a run with no step limit still counts towards one: "${status}"`);
+    await shot('run-limits-count-with-no-limit');
+
+    await tap('checkin.stop');
+    await waitForGone('checkin.banner');
+    const [conversation] = await listConversations(creds);
+    await waitForRunDone(creds, conversation.id);
+  });
+
+  it('pauses again once the step limit is back on, in the middle of a run', async function () {
     this.timeout(3 * 60_000);
     await patchPrefs(creds, { maxIterations: 1 });
     await newThread('agent', 'manual');
     await flip(STEP_LIMIT, false);
     await sendMessage(WRITE_TWO_FILES);
 
-    // Step one, and a limit of 1 does not stop it...
+    // Step one, and a limit of 1 does not stop it: it reaches the second approval.
     await waitForVisible('agent.permission.bar', 60_000);
     await tap('agent.permission.allow');
     await waitForGone('agent.permission.bar');
-    // ...so it reaches the second approval. The run is parked there, so the
-    // header cannot move on before it is read.
     await waitForVisible('agent.permission.bar', 60_000);
-    await waitForTextIn('agent.run.status', '· 2');
-    const status = await byTestId('agent.run.status').getText();
-    if (status.includes('/')) throw new Error(`a run with no step limit still counts towards one: "${status}"`);
-    await shot('run-limits-count-with-no-limit');
 
     await flip(STEP_LIMIT, true);
     await tap('agent.permission.allow');
 
+    // One window on from the step it was last off at.
     await waitForVisible('checkin.banner', 60_000);
     await waitForTextIn('checkin.reason', 'step');
+    await waitForTextIn('agent.run.status', 'Waiting for you · 2/2');
     await shot('run-limits-back-on');
     await tap('checkin.continue');
     await waitForGone('checkin.banner');
