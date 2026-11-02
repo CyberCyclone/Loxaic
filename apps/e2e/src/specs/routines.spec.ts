@@ -300,6 +300,11 @@ async function seedRoutine(creds: Credentials, name: string, model: string): Pro
 }
 
 async function openRoutine(routine: E2ERoutine): Promise<void> {
+  // On a phone a routine's chat has a back arrow where the menu button goes.
+  if (await byTestId('routineChat.back').isDisplayed().catch(() => false)) {
+    await tap('routineChat.back');
+    await waitForVisible('routines.new');
+  }
   await goToSurface('routines');
   await waitForVisible(`routines.open.${routine.id}`);
   await tap(`routines.open.${routine.id}`);
