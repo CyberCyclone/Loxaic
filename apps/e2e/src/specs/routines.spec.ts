@@ -23,7 +23,7 @@
 import { browser } from '@wdio/globals';
 import { provisionUser, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, platform, tap, typeInto, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, platform, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   assistantModels,
   createRoutine,
@@ -196,13 +196,21 @@ describe('routines', () => {
       prompt: SLOW_PROMPT,
       model: MODEL_A,
     });
+    // Started with the row already on screen: from anywhere further off, a
+    // phone takes longer to arrive than the mock takes to answer.
+    await showRoutineRow(routine);
     const run = await runRoutine(creds, routine.id);
-
-    await openRoutine(routine);
-    // Streaming, from a run this client never started: the stop control only
-    // exists while one is in flight.
-    await waitForVisible('composer.stop');
-    await shot('routine-inflight');
+    // The stop control spins, which UiAutomator2 would otherwise wait out.
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 0 });
+    try {
+      await tap(`routines.open.${routine.id}`);
+      // Streaming, from a run this client never started: the stop control only
+      // exists while one is in flight.
+      await waitForVisible('composer.stop');
+      await shot('routine-inflight');
+    } finally {
+      if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 10_000 });
+    }
 
     await waitForTextIn('chat.messageList', mockEcho(SLOW_PROMPT), 60_000);
     await waitForRunDone(creds, run.conversationId);
@@ -284,6 +292,8 @@ describe('routines', () => {
     await tap('routineModal.model');
     await waitForVisible(`models.row.${MODEL_B}`);
     await tap(`models.row.${MODEL_B}`);
+    // A press while the picker is still closing lands on nothing.
+    await waitForAbsent(`models.row.${MODEL_B}`);
     await tap('routineModal.save');
     await waitForGone('routineModal.save');
 
@@ -301,7 +311,7 @@ async function seedRoutine(creds: Credentials, name: string, model: string): Pro
   return createRoutine(creds, { name: `${name} ${String(Date.now())}`, prompt: PROMPT, model });
 }
 
-async function openRoutine(routine: E2ERoutine): Promise<void> {
+async function showRoutineRow(routine: E2ERoutine): Promise<void> {
   // On a phone a routine's chat has a back arrow where the menu button goes.
   if (await byTestId('routineChat.back').isDisplayed().catch(() => false)) {
     await tap('routineChat.back');
@@ -309,6 +319,10 @@ async function openRoutine(routine: E2ERoutine): Promise<void> {
   }
   await goToSurface('routines');
   await waitForVisible(`routines.open.${routine.id}`);
+}
+
+async function openRoutine(routine: E2ERoutine): Promise<void> {
+  await showRoutineRow(routine);
   await tap(`routines.open.${routine.id}`);
   await waitForVisible('routineChat.back');
 }
