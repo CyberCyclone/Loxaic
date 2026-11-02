@@ -10,6 +10,7 @@ import {
   configNeed,
   networkFor,
   pauseSandbox,
+  pendingSandboxChanges,
   reserveSandbox,
 } from "../agent/sandbox-manager.ts";
 import { allocationFor, rowNeed, usageOf } from "../agent/allocation.ts";
@@ -44,9 +45,14 @@ export function sandboxRoutes(app: FastifyInstance) {
     // policy the reaper will actually apply — see sandboxReapAt(). Null means
     // reaping is switched off, which the UI must render as "kept", never as an
     // unknown date.
+    // For one chat only, and on the one sandbox a restart would replace: the
+    // chat shows it whichever row it is. Another person's chat has none of
+    // the caller's rows to carry it.
+    const pending = conversation_id ? await pendingSandboxChanges(conversation_id) : null;
     return rows.map((row) => ({
       ...row,
       reap_at: row.status === "destroyed" ? null : sandboxReapAt(row.lastUsedAt)?.toISOString() ?? null,
+      ...(conversation_id ? { pending_changes: row.id === pending?.sandboxId ? pending.changes : [] } : {}),
     }));
   });
 

@@ -1,15 +1,17 @@
+import { isDeepStrictEqual } from "node:util";
 import { and, db, desc, eq, inArray, lt, ne, sql } from "@loxaic/db";
 import { conversations, sandboxes } from "@loxaic/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { CreateSandboxConfig, SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
 import { SandboxGoneError } from "../sandbox/errors.ts";
-import type { Workspace } from "@loxaic/types";
+import type { SandboxChange, Workspace } from "@loxaic/types";
+import { sandboxChanges, specOfRow, type SandboxSpec } from "./sandbox-changes.ts";
 import { loadWorkspace } from "./workspace.ts";
 import { dropConversationCopies } from "./checkpoints.ts";
 import { getConnection } from "../github/connection.ts";
 import { withEgress } from "../egress/env.ts";
 import { listSandboxContainers, sandboxImage } from "../sandbox/container-provider.ts";
-import { getSandboxRetention, getSandboxSettings, type SandboxAllocation } from "../settings.ts";
+import { getSandboxRetention, getSandboxSettings, sandboxDisabledReason, type SandboxAllocation } from "../settings.ts";
 import {
   allocationDecision,
   allocationFor,
@@ -719,6 +721,8 @@ function sandboxRowValues(
       cpu: (config.limits?.cpu ?? 1e9) / 1e9,
       ...(config.limits?.pids ? { pids: config.limits.pids } : {}),
       network: networkFor(kind),
+      // Only a custom image can have it, so only there is it worth comparing.
+      ...(config.image ? { kvm: config.image.kvm === true } : {}),
     },
   };
 }
@@ -749,22 +753,17 @@ export async function replaceConversationSandbox(
   if (!loaded) throw new Error("That conversation no longer exists.");
   const { ownerId } = loaded;
   const stored = next.kind === "scratch" && !next.image ? null : next;
-  const writeWorkspace = (tx: Pick<typeof db, "update"> = db) =>
-    tx.update(conversations).set({ workspace: stored, updatedAt: new Date() }).where(eq(conversations.id, conversationId));
+  // A restart keeps the workspace it has: rewriting it would move the chat up
+  // everyone's list as if something had happened in it.
+  const unchanged = isDeepStrictEqual(next, loaded.workspace);
+  const writeWorkspace = async (tx: Pick<typeof db, "update"> = db) => {
+    if (unchanged) return;
+    await tx.update(conversations).set({ workspace: stored, updatedAt: new Date() }).where(eq(conversations.id, conversationId));
+  };
 
   // The row copied from and then destroyed must be the container the chat
-  // is working in: the one this process is using, else a running one before
-  // a paused one, newest first.
-  const live = await db.query.sandboxes.findMany({
-    where: and(
-      eq(sandboxes.conversationId, conversationId),
-      eq(sandboxes.ownerId, ownerId),
-      inArray(sandboxes.status, ["running", "stopped"]),
-    ),
-    orderBy: [sql`${sandboxes.status} = 'running' desc`, desc(sandboxes.createdAt), desc(sandboxes.id)],
-  });
-  const inUse = active.get(conversationId)?.rowId;
-  const existing = live.find((r) => r.id === inUse) ?? live.at(0);
+  // is working in.
+  const existing = await workingSandbox(conversationId, ownerId);
   if (!existing) {
     await writeWorkspace();
     return { moved: false };
@@ -792,6 +791,11 @@ export async function replaceConversationSandbox(
     return { moved: false };
   }
 
+  // A new container is a new sandbox: not one this server makes any more once
+  // an admin has turned them off or moved to another mode.
+  const mode = getSandboxSettings().mode;
+  if (mode === "off") throw new Error(sandboxDisabledReason());
+  if (mode !== "container") throw new Error("this server's sandboxes no longer run in containers.");
   const provider = await getProviderByKind("container");
   // The image and its limits only: the checkout comes across with the home
   // directory, so nothing is cloned again.
@@ -805,7 +809,7 @@ export async function replaceConversationSandbox(
   // out of what is counted, and a paused one never counted.
   const release = await reserveSandbox(ownerId, configNeed("container", config), existing.id);
   try {
-    if (signal?.aborted) throw new Error("Stopped before the image was changed.");
+    if (signal?.aborted) throw new Error("it ran out of time or was stopped.");
     const handle = await provider.create(ownerId, config);
     let row: typeof sandboxes.$inferSelect;
     try {
@@ -818,7 +822,7 @@ export async function replaceConversationSandbox(
       await copyHome(docker, existing.containerId, handle.ref, { uid, gid }, signal);
       const check = await handle.exec(["test", "-w", `${handle.root}/repo`], { workdir: "/" });
       if (check.exitCode !== 0) throw new Error("The copied workspace is not writable in the new image.");
-      if (signal?.aborted) throw new Error("Stopped before the image was changed.");
+      if (signal?.aborted) throw new Error("it ran out of time or was stopped.");
       row = await db.transaction(async (tx) => {
         await writeWorkspace(tx);
         await tx.update(sandboxes).set({ status: "destroyed", stoppedAt: new Date() }).where(eq(sandboxes.id, existing.id));
@@ -843,6 +847,64 @@ export async function replaceConversationSandbox(
   } finally {
     release();
   }
+}
+
+/**
+ * The sandbox a conversation is working in: the one this process is using,
+ * else a running one before a paused one, newest first. What a replace
+ * copies from and destroys, and so the one whose changes the chat is shown.
+ */
+async function workingSandbox(conversationId: string, ownerId: string) {
+  const live = await db.query.sandboxes.findMany({
+    where: and(
+      eq(sandboxes.conversationId, conversationId),
+      eq(sandboxes.ownerId, ownerId),
+      inArray(sandboxes.status, ["running", "stopped"]),
+    ),
+    orderBy: [sql`${sandboxes.status} = 'running' desc`, desc(sandboxes.createdAt), desc(sandboxes.id)],
+  });
+  const inUse = active.get(conversationId)?.rowId;
+  return live.find((r) => r.id === inUse) ?? live.at(0);
+}
+
+/**
+ * How a conversation's working sandbox differs from what its workspace would
+ * be given today, for the chat to offer a restart. Null for anything a
+ * restart could not fix or could not do, mirroring what
+ * replaceConversationSandbox and createConfigFor refuse: no container to
+ * replace, a server no longer making containers, a workspace on someone's own
+ * machine, a GitHub workspace whose connection has gone, and an image that
+ * can no longer be used.
+ */
+export async function pendingSandboxChanges(
+  conversationId: string,
+): Promise<{ sandboxId: string; changes: SandboxChange[] } | null> {
+  if (getSandboxSettings().mode !== "container") return null;
+  const loaded = await loadWorkspace(conversationId);
+  if (!loaded || loaded.workspace.kind === "local") return null;
+  const { ownerId, workspace } = loaded;
+  const row = await workingSandbox(conversationId, ownerId);
+  if (row?.provider !== "container") return null;
+  if (workspace.kind === "github" && !(await getConnection(ownerId))) return null;
+  const { customImagesBlocked, findImage, effectiveLimits, DEFAULT_IMAGE_LIMITS } = await import("../images/store.ts");
+  const now: SandboxSpec = {
+    memoryMb: DEFAULT_IMAGE_LIMITS.memoryMb,
+    cpus: DEFAULT_IMAGE_LIMITS.cpus,
+    network: networkFor("container"),
+  };
+  if (workspace.image) {
+    const { useRefusal } = await import("../images/access.ts");
+    if (await customImagesBlocked()) return null;
+    const image = await findImage(workspace.image.id);
+    const usable = useRefusal(image, getSandboxSettings().customImages, ownerId, { github: workspace.kind === "github" }) === null;
+    if (!image?.digest || image.uid === null || image.gid === null || !usable) return null;
+    const limits = effectiveLimits(image);
+    now.memoryMb = limits.memoryMb;
+    now.cpus = limits.cpus;
+    now.kvm = limits.kvm;
+    now.image = image.digest;
+  }
+  return { sandboxId: row.id, changes: sandboxChanges(specOfRow(row), now) };
 }
 
 /**

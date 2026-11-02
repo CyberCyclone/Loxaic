@@ -9,6 +9,7 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
+import { SandboxChangesBanner } from '@/components/agent/SandboxChangesBanner';
 import { Text } from '@/components/ui/text';
 import { Badge, BadgeText } from '@/components/ui/badge';
 import { MainHeader } from '@/components/shell/MainHeader';
@@ -211,7 +212,7 @@ export default function AgentScreen() {
   // Refetched whenever a run ends: a turn that used a tool is exactly what
   // creates a workspace, or brings a paused one back, and nothing else in the
   // stream says so.
-  const { sandbox, refresh: refreshSandbox } = useWorkspaceStatus(activeId, runState);
+  const { sandbox, pendingChanges, refresh: refreshSandbox } = useWorkspaceStatus(activeId, runState);
   // Looked for on the conversation's first run, so asked again as runs end.
   const instructions = useProjectInstructions(activeRun ? activeId : null, runState);
   // The list the Inspector shows: the newest loaded, else the server's, asked
@@ -558,9 +559,9 @@ export default function AgentScreen() {
               <Text size="xs" className="font-medium text-warning">
                 This workspace has no network access — npm install, git clone and other downloads will fail.
               </Text>
-              <Text size="2xs" className="text-warning/80">
+              <Text testID="agent.network.detail" size="2xs" className="text-warning/80">
                 {config.sandbox.allowNetwork
-                  ? 'Network access is on for new workspaces now, but this one keeps the network it was created with — start a new conversation to pick it up.'
+                  ? 'Network access is on for new workspaces now, but this one keeps the network it was created with until its sandbox restarts.'
                   : isAdmin
                     ? 'Turn it on in Agent Sandbox settings. New workspaces pick it up; this one keeps the network it was created with.'
                     : 'An admin can turn it on in Agent Sandbox settings. New workspaces pick it up; this one keeps the network it was created with.'}
@@ -571,6 +572,15 @@ export default function AgentScreen() {
             </Text>
           </Pressable>
         )}
+        {/* Only the owner's rows come back, so nobody else is offered it. */}
+        {activeId && pendingChanges.length ? (
+          <SandboxChangesBanner
+            conversationId={activeId}
+            changes={pendingChanges}
+            running={busy}
+            onRestarted={() => { void refreshSandbox(); }}
+          />
+        ) : null}
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}

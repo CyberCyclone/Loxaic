@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getSandboxes, type SandboxRow } from '@loxaic/api-client';
+import type { SandboxChange } from '@loxaic/types';
+import { pendingChangesOf } from '@/lib/sandboxChanges';
 
 /**
  * The conversation's workspace as the Inspector reports it: whether one exists,
@@ -11,11 +13,13 @@ import { getSandboxes, type SandboxRow } from '@loxaic/api-client';
  */
 export function useWorkspaceStatus(conversationId: string | null, refreshKey?: unknown) {
   const [sandbox, setSandbox] = useState<SandboxRow | null>(null);
+  const [pendingChanges, setPendingChanges] = useState<SandboxChange[]>([]);
   const [loading, setLoading] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!conversationId) {
       setSandbox(null);
+      setPendingChanges([]);
       return;
     }
     setLoading(true);
@@ -25,10 +29,12 @@ export function useWorkspaceStatus(conversationId: string | null, refreshKey?: u
       // one per provider kind after a mode switch, plus tombstones — and the
       // one worth reporting is the newest that still exists.
       setSandbox(rows.find((row) => row.status !== 'destroyed') ?? null);
+      setPendingChanges(pendingChangesOf(rows));
     } catch {
       // Silent: this is a supplementary panel, and an optimistic conversation
       // id that the server has never seen 404s here by design.
       setSandbox(null);
+      setPendingChanges([]);
     } finally {
       setLoading(false);
     }
@@ -38,5 +44,5 @@ export function useWorkspaceStatus(conversationId: string | null, refreshKey?: u
     void refresh();
   }, [refresh, refreshKey]);
 
-  return { sandbox, loading, refresh };
+  return { sandbox, pendingChanges, loading, refresh };
 }
