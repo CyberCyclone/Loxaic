@@ -27,6 +27,7 @@ import { useEndpoint } from './useEndpoint';
 import { NOT_SENT_RECONNECTING, isOffline } from '@/lib/connection';
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
 import { lastUserId, readCachedConversations, removeCachedConversation, writeCachedConversation, writeCachedList } from '@/lib/message-cache';
+import type { RunLimitsLink } from '@/lib/runLimits';
 import { useSession } from '@/lib/session';
 import type { Conversation, Message } from '@/lib/types';
 import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
@@ -172,6 +173,8 @@ export function useChatSession(
   /** The thinking level from the composer's `+` menu, read at send time and
    * carried by every send. Absent (routines) leaves it to the server. */
   thinking?: { readonly current: ThinkingLevel | undefined },
+  /** The conversation's run limits (`useRunLimits`). Absent on a routine's chat. */
+  runLimits?: { readonly current: RunLimitsLink | null },
 ) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
@@ -957,6 +960,12 @@ export function useChatSession(
         // A run may have JIT-loaded the model, which changes the context
         // window out from under a model list fetched at mount.
         onStreamEndRef.current?.();
+      } else if (event.type === 'conversation.limits') {
+        // Its owner flipped a switch, maybe on another device.
+        runLimits?.current?.onChange(event.conversation_id, {
+          stepLimitOff: event.step_limit_off,
+          loopCheckOff: event.loop_check_off,
+        });
       } else if (event.type === 'conversation.rewound') {
         // Here or on another device: messages left the end of a thread.
         const convId = event.conversation_id;
@@ -1130,7 +1139,7 @@ export function useChatSession(
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId, pendingMcp?.current, pendingStage?.current, thinking?.current)) {
+        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId, pendingMcp?.current, pendingStage?.current, thinking?.current, runLimits?.current?.pending)) {
           // Undo, don't just toast. The bubble was already painted, and the
           // cache-on-settle effect would have persisted a message that was
           // never sent into the user's "saved copy" — replayed on every
@@ -1162,7 +1171,7 @@ export function useChatSession(
         }
       }
     },
-    [setActiveId, showToast, pendingMcp, pendingStage, thinking, dismissStageCard],
+    [setActiveId, showToast, pendingMcp, pendingStage, thinking, runLimits, dismissStageCard],
   );
 
   /**

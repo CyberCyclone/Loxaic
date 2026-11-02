@@ -43,7 +43,7 @@ export interface AgentRunLevel {
   runState: RunState;
   pendingApproval: PendingApproval | null;
   pendingCheckin: PendingCheckin | null;
-  iteration: { n: number; max: number } | null;
+  iteration: { n: number; max: number; unlimited?: true } | null;
   queuePosition: number | null;
   /** The live run's permission mode, as the server says it is (#311), or
    * null with no run going or from an older server. Never the selector's. */
@@ -157,7 +157,7 @@ export function runLevelAfterEvent(
         runState: next.runState === 'awaiting_approval' ? 'running' : next.runState,
       };
     case 'iteration':
-      return { ...next, runState: 'running', iteration: { n: event.n, max: event.max } };
+      return { ...next, runState: 'running', iteration: { n: event.n, max: event.max, ...(event.unlimited ? { unlimited: true as const } : {}) } };
     case 'approval.request':
       return { ...next, runState: 'awaiting_approval', pendingApproval: toPendingApproval(event, now, undefined, streamId) };
     case 'tool.result':

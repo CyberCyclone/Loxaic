@@ -15,6 +15,7 @@ import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import { CommandPalette } from './CommandPalette';
 import { AttachmentPreview } from './AttachmentPreview';
 import { ComposerPlusMenu, type ComposerThinking } from './ComposerPlusMenu';
+import type { RunLimitSwitches } from '@/hooks/useRunLimits';
 import { AttachmentRejectedModal } from './AttachmentRejectedModal';
 import type { ContextView } from '@/hooks/useContextUsage';
 import type { McpSwitches } from '@/hooks/useMcpSwitches';
@@ -71,6 +72,9 @@ interface ComposerProps {
   } | null;
   /** The thinking level, in the `+` menu. Null leaves the row out. */
   thinking?: ComposerThinking | null;
+  /** This conversation's step limit and loop check, in the `+` menu. Null
+   * leaves them out. */
+  runLimits?: RunLimitSwitches | null;
   /** Told when the `+` menu opens and closes. */
   onMenuOpenChange?: (open: boolean) => void;
 }
@@ -91,6 +95,7 @@ export function Composer({
   mcp = null,
   contextStage = null,
   thinking = null,
+  runLimits = null,
   onMenuOpenChange,
 }: ComposerProps) {
   const [text, setText] = useState('');
@@ -294,6 +299,7 @@ export function Composer({
                 : null
             }
             thinking={thinking}
+            runLimits={runLimits}
             disabled={!connected}
             onOpenChange={onMenuOpenChange}
           />

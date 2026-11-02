@@ -7,10 +7,12 @@ import type {
   FileRestoreReport,
   InstructionsDecision,
   McpOverrides,
+  RunLimitChoices,
   ProjectInstructions,
   ThinkingLevel,
   Workspace,
 } from "@loxaic/types";
+import { runLimitColumns } from "../../conversations/run-limits.ts";
 import type { PermissionMode } from "@loxaic/agent";
 import {
   assertAttachmentsOwned,
@@ -141,6 +143,8 @@ export async function startAgentRun(input: {
    * them; an existing conversation's choices change through PATCH. */
   mcpOverrides?: McpOverrides | null;
   /** See chatRun.ts. */
+  runLimits?: RunLimitChoices;
+  /** See chatRun.ts. */
   contextStage?: number;
   /** See chatRun.ts. */
   thinkingLevel?: ThinkingLevel;
@@ -180,6 +184,7 @@ export async function startAgentRun(input: {
         title: conversationTitle(content, atts),
         kind: "agent",
         mcpOverrides: input.mcpOverrides ?? null,
+        ...runLimitColumns(input.runLimits),
       })
       .returning();
     convId = conv.id;

@@ -1,7 +1,8 @@
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, routineRuns, routines } from "@loxaic/db/schema";
-import type { AttachmentRef, ContentBlock, FileRestoreReport, McpOverrides, ThinkingLevel } from "@loxaic/types";
+import type { AttachmentRef, ContentBlock, FileRestoreReport, McpOverrides, RunLimitChoices, ThinkingLevel } from "@loxaic/types";
+import { runLimitColumns } from "../../conversations/run-limits.ts";
 import {
   assertAttachmentsOwned,
   assertConversationAccess,
@@ -56,6 +57,8 @@ export async function startChatRun(input: {
    * send creates the conversation, so its first request already follows
    * them; an existing conversation's choices change through PATCH. */
   mcpOverrides?: McpOverrides | null;
+  /** Run limits turned off before the conversation existed; as `mcpOverrides`. */
+  runLimits?: RunLimitChoices;
   /** The context stage chosen in Context settings before the conversation
    * existed. Read only when this send opens the conversation. */
   contextStage?: number;
@@ -123,7 +126,12 @@ export async function startChatRun(input: {
   if (!convId) {
     const [conv] = await db
       .insert(conversations)
-      .values({ ownerId: userId, title: conversationTitle(content, atts), mcpOverrides: input.mcpOverrides ?? null })
+      .values({
+        ownerId: userId,
+        title: conversationTitle(content, atts),
+        mcpOverrides: input.mcpOverrides ?? null,
+        ...runLimitColumns(input.runLimits),
+      })
       .returning();
     convId = conv.id;
   }

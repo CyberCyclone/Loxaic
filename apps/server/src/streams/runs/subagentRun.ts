@@ -373,6 +373,7 @@ export async function runSubagent(
     model: call.model,
     parentConversationId: parent.convId,
     mode,
+    limits: getRun(parent.streamId)?.limits,
   };
   registerRun(handle);
   startModeLog(handle, (next) => { childProducer.emit({ kind: "run.mode", mode: next }); });

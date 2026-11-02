@@ -358,6 +358,13 @@
       "when": 1792654519409,
       "tag": "0050_sandbox_allocations",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1793584251544,
+      "tag": "0051_conversation_run_limits",
+      "breakpoints": true
     }
   ]
 }

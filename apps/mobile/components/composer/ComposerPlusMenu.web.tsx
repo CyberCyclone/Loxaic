@@ -16,6 +16,7 @@ import {
 } from '@/lib/submenuPlacement';
 import type { ComposerPlusMenuProps } from './ComposerPlusMenu';
 import { McpServerList } from './McpServerList';
+import { RunLimitRows } from './RunLimitRows';
 import { levelChangeRereads, NO_THINKING_REASON, selectedThinkingOption, thinkingOptions } from '@/lib/thinking';
 
 /** Which row's submenu is open. */
@@ -58,6 +59,7 @@ export function ComposerPlusMenu({
   mcp,
   contextSettings = null,
   thinking = null,
+  runLimits = null,
   disabled = false,
   onOpenChange,
 }: ComposerPlusMenuProps) {
@@ -251,6 +253,16 @@ export function ComposerPlusMenu({
                 onHoverIn={() => { openSub('mcp', 'hover'); }}
                 onHoverOut={scheduleCloseSub}
               />
+            ) : null}
+            {runLimits ? (
+              <div
+                style={{ borderTop: '1px solid var(--color-border)', marginTop: 4, paddingTop: 4 }}
+                onMouseEnter={() => {
+                  if (sub) scheduleCloseSub();
+                }}
+              >
+                <RunLimitRows limits={runLimits} />
+              </div>
             ) : null}
           </Panel>
         ) : null}

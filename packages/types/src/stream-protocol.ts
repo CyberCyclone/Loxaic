@@ -1,5 +1,5 @@
 import type { FileDiff, Workspace } from "./index";
-import type { TimeoutBasis } from "./waits";
+import type { RunLimitChoices, TimeoutBasis } from "./waits";
 import type { McpOverrides } from "./mcp-state";
 import type { ThinkingLevel } from "./thinking";
 import type { SubAgentEvent, SubAgentLive } from "./subagents";
@@ -655,7 +655,14 @@ export type StreamEventKind =
    * queue position.
    */
   | { kind: "run.mode"; mode: PermissionMode }
-  | { kind: "iteration"; n: number; max: number }
+  | {
+      kind: "iteration";
+      n: number;
+      max: number;
+      /** The step limit is off for this conversation, so `max` is no limit and
+       * only a client that predates the switch shows it. */
+      unlimited?: true;
+    }
   /**
    * The run has paused to ask whether to keep going. It has given its
    * inference slot back and is waiting for a `agent.steps` answer, exactly as
@@ -928,7 +935,7 @@ export interface StreamSnapshot {
    * ends too, so the card reads the same after a reconnect. */
   context_stage?: ContextStageStatus;
   // agent-only:
-  iteration?: { n: number; max: number };
+  iteration?: { n: number; max: number; unlimited?: true };
   /** For older app builds only, like the `todos` event. */
   todos?: Todo[];
   pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> } & ApprovalContext &
@@ -1067,6 +1074,8 @@ export type ServerMessage =
    * the owner's other devices follow; only the owner's picks and sends set it.
    */
   | { type: "conversation.mode"; conversation_id: string; mode: PermissionMode }
+  /** Its owner turned a run limit off or on, maybe on another device. */
+  | { type: "conversation.limits"; conversation_id: string; step_limit_off: boolean; loop_check_off: boolean }
   | {
       type: "error";
       error: string;
@@ -1133,6 +1142,9 @@ export type ClientMessage =
        * it; absent (an older client) means `DEFAULT_THINKING_LEVEL`. Ignored
        * for a model that takes no level. */
       thinking_level?: ThinkingLevel;
+      /** Run limits turned off before the conversation existed. As with
+       * `mcp_overrides`, written only when this send creates it. */
+      run_limits?: RunLimitChoices;
     }
   | {
       type: "agent.send";
@@ -1152,6 +1164,8 @@ export type ClientMessage =
       context_stage?: number;
       /** As on `chat.send`. */
       thinking_level?: ThinkingLevel;
+      /** As on `chat.send`. */
+      run_limits?: RunLimitChoices;
     }
   /**
    * Answer the conversation's newest message again: the reply to it (and

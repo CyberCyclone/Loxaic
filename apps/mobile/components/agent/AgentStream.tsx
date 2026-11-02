@@ -20,7 +20,7 @@ interface AgentStreamProps {
   /** Choosing the mode (#266) — the control moved from the composer's chip
    * row into the header (and this screen's empty state). */
   onModeChange: (mode: AgentMode) => void;
-  iteration: { n: number; max: number } | null;
+  iteration: { n: number; max: number; unlimited?: true } | null;
   loadingModel?: boolean;
   promptStats?: PromptStats | null;
   queuePosition?: number | null;
