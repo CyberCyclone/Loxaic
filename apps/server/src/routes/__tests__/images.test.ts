@@ -36,6 +36,12 @@ vi.mock("../../sandbox/container-provider.ts", async (importOriginal) => {
   return { ...original, sandboxEngine: () => Promise.resolve({ docker: fakeDocker, label: "fake" }) };
 });
 
+const applyImageProcessLimit = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+vi.mock("../../agent/sandbox-manager.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../agent/sandbox-manager.ts")>();
+  return { ...original, applyImageProcessLimit };
+});
+
 vi.mock("../../images/pull.ts", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../images/pull.ts")>();
   return { ...original, pullImage: () => Promise.reject(new Error("manifest unknown")) };
@@ -221,9 +227,35 @@ describe("the policy", () => {
         call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { memoryMb: 4096 + i } }),
       ]);
       const stored = await db.query.sandboxImages.findFirst({ where: eq(sandboxImages.id, row.id) });
-      expect(stored?.limits).toEqual({ memoryMb: 4096 + i, cpus: 1, pids: 100, kvm: false });
+      expect(stored?.limits).toEqual({ memoryMb: 4096 + i, cpus: 1, pids: 4096, kvm: false });
       await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { kvm: true } });
     }
+  });
+
+  it("sends a saved process limit to the image's sandboxes, and nothing else it saves", async () => {
+    const row = await readyImage(null, "Processes");
+    applyImageProcessLimit.mockClear();
+
+    await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { memoryMb: 1024, cpus: 2 } });
+    await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { kvm: true } });
+    await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { label: "Renamed" });
+    expect(applyImageProcessLimit).not.toHaveBeenCalled();
+
+    await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { pids: 10_000 } });
+    expect(applyImageProcessLimit).toHaveBeenCalledExactlyOnceWith(row.id);
+
+    // A refused save reaches nothing.
+    applyImageProcessLimit.mockClear();
+    expect((await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { pids: 1 } })).status).toBe(400);
+    expect(applyImageProcessLimit).not.toHaveBeenCalled();
+  });
+
+  it("answers a save at once, though the engine has not finished with its sandboxes", async () => {
+    const row = await readyImage(null, "Slow engine");
+    applyImageProcessLimit.mockImplementationOnce(() => new Promise(() => undefined));
+    const saved = await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { pids: 8192 } });
+    expect(saved.status).toBe(200);
+    expect(saved.body.limits).toMatchObject({ pids: 8192 });
   });
 
   it("bounds a shared image's limits and keeps them off personal images", async () => {

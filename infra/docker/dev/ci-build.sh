@@ -13,5 +13,5 @@ df -h /
 
 docker buildx bake -f infra/docker/dev/docker-bake.hcl --load
 
-docker run --rm --cap-drop ALL --security-opt no-new-privileges --network none --shm-size 64m \
+docker run --rm --cap-drop ALL --security-opt no-new-privileges --network none --shm-size 64m --pids-limit 8192 \
   -v "$PWD/infra/docker/dev/selftest.sh:/selftest.sh:ro" loxaic-dev:local bash /selftest.sh

@@ -1170,5 +1170,29 @@
       }
     ],
     "finalText": "[Mock] Second list pinned.\n"
+  },
+  {
+    "match": "fill this sandbox's process limit",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "(nohup bash -c 'sleep 1; while sleep 600 & do :; done' >/dev/null 2>&1 &); touch .filled"
+        }
+      }
+    ],
+    "finalText": "[Mock] Filling it now.\n"
+  },
+  {
+    "match": "try a command in the full sandbox",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "echo after-the-limit"
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried it.\n"
   }
 ]

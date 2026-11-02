@@ -3,7 +3,7 @@
 # restrictions Loxaic gives every sandbox — CI does this before pushing:
 #
 #   docker run --rm --cap-drop ALL --security-opt no-new-privileges --network none \
-#     --shm-size 64m -v "$PWD/infra/docker/dev/selftest.sh:/selftest.sh:ro" \
+#     --shm-size 64m --pids-limit 8192 -v "$PWD/infra/docker/dev/selftest.sh:/selftest.sh:ro" \
 #     loxaic-dev:local bash /selftest.sh
 #
 # Each check prints one line and the script stops at the first that fails.
@@ -81,6 +81,14 @@ running="$(grep -h -- '-shell$' "$first" "$second")"
 result="$(loxaic-test wait "$running" --seconds 30)"
 grep -q 'status: passed' <<<"$result" || fail "the lane that won did not finish: $result"
 pass "two simultaneous starts run one lane"
+
+# A lane on a sandbox with too few processes is refused at once, naming the
+# limit. A sandbox always has one, so the selftest runs under one too.
+limit="$(cat /sys/fs/cgroup/pids.max)"
+[[ "$limit" =~ ^[0-9]+$ ]] || fail "no process limit ($limit): run the selftest with --pids-limit"
+refusal="$(LOXAIC_TEST_MIN_PIDS=$((limit + 1)) loxaic-test start lint 2>&1 || true)"
+grep -q "process limit is $limit" <<<"$refusal" || fail "a lane was not refused under too few processes: $refusal"
+pass "a lane is refused when the sandbox has too few processes"
 
 # A wait with no number of seconds says so, rather than looping.
 if timeout 10 loxaic-test wait --seconds >/dev/null 2>&1; then fail "wait --seconds with no value succeeded"; fi

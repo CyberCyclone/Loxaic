@@ -24,6 +24,7 @@ import {
   isVisible,
   platform,
   scrollTo,
+  scrollToMiddle,
   tap,
   typeInto,
   waitForAbsent,
@@ -35,6 +36,7 @@ import {
 import {
   BASH_PROMPT,
   MOCK_BASH_OUTPUT,
+  closeThreadKeyboard,
   execInSandbox,
   getToolResults,
   goToSurface,
@@ -314,6 +316,49 @@ describe('custom sandbox images (#253)', function () {
     expect(limits.stdout.split('\n').map((l) => l.trim())).toEqual(expect.arrayContaining([String(768 * 1024 * 1024), '200']));
   });
 
+  it('says when a sandbox is at its process limit, and raising the limit frees the same chat', async () => {
+    const admin = adminCreds();
+    await api(admin, 'PATCH', `/v1/admin/images/${sharedId}`, { limits: { pids: 64 } });
+    await pauseAllMySandboxes(user);
+    await goToSurface('agent');
+    await startNewAgentRun();
+    await chooseImage(sharedId);
+    await tap('agent.mode.manual');
+    await sendMessage("fill this sandbox's process limit");
+    await waitForVisible('agent.permission.bar', 120_000);
+    await tap('agent.permission.allow');
+    await waitForTextIn('chat.messageList', 'Filling it now');
+    const [conversation] = await listConversations(user);
+    // The command leaves a loop behind, which fills the rest once it has gone.
+    await browser.pause(4_000);
+
+    const resultWith = async (text: string): Promise<string> => {
+      let callId = '';
+      await browser.waitUntil(
+        async () => {
+          const found = (await getToolResults(user, conversation.id)).find((r) => r.output.includes(text));
+          callId = found?.call_id ?? '';
+          return callId !== '';
+        },
+        { timeout: 60_000, interval: 1_000, timeoutMsg: `[e2e] no tool result with "${text}"` },
+      );
+      return callId;
+    };
+
+    // `echo` is read-only, so it runs without asking.
+    await sendMessage('try a command in the full sandbox');
+    const refused = await resultWith('limit of 64 processes');
+    await closeThreadKeyboard();
+    await scrollToMiddle(`chat.toolCall.manageSandboxes.${refused}`);
+    await waitForFreshText(`chat.toolCall.allocation.${refused}`, 'reached its limit of 64 processes');
+    await shot('sandbox-process-limit');
+
+    await api(admin, 'PATCH', `/v1/admin/images/${sharedId}`, { limits: { pids: 4096 } });
+    await sendMessage('try a command in the full sandbox');
+    await resultWith('after-the-limit');
+    await shot('sandbox-process-limit-raised');
+  });
+
   it('lets an admin give a shared image KVM, kept when its sizes are saved, and says when a host lacks it (#320)', async () => {
     const admin = adminCreds();
     const { kvm } = (await api(admin, 'GET', '/v1/admin/images')) as { kvm?: { visible: boolean } };
@@ -343,6 +388,23 @@ describe('custom sandbox images (#253)', function () {
     }
     else await expectNeverPresent([`images.image.kvm.warning.${sharedId}`]);
     await shot('custom-images-kvm');
+
+    // A typed limit says it is not saved yet, and only Save limits saves it.
+    const pidsOf = async () =>
+      ((await api(admin, 'GET', '/v1/admin/images')) as { images: { id: string; limits: { pids?: number } | null }[] }).images.find(
+        (i) => i.id === sharedId,
+      )?.limits?.pids;
+    await scrollTo(`images.image.limits.pids.${sharedId}`);
+    await typeInto(`images.image.limits.pids.${sharedId}`, '300');
+    await scrollTo(`images.image.limits.state.${sharedId}`);
+    await waitForFreshText(`images.image.limits.state.${sharedId}`, 'Unsaved changes');
+    await shot('custom-images-limits-unsaved');
+    expect(await pidsOf()).not.toBe(300);
+    await scrollTo(`images.image.limits.save.${sharedId}`);
+    await tap(`images.image.limits.save.${sharedId}`);
+    await waitForFreshText(`images.image.limits.state.${sharedId}`, 'Saved');
+    await shot('custom-images-limits-saved');
+    expect(await pidsOf()).toBe(300);
 
     // Saving the sizes leaves it on: they are sent without it.
     await api(admin, 'PATCH', `/v1/admin/images/${sharedId}`, { limits: { memoryMb: 768, cpus: 0.5, pids: 200 } });

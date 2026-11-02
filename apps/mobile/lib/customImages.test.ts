@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ImageChoice, SandboxImage } from '@loxaic/api-client';
-import { chooserImages, effectiveImageChoice, imageOptions, imageScreens, imageStatusLine, kvmWarning, parseLimitsInput } from './customImages';
+import { chooserImages, effectiveImageChoice, followSavedLimits, imageOptions, imageScreens, imageStatusLine, kvmWarning, limitsDraft, limitsDraftState, parseLimitsInput } from './customImages';
 
 const choice = (id: string, extra: Partial<ImageChoice> = {}): ImageChoice => ({
   id, scope: 'shared', label: id, reference: `docker.io/library/${id}:1`, hasGit: true, ...extra,
@@ -47,7 +47,7 @@ describe('imageStatusLine', () => {
   });
 
   it('keeps a failed update apart from an image that never worked', () => {
-    expect(imageStatusLine(image({ status: 'failed', usable: true, error: 'x' }))).toMatch(/previous pull is still used/);
+    expect(imageStatusLine(image({ status: 'failed', usable: true, error: 'x' }))).toMatch(/previous one is still used/);
     expect(imageStatusLine(image({ status: 'failed', usable: false, error: 'nope' }))).toBe('nope');
   });
 });
@@ -58,6 +58,45 @@ describe('parseLimitsInput', () => {
     expect(parseLimitsInput({ memoryMb: '100', cpus: '1', pids: '100' }).ok).toBe(false);
     expect(parseLimitsInput({ memoryMb: '512', cpus: '0.1', pids: '100' }).ok).toBe(false);
     expect(parseLimitsInput({ memoryMb: '512', cpus: '1', pids: '1.5' }).ok).toBe(false);
+  });
+});
+
+describe('limitsDraftState', () => {
+  const saved = limitsDraft({ memoryMb: 2048, cpus: 2, pids: 100 });
+
+  it('is unchanged until a value differs, comparing numbers rather than text', () => {
+    expect(limitsDraftState(saved, saved)).toBe('unchanged');
+    expect(limitsDraftState({ ...saved, cpus: '2.0' }, saved)).toBe('unchanged');
+  });
+
+  it('calls a typed value unsaved', () => {
+    expect(limitsDraftState({ ...saved, pids: '10000' }, saved)).toBe('unsaved');
+    expect(limitsDraftState({ ...saved, memoryMb: '4096' }, saved)).toBe('unsaved');
+    expect(limitsDraftState({ ...saved, cpus: '1' }, saved)).toBe('unsaved');
+  });
+
+  it('calls a value the server would refuse invalid, so Save can say why', () => {
+    expect(limitsDraftState({ ...saved, pids: '10' }, saved)).toBe('invalid');
+    expect(limitsDraftState({ ...saved, pids: '' }, saved)).toBe('invalid');
+  });
+});
+
+describe('followSavedLimits', () => {
+  const before = limitsDraft({ memoryMb: 2048, cpus: 2, pids: 100 });
+  const after = limitsDraft({ memoryMb: 2048, cpus: 2, pids: 500 });
+
+  it('follows a change when nothing was typed over it', () => {
+    expect(followSavedLimits(before, before, after)).toEqual({ draft: after, baseline: after });
+  });
+
+  it('keeps what the admin typed through someone else\'s save', () => {
+    const typed = { ...before, memoryMb: '4096' };
+    expect(followSavedLimits(typed, before, after)).toEqual({ draft: typed, baseline: after });
+  });
+
+  it('takes the server\'s spelling of what was just saved', () => {
+    const typed = { ...before, cpus: '2.0', pids: '500' };
+    expect(followSavedLimits(typed, before, after)).toEqual({ draft: after, baseline: after });
   });
 });
 

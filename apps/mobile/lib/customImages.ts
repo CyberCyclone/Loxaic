@@ -108,7 +108,7 @@ export function imageStatusLine(image: SandboxImage): string {
   }
   if (image.status === 'failed') {
     return image.usable
-      ? `The last update failed; the previous pull is still used. ${image.error ?? ''}`.trim()
+      ? `The last pull failed; the previous one is still used. ${image.error ?? ''}`.trim()
       : image.error ?? 'The pull failed.';
   }
   return 'Ready';
@@ -131,6 +131,41 @@ export function parseLimitsInput(input: { memoryMb: string; cpus: string; pids: 
   if (!Number.isFinite(cpus) || cpus < 0.25 || cpus > 64) return { ok: false, error: 'CPUs must be from 0.25 to 64.' };
   if (!Number.isInteger(pids) || pids < 64 || pids > 32_768) return { ok: false, error: 'Processes must be a whole number from 64 to 32768.' };
   return { ok: true, limits: { memoryMb, cpus, pids } };
+}
+
+/** A shared image's limits as the three fields show them. */
+export interface LimitsDraft {
+  memoryMb: string;
+  cpus: string;
+  pids: string;
+}
+
+export function limitsDraft(limits: { memoryMb: number; cpus: number; pids: number } | null | undefined): LimitsDraft {
+  return { memoryMb: String(limits?.memoryMb ?? ''), cpus: String(limits?.cpus ?? ''), pids: String(limits?.pids ?? '') };
+}
+
+function sameLimits(a: LimitsDraft, b: LimitsDraft): boolean {
+  return Number(a.memoryMb) === Number(b.memoryMb) && Number(a.cpus) === Number(b.cpus) && Number(a.pids) === Number(b.pids);
+}
+
+/** What the fields hold against what the server has, by value: `3.0` is `3`. */
+export function limitsDraftState(draft: LimitsDraft, saved: LimitsDraft): 'unchanged' | 'unsaved' | 'invalid' {
+  if (!parseLimitsInput(draft).ok) return 'invalid';
+  return sameLimits(draft, saved) ? 'unchanged' : 'unsaved';
+}
+
+/**
+ * The fields once the saved limits change (another admin's save, or this
+ * one's answer). They follow unless the admin has typed something else;
+ * `baseline` is what they last saw saved.
+ */
+export function followSavedLimits(
+  draft: LimitsDraft,
+  baseline: LimitsDraft,
+  saved: LimitsDraft,
+): { draft: LimitsDraft; baseline: LimitsDraft } {
+  const untouched = draft.memoryMb === baseline.memoryMb && draft.cpus === baseline.cpus && draft.pids === baseline.pids;
+  return { draft: untouched || sameLimits(draft, saved) ? saved : draft, baseline: saved };
 }
 
 /** The line under a shared image's KVM switch (#320) when the server cannot

@@ -635,18 +635,23 @@ export async function sendInNewRun(creds: Pick<Credentials, 'email' | 'password'
     },
     { timeout: 20_000, timeoutMsg: 'the agent run never appeared in the conversation list' },
   );
-  // On an iPhone the keyboard stays up after a send and leaves the thread a
-  // sliver above it, with the sub-agent's card scrolled out of it — and
-  // XCUITest reports an off-screen element as not displayed. A tap on the
-  // list closes the keyboard (the list does not keep it open for taps).
-  if (platform() === 'ios' && (await browser.isKeyboardShown().catch(() => false))) {
-    const list = byTestId('chat.messageList');
-    // Best effort. With an approval bar up as well the list has no room at
-    // all and is not there to tap — and the bar itself is above the keyboard.
-    const there = await list.waitForExist({ timeout: 5_000 }).then(() => true, () => false);
-    if (there) await list.click().catch(() => undefined);
-  }
+  await closeThreadKeyboard();
   return id;
+}
+
+/**
+ * On an iPhone the keyboard stays up after a send and leaves the thread a
+ * sliver above it, with a card scrolled out of it — and XCUITest reports an
+ * off-screen element as not displayed. A tap on the list closes the keyboard
+ * (the list does not keep it open for taps).
+ */
+export async function closeThreadKeyboard(): Promise<void> {
+  if (platform() !== 'ios' || !(await browser.isKeyboardShown().catch(() => false))) return;
+  const list = byTestId('chat.messageList');
+  // Best effort. With an approval bar up as well the list has no room at
+  // all and is not there to tap — and the bar itself is above the keyboard.
+  const there = await list.waitForExist({ timeout: 5_000 }).then(() => true, () => false);
+  if (there) await list.click().catch(() => undefined);
 }
 
 /**

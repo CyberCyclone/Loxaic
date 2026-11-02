@@ -19,7 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appDataDir } from './scripts/electron-env.ts';
-import { BASE_URL, teardown, standup } from './scripts/standup.ts';
+import { BASE_URL, teardown, standup, stopRunOnFailure } from './scripts/standup.ts';
 import { freePort, startDevServerStandIn, type DevServerStandIn } from './scripts/dev-stand-ins.ts';
 import { sharedConfig } from './wdio.shared.ts';
 
@@ -92,7 +92,7 @@ export const config: WebdriverIO.Config = {
   services: ['electron'],
   // The ports are chosen here, in the launcher, before any worker exists, so
   // the worker, the spec and the app it spawns all inherit the same ones.
-  onPrepare: async function onPrepare() {
+  onPrepare: stopRunOnFailure(async () => {
     if (STAGED) {
       // -c clones on APFS: every file shares its blocks with the original.
       console.log(`[e2e] staging the checkout at ${APP_ROOT} (outside the folder macOS guards)`);
@@ -105,7 +105,7 @@ export const config: WebdriverIO.Config = {
     process.env.LOXAIC_DEV_SERVER_URL = devServer.url;
     process.env.LOXAIC_DEV_RENDERER_URL = `http://127.0.0.1:${String(metroPort)}`;
     process.env.E2E_DEV_METRO_PORT = String(metroPort);
-  },
+  }),
   onComplete: async function onComplete() {
     await devServer?.stop();
     await teardown();

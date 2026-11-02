@@ -38,6 +38,7 @@ Lanes (from the checkout in $LOXAIC_REPO, default ~/repo):
 
 Arguments after -- go to the lane: vitest file paths, or `--spec ./src/specs/x.spec.ts` for wdio.
 Set LOXAIC_TEST_REBUILD=1 to rebuild the Electron package or the Android APK.
+Every lane but shell needs 8192 processes; LOXAIC_TEST_MIN_PIDS lowers that to try a smaller limit.
 USAGE
 }
 
@@ -132,6 +133,30 @@ boot_emulator() {
   adb shell settings put global window_animation_scale 0 >/dev/null 2>&1 || true
   adb shell settings put global transition_animation_scale 0 >/dev/null 2>&1 || true
   adb shell settings put global animator_duration_scale 0 >/dev/null 2>&1 || true
+}
+
+# This sandbox's process limit, or nothing when it has none.
+pids_limit() {
+  local file limit
+  for file in /sys/fs/cgroup/pids.max /sys/fs/cgroup/pids/pids.max; do
+    [ -r "$file" ] || continue
+    limit="$(cat "$file")"
+    if [[ "$limit" =~ ^[0-9]+$ ]]; then echo "$limit"; fi
+    return 0
+  done
+}
+
+# Threads count against the limit, and a lane starts hundreds. Below it a lane
+# does not fail cleanly: the tools die, and once the sandbox is full nothing
+# can run in it, `loxaic-test` included. So it is refused here, while it can
+# still say why.
+require_processes() {
+  local floor="${LOXAIC_TEST_MIN_PIDS:-8192}" limit
+  limit="$(pids_limit)"
+  [ -n "$limit" ] || return 0
+  [ "$limit" -ge "$floor" ] || die "this sandbox's process limit is $limit, and a lane needs $floor. An admin sets Processes \
+to 8192 for this image in Settings → Container Images, which reaches this sandbox straight away. \
+LOXAIC_TEST_MIN_PIDS=<n> runs with less anyway."
 }
 
 # Runs one lane in the foreground. Called detached, by `start`.
@@ -251,6 +276,7 @@ cmd_start() {
   local lane="$1"
   shift
   [ "${1:-}" = "--" ] && shift
+  [ "$lane" = "shell" ] || require_processes
   # Held from the check until the new lane has written its pid: two starts at
   # once (two parallel tool calls) would otherwise both find nothing running.
   exec 9>"$STATE/lock"

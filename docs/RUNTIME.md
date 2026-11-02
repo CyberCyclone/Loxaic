@@ -68,7 +68,7 @@ Agent tool calls run in a container that is deliberately unprivileged:
 | **User** | non-root (`loxaic`, uid 1001) — cannot write the image's own `/usr/bin`, `/etc`, `/lib` |
 | **Capabilities** | none at all (`CapDrop: ALL`), and `no-new-privileges` so none can be regained |
 | **Network** | none, unless an admin enables it (see below) |
-| **Memory / CPU / pids** | 512 MB, 1 CPU, 100 processes |
+| **Memory / CPU / pids** | 512 MB, 1 CPU, 4096 processes |
 | **Per user** | an allocation: 2.5 GB, 5 CPUs and 5 running sandboxes by default |
 
 The root filesystem is deliberately *not* read-only: it would need tmpfs mounts for the working

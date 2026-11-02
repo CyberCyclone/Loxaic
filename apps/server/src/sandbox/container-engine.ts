@@ -13,7 +13,7 @@
  * `executor/__tests__/isolation.test.ts` exists to prevent.
  */
 import Docker from "dockerode";
-import { SandboxGoneError } from "./errors.ts";
+import { execFailure, processLimitMessage, SandboxGoneError } from "./errors.ts";
 import { StringDecoder } from "node:string_decoder";
 import { pack } from "tar-fs";
 import { pack as tarPack } from "tar-stream";
@@ -38,7 +38,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_LIMITS = {
   Memory: 512 * 1024 * 1024, // 512MB
   NanoCpus: 1_000_000_000,   // 1 CPU
-  PidsLimit: 100,
+  // A guard, not a budget: process ids are shared across the whole machine,
+  // so without one a runaway fork loop in one sandbox stops the host starting
+  // anything. Threads count against it, and a single Node or Chrome holds
+  // dozens, so it has to sit well above what real work uses.
+  PidsLimit: 4096,
 };
 const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
 
@@ -426,6 +430,45 @@ function stoppedBeforeStart(): ExecResult {
   return { stdout: "", stderr: "… [stopped by the user]", exitCode: 130, truncated: false, timedOut: false };
 }
 
+/** What an exec that never got going says: runc's own refusal, or a fork
+ * failing inside the wrapper or the command. Docker reports the first on the
+ * exec's output with a plain exit code, and names no cause. */
+export function looksLikeStartFailure(output: string): boolean {
+  // EAGAIN alone is ordinary (a busy lock, a nonblocking read), and a command
+  // prints what it likes: only a failed fork or thread start counts.
+  return /OCI runtime exec failed|procReady|(fork|pthread_create|thread)\b[^\n]*Resource temporarily unavailable/i.test(output);
+}
+
+/** Starting an exec takes runc several tasks of its own, so it is refused
+ * before the count reaches the limit. */
+const PROCESS_LIMIT_MARGIN = 8;
+const PROCESS_STATS_TIMEOUT_MS = 3_000;
+
+/** Whether a container's task count has left no room to start anything. An
+ * engine reporting no limit (absent, or 0) has none to be at. */
+export function atProcessLimit(pids: { current?: number; limit?: number } | undefined): boolean {
+  const { current, limit } = pids ?? {};
+  if (current === undefined || !limit) return false;
+  return current >= limit - PROCESS_LIMIT_MARGIN;
+}
+
+/** The container's process limit if it is at it, else null. Best-effort: this
+ * only explains a failure already in hand, so it never adds one. */
+async function reachedProcessLimit(container: Docker.Container): Promise<number | null> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { reject(new Error("stats timed out")); }, PROCESS_STATS_TIMEOUT_MS);
+    });
+    const stats = await Promise.race([container.stats({ stream: false, "one-shot": true }), timeout]);
+    return atProcessLimit(stats.pids_stats) ? (stats.pids_stats?.limit ?? null) : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function execInContainer(
   container: Docker.Container,
   command: string[],
@@ -543,15 +586,26 @@ async function execInContainer(
     exitCode = inspected?.ExitCode ?? -1;
   }
 
+  const stdout = out.text();
+  const stderr = err.text();
+  // Asked only of a failure that reads like one: the stats call is a round
+  // trip, and an ordinary non-zero exit is most of what a shell does.
+  const processLimit =
+    outcome === "done" && exitCode !== 0 && looksLikeStartFailure(`${stdout}\n${stderr}`)
+      ? await reachedProcessLimit(container)
+      : null;
+
   return {
-    stdout: out.text(),
+    stdout,
     stderr:
-      err.text()
+      (processLimit !== null ? `${processLimitMessage(processLimit)}\n` : "")
+      + stderr
       + (timedOut ? `\n… [timed out after ${String(timeoutMs)}ms]` : "")
       + (outcome === "cancelled" ? "\n… [stopped by the user]" : ""),
     exitCode,
     truncated: out.truncated || err.truncated,
     timedOut,
+    ...(processLimit !== null ? { processLimit } : {}),
   };
 }
 
@@ -566,9 +620,9 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
     exec: (command, options) => execInContainer(container, command, options),
 
     async readFile(filePath) {
-      const { stdout, stderr, exitCode } = await execInContainer(container, ["cat", "--", filePath]);
-      if (exitCode !== 0) throw new Error(stderr.trim() || `cat failed (exit ${String(exitCode)})`);
-      return stdout;
+      const res = await execInContainer(container, ["cat", "--", filePath]);
+      if (res.exitCode !== 0) throw execFailure(res, `cat failed (exit ${String(res.exitCode)})`);
+      return res.stdout;
     },
 
     async writeFile(filePath, content) {
@@ -576,12 +630,12 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       // being spliced into the script text, so no value can escape into the
       // command. base64 keeps binary-ish content and newlines intact.
       const encoded = Buffer.from(content, "utf8").toString("base64");
-      const { stderr, exitCode } = await execInContainer(container, [
+      const res = await execInContainer(container, [
         "bash", "-c",
         'mkdir -p "$(dirname "$1")" && printf %s "$2" | base64 -d > "$1"',
         "_", filePath, encoded,
       ]);
-      if (exitCode !== 0) throw new Error(stderr.trim() || `write failed (exit ${String(exitCode)})`);
+      if (res.exitCode !== 0) throw execFailure(res, `write failed (exit ${String(res.exitCode)})`);
     },
 
     writeFileBinary: (filePath, data) => writeBinaryToContainer(container, filePath, data),
@@ -656,6 +710,10 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
         onClose: (listener) => { stream.on("close", listener); },
         close: () => { stream.end(); },
       };
+    },
+
+    async setProcessLimit(pids) {
+      await container.update({ PidsLimit: pids });
     },
 
     async isRunning() {

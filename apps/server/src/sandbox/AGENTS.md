@@ -26,6 +26,10 @@ Sandbox providers behind `provider.ts`'s `SandboxHandle`/`SandboxProvider`: cont
 
 - Tests must scope global sweeps (`ownerId`, `kind`) and never assert on their return counts; suites share one database and one engine.
 
+## Process limit
+
+- An exec failing with no named cause (`looksLikeStartFailure`) is checked against the container's pids before it is reported; file operations turn it into `SandboxProcessLimitError` through `execFailure`, so a tool can raise the `sandbox_processes` notice.
+
 ## Killing commands
 
 - On all three providers, never start a command whose signal is already aborted.

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ScrollView } from 'react-native';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
@@ -14,7 +14,7 @@ import { useContainerImages } from '@/hooks/useContainerImages';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
 import { useServerReachable } from '@/lib/connection';
-import { imageStatusLine, kvmWarning, parseLimitsInput } from '@/lib/customImages';
+import { followSavedLimits, imageStatusLine, kvmWarning, limitsDraft, limitsDraftState, parseLimitsInput, type LimitsDraft } from '@/lib/customImages';
 import { Switch } from '@/components/ui/switch';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import type { ImageScope, SandboxImage } from '@loxaic/api-client';
@@ -167,7 +167,7 @@ export function ImageManager({ scope }: { scope: ImageScope }) {
                     reachable={reachable}
                     onPull={() => { void run(`pull-${image.id}`, () => images.pullImage(image.id)); }}
                     onRemove={() => { void run(`remove-${image.id}`, () => images.removeImage(image.id)); }}
-                    onSaveLimits={(limits) => run(`limits-${image.id}`, () => images.updateImage(image.id, { limits }))}
+                    onSaveLimits={(limits, onDone) => run(`limits-${image.id}`, () => images.updateImage(image.id, { limits }), onDone)}
                     kvmVisible={images.kvmVisible}
                     onSetKvm={(kvm) => run(`kvm-${image.id}`, () => images.updateImage(image.id, { limits: { kvm } }))}
                   />
@@ -216,15 +216,30 @@ function ImageRow({
   reachable: boolean;
   onPull: () => void;
   onRemove: () => void;
-  onSaveLimits: (limits: { memoryMb: number; cpus: number; pids: number }) => Promise<void>;
+  onSaveLimits: (limits: { memoryMb: number; cpus: number; pids: number }, onDone: () => void) => Promise<void>;
   kvmVisible: boolean | null;
   onSetKvm: (kvm: boolean) => Promise<void>;
 }) {
   const kvmNote = kvmWarning(kvmVisible, image.limits?.kvm === true);
-  const [memory, setMemory] = useState(String(image.limits?.memoryMb ?? ''));
-  const [cpus, setCpus] = useState(String(image.limits?.cpus ?? ''));
-  const [pids, setPids] = useState(String(image.limits?.pids ?? ''));
+  const saved = limitsDraft(image.limits);
+  const [draft, setDraft] = useState<LimitsDraft>(saved);
+  // The saved limits the admin last saw, which tells typing from not.
+  const [baseline, setBaseline] = useState<LimitsDraft>(saved);
   const [limitsError, setLimitsError] = useState<string | null>(null);
+  const [justSaved, setJustSaved] = useState(false);
+  const draftState = limitsDraftState(draft, saved);
+  const edit = (patch: Partial<LimitsDraft>) => {
+    setDraft({ ...draft, ...patch });
+    setJustSaved(false);
+  };
+  const savedKey = `${saved.memoryMb}|${saved.cpus}|${saved.pids}`;
+  useEffect(() => {
+    const next = followSavedLimits(draft, baseline, saved);
+    setDraft(next.draft);
+    setBaseline(next.baseline);
+    // Keyed on the saved values, not the object, which is new on every poll.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedKey]);
   const status = imageStatusLine(image);
 
   return (
@@ -256,15 +271,18 @@ function ImageRow({
           <Text size="2xs" className="text-muted-foreground">
             Limits for each sandbox: memory (MB), CPUs, processes
           </Text>
+          <Text size="2xs" className="text-muted-foreground">
+            Processes applies to existing sandboxes too; memory and CPUs apply to new ones.
+          </Text>
           <HStack space="xs">
             <Input className="flex-1">
-              <InputField testID={`images.image.limits.memory.${image.id}`} value={memory} onChangeText={setMemory} keyboardType="number-pad" />
+              <InputField testID={`images.image.limits.memory.${image.id}`} value={draft.memoryMb} onChangeText={(memoryMb) => { edit({ memoryMb }); }} keyboardType="number-pad" />
             </Input>
             <Input className="flex-1">
-              <InputField testID={`images.image.limits.cpus.${image.id}`} value={cpus} onChangeText={setCpus} keyboardType="decimal-pad" />
+              <InputField testID={`images.image.limits.cpus.${image.id}`} value={draft.cpus} onChangeText={(cpus) => { edit({ cpus }); }} keyboardType="decimal-pad" />
             </Input>
             <Input className="flex-1">
-              <InputField testID={`images.image.limits.pids.${image.id}`} value={pids} onChangeText={setPids} keyboardType="number-pad" />
+              <InputField testID={`images.image.limits.pids.${image.id}`} value={draft.pids} onChangeText={(pids) => { edit({ pids }); }} keyboardType="number-pad" />
             </Input>
           </HStack>
           {limitsError && (
@@ -272,19 +290,24 @@ function ImageRow({
               {limitsError}
             </Text>
           )}
+          {(draftState !== 'unchanged' || justSaved) && (
+            <Text testID={`images.image.limits.state.${image.id}`} size="2xs" className="text-muted-foreground">
+              {draftState === 'unchanged' ? 'Saved' : 'Unsaved changes'}
+            </Text>
+          )}
           <Button
             testID={`images.image.limits.save.${image.id}`}
             size="sm"
             variant="outline"
-            isDisabled={!writable || busy}
+            isDisabled={!writable || busy || draftState === 'unchanged'}
             onPress={() => {
-              const parsed = parseLimitsInput({ memoryMb: memory, cpus, pids });
+              const parsed = parseLimitsInput(draft);
               if (!parsed.ok) {
                 setLimitsError(parsed.error);
                 return;
               }
               setLimitsError(null);
-              void onSaveLimits(parsed.limits);
+              void onSaveLimits(parsed.limits, () => { setJustSaved(true); });
             }}
           >
             <ButtonText>Save limits</ButtonText>
@@ -322,7 +345,7 @@ function ImageRow({
       )}
       <HStack space="xs" className="pt-1">
         <Button testID={`images.image.pull.${image.id}`} size="sm" variant="outline" isDisabled={!writable || busy || image.status === 'pulling'} onPress={onPull}>
-          <ButtonText>{image.status === 'failed' && !image.usable ? 'Try again' : 'Update'}</ButtonText>
+          <ButtonText>{image.status === 'failed' && !image.usable ? 'Try again' : 'Pull latest'}</ButtonText>
         </Button>
         <Button testID={`images.image.remove.${image.id}`} size="sm" variant="outline" isDisabled={!reachable || busy} onPress={onRemove}>
           <ButtonText>Remove</ButtonText>

@@ -32,6 +32,7 @@ import { startGitServer, type GitServer } from './git-server.ts';
 import { longHistoryScenario } from './long-history.ts';
 import { startMockWeb, webFetchScenarios } from './mock-web.ts';
 import { homedir } from 'node:os';
+import { SevereServiceError } from 'webdriverio';
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = path.resolve(E2E_DIR, '../..');
@@ -743,6 +744,21 @@ export async function teardown(): Promise<void> {
   // Postgres is deliberately left running: it is slow to start, holds no
   // per-run state worth clearing, and is very often not ours to stop.
   await Promise.resolve();
+}
+
+/**
+ * An `onPrepare` hook whose failure ends the run. WebdriverIO logs an ordinary
+ * error from the hook and starts every spec anyway, with nothing to run them
+ * against; only a SevereServiceError stops it, and `onComplete` still runs.
+ */
+export function stopRunOnFailure(prepare: () => Promise<unknown>): () => Promise<void> {
+  return async function onPrepare() {
+    try {
+      await prepare();
+    } catch (err) {
+      throw new SevereServiceError(`[e2e] stand-up failed, so no spec was run: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    }
+  };
 }
 
 // Also usable standalone: `pnpm --filter @loxaic/e2e standup`

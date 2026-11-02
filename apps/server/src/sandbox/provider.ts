@@ -52,6 +52,9 @@ export interface ExecResult {
   truncated: boolean;
   /** True when the exec exceeded its timeout and was abandoned. */
   timedOut: boolean;
+  /** The sandbox's process limit, when the command could not start because
+   * the sandbox is at it. `stderr` then opens with a sentence saying so. */
+  processLimit?: number;
 }
 
 export interface FileNode {
@@ -115,6 +118,9 @@ export interface SandboxHandle {
   /** Absent when the provider has no interactive-terminal support. `env` is
    * added to the shell's environment (egress/env.ts's proxy settings). */
   openTerminal?(options?: { env?: Record<string, string> }): Promise<TerminalSession>;
+  /** Changes the sandbox's process limit in place, running or stopped. Absent
+   * where a sandbox has no limit of its own (a host directory, an executor). */
+  setProcessLimit?(pids: number): Promise<void>;
   isRunning(): Promise<boolean>;
   /**
    * Whether the sandbox still exists at all — **true for a stopped one**.

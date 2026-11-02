@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { AllocatedSandbox } from '@loxaic/api-client';
+import type { ToolNotice } from '@loxaic/types';
 import {
   allocationBars,
   allocationNoticeText,
+  processLimitNoticeText,
+  toolNoticeText,
   allocationSource,
   allocationSummary,
   anyOverridden,
@@ -154,6 +157,21 @@ describe('allocationNoticeText', () => {
     expect(allocationNoticeText('count')).toContain('Pause a sandbox');
     expect(allocationNoticeText('memory')).toContain('Pause a sandbox');
     expect(allocationNoticeText('too_big')).toContain('Only an administrator');
+  });
+});
+
+describe('processLimitNoticeText', () => {
+  it('names the limit and the way out', () => {
+    expect(processLimitNoticeText(100)).toBe('This sandbox reached its limit of 100 processes. Pause it to end them; your files are kept.');
+  });
+});
+
+describe('toolNoticeText', () => {
+  it('says each kind it knows, and nothing for one it does not', () => {
+    expect(toolNoticeText({ kind: 'sandbox_allocation', reason: 'count' })).toContain('Pause a sandbox');
+    expect(toolNoticeText({ kind: 'sandbox_processes', limit: 4096 })).toContain('limit of 4096 processes');
+    expect(toolNoticeText({ kind: 'sandbox_disk' } as unknown as ToolNotice)).toBeNull();
+    expect(toolNoticeText(undefined)).toBeNull();
   });
 });
 
