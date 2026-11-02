@@ -105,7 +105,7 @@ describe("PATCH /v1/conversations/:id, run limits", () => {
       expect(heard).toEqual([{ type: "conversation.limits", conversation_id: id, step_limit_off: false, loop_check_off: true }]);
     } finally {
       stop();
-      unregisterRun(handle);
+      unregisterRun(handle.streamId);
     }
   });
 });
