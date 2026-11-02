@@ -48,7 +48,9 @@ export function execFailure(res: { stderr: string; processLimit?: number }, fall
 export function processLimitMessage(limit: number): string {
   return (
     `This sandbox has reached its limit of ${String(limit)} processes, so no command can start in it. ` +
-    "Pausing it (Settings → Sandboxes) ends every process and keeps your files; " +
-    "an admin can raise Processes for this image."
+    "Pausing it (Settings → Sandboxes) ends every process and keeps your files. " +
+    // Only a shared image has a limit of its own to raise: Loxaic's image and
+    // a personal one take the default.
+    "If this sandbox runs a shared image, an admin can raise its Processes in Settings → Container Images."
   );
 }

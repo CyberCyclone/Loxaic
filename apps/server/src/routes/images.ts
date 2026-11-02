@@ -187,9 +187,10 @@ export function imageRoutes(app: FastifyInstance) {
         const updated = await updateImage(owner, request.params.id, body);
         if (!updated) return fail(reply, 404, "Not found");
         // Processes reach the image's existing sandboxes; memory and CPUs are
-        // counted against allocations, so only a new sandbox takes them.
+        // counted against allocations, so only a new sandbox takes them. The
+        // save has landed, so the answer does not wait on the engine.
         const pids = (body.limits as { pids?: unknown } | undefined)?.pids;
-        if (pids !== undefined && updated.limits) await applyImageProcessLimit(updated.id, updated.limits.pids);
+        if (pids !== undefined && updated.limits) void applyImageProcessLimit(updated.id);
         return updated;
       } catch (err) {
         return imageError(reply, err);

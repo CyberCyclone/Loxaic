@@ -280,3 +280,16 @@ export function allocationNoticeText(reason: Extract<ToolNotice, { kind: 'sandbo
 export function processLimitNoticeText(limit: number): string {
   return `This sandbox reached its limit of ${String(limit)} processes. Pause it to end them; your files are kept.`;
 }
+
+/** A tool card's notice line, or null for a kind this build does not know: a
+ * newer server's notice is not this build's to guess at. */
+export function toolNoticeText(notice: ToolNotice | undefined): string | null {
+  switch (notice?.kind) {
+    case 'sandbox_allocation':
+      return allocationNoticeText(notice.reason);
+    case 'sandbox_processes':
+      return processLimitNoticeText(notice.limit);
+    default:
+      return null;
+  }
+}

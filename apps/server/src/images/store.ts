@@ -114,6 +114,12 @@ export function readLimits(raw: unknown): ImageLimits | null {
   return { memoryMb, cpus, pids, kvm: v.kvm === true };
 }
 
+/** The limits a sandbox of this image is given: a shared image's own, or the
+ * defaults (a personal image has none of its own). */
+export function effectiveLimits(row: ImageRow): ImageLimits {
+  return row.ownerId === null ? (readLimits(row.limits) ?? DEFAULT_IMAGE_LIMITS) : DEFAULT_IMAGE_LIMITS;
+}
+
 export function toImageView(row: ImageRow): ImageView {
   const check = readCheck(row.check);
   return {
@@ -126,7 +132,7 @@ export function toImageView(row: ImageRow): ImageView {
     usable: Boolean(row.digest) && check !== null && check.missing.length === 0,
     digest: row.digest,
     check,
-    limits: row.ownerId === null ? (readLimits(row.limits) ?? DEFAULT_IMAGE_LIMITS) : null,
+    limits: row.ownerId === null ? effectiveLimits(row) : null,
     pulledAt: row.pulledAt?.toISOString() ?? null,
     progress: row.status === "pulling" ? (progress.get(row.id) ?? null) : null,
   };

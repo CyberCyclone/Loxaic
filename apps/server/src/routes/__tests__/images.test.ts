@@ -242,12 +242,20 @@ describe("the policy", () => {
     expect(applyImageProcessLimit).not.toHaveBeenCalled();
 
     await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { pids: 10_000 } });
-    expect(applyImageProcessLimit).toHaveBeenCalledExactlyOnceWith(row.id, 10_000);
+    expect(applyImageProcessLimit).toHaveBeenCalledExactlyOnceWith(row.id);
 
     // A refused save reaches nothing.
     applyImageProcessLimit.mockClear();
     expect((await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { pids: 1 } })).status).toBe(400);
     expect(applyImageProcessLimit).not.toHaveBeenCalled();
+  });
+
+  it("answers a save at once, though the engine has not finished with its sandboxes", async () => {
+    const row = await readyImage(null, "Slow engine");
+    applyImageProcessLimit.mockImplementationOnce(() => new Promise(() => undefined));
+    const saved = await call(admin, "PATCH", `/v1/admin/images/${row.id}`, { limits: { pids: 8192 } });
+    expect(saved.status).toBe(200);
+    expect(saved.body.limits).toMatchObject({ pids: 8192 });
   });
 
   it("bounds a shared image's limits and keeps them off personal images", async () => {

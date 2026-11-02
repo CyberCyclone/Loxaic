@@ -434,7 +434,9 @@ function stoppedBeforeStart(): ExecResult {
  * failing inside the wrapper or the command. Docker reports the first on the
  * exec's output with a plain exit code, and names no cause. */
 export function looksLikeStartFailure(output: string): boolean {
-  return /OCI runtime exec failed|procReady|Resource temporarily unavailable/i.test(output);
+  // EAGAIN alone is ordinary (a busy lock, a nonblocking read), and a command
+  // prints what it likes: only a failed fork or thread start counts.
+  return /OCI runtime exec failed|procReady|(fork|pthread_create|thread)\b[^\n]*Resource temporarily unavailable/i.test(output);
 }
 
 /** Starting an exec takes runc several tasks of its own, so it is refused

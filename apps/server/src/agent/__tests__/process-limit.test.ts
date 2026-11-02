@@ -161,7 +161,7 @@ describe.skipIf(!dockerReady)("waking a paused sandbox", () => {
 
 describe.skipIf(!dockerReady)("applyImageProcessLimit", () => {
   it("raises a running sandbox of that image in place, and touches nothing else", async () => {
-    const imageId = await imageRow({ memoryMb: 512, cpus: 1, pids: 200 });
+    const imageId = await imageRow({ memoryMb: 512, cpus: 1, pids: 5000 });
     const handle = await getContainerProvider().create(`pids-apply-${Date.now().toString(36)}`, { limits: { pids: 200 } });
     const other = await getContainerProvider().create(`pids-other-${Date.now().toString(36)}`, { limits: { pids: 200 } });
     try {
@@ -170,7 +170,7 @@ describe.skipIf(!dockerReady)("applyImageProcessLimit", () => {
       const docker = new Docker();
       const memoryBefore = (await docker.getContainer(handle.ref).inspect()).HostConfig.Memory;
 
-      await applyImageProcessLimit(imageId, 5000);
+      await applyImageProcessLimit(imageId);
 
       const info = await docker.getContainer(handle.ref).inspect();
       expect(info.HostConfig.PidsLimit).toBe(5000);
@@ -185,11 +185,63 @@ describe.skipIf(!dockerReady)("applyImageProcessLimit", () => {
   }, 120_000);
 
   it("leaves a sandbox it could not reach as it was", async () => {
-    const imageId = await imageRow({ memoryMb: 512, cpus: 1, pids: 200 });
+    const imageId = await imageRow({ memoryMb: 512, cpus: 1, pids: 5000 });
     const id = await sandboxIn(scratch(imageId), { pids: 200 }, "no-such-container");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    await expect(applyImageProcessLimit(imageId, 5000)).resolves.toBeUndefined();
+    await expect(applyImageProcessLimit(imageId)).resolves.toBeUndefined();
     expect(await recordedPids(id)).toBe(200);
     warn.mockRestore();
+  });
+});
+
+describe("applyImageProcessLimit's choices", () => {
+  /** Stands in for the engine: each attach answers after `delays.shift()` ms. */
+  function fakeEngine(handle: Partial<SandboxHandle>, delays: number[] = []) {
+    return vi.spyOn(getContainerProvider(), "attach").mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, delays.shift() ?? 0));
+      return handle as SandboxHandle;
+    });
+  }
+
+  it("ends on the last save when an earlier one is slow to reach the engine", async () => {
+    const imageId = await imageRow({ memoryMb: 512, cpus: 1, pids: 200 });
+    const id = await sandboxIn(scratch(imageId), { pids: 100 });
+    const applied: number[] = [];
+    const attach = fakeEngine({ setProcessLimit: (pids: number) => { applied.push(pids); return Promise.resolve(); } }, [300, 0]);
+    try {
+      const first = applyImageProcessLimit(imageId);
+      await vi.waitFor(() => { expect(attach).toHaveBeenCalledTimes(1); });
+      await db.update(sandboxImages).set({ limits: { memoryMb: 512, cpus: 1, pids: 8192 } }).where(eq(sandboxImages.id, imageId));
+      await Promise.all([first, applyImageProcessLimit(imageId)]);
+      expect(applied.at(-1)).toBe(8192);
+      expect(await recordedPids(id)).toBe(8192);
+    } finally {
+      attach.mockRestore();
+    }
+  });
+
+  it("leaves a sandbox already on the image's limit alone", async () => {
+    const imageId = await imageRow({ memoryMb: 512, cpus: 1, pids: 300 });
+    await sandboxIn(scratch(imageId), { memory: 512, cpu: 1, pids: 300 });
+    const attach = fakeEngine({ setProcessLimit: vi.fn(() => Promise.resolve()) });
+    try {
+      await applyImageProcessLimit(imageId);
+      expect(attach).not.toHaveBeenCalled();
+    } finally {
+      attach.mockRestore();
+    }
+  });
+
+  it("records nothing for a sandbox whose handle cannot change its limit", async () => {
+    const imageId = await imageRow({ memoryMb: 512, cpus: 1, pids: 300 });
+    const id = await sandboxIn(scratch(imageId), { pids: 100 });
+    const attach = fakeEngine({});
+    try {
+      await applyImageProcessLimit(imageId);
+      expect(attach).toHaveBeenCalled();
+      expect(await recordedPids(id)).toBe(100);
+    } finally {
+      attach.mockRestore();
+    }
   });
 });

@@ -20,11 +20,14 @@ describe("looksLikeStartFailure", () => {
     expect(looksLikeStartFailure("OCI runtime exec failed: exec failed: unable to start container process: procReady not received")).toBe(true);
     expect(looksLikeStartFailure("bash: fork: retry: Resource temporarily unavailable")).toBe(true);
     expect(looksLikeStartFailure("pthread_create: resource temporarily unavailable")).toBe(true);
+    expect(looksLikeStartFailure("sh: can't fork: Resource temporarily unavailable")).toBe(true);
   });
 
   it("leaves an ordinary failure alone", () => {
     expect(looksLikeStartFailure("")).toBe(false);
     expect(looksLikeStartFailure("cat: /nope: No such file or directory")).toBe(false);
+    expect(looksLikeStartFailure("flock: failed to get lock on /tmp/l: Resource temporarily unavailable")).toBe(false);
+    expect(looksLikeStartFailure("read error: 0: Resource temporarily unavailable")).toBe(false);
   });
 });
 

@@ -547,10 +547,11 @@ async function createEntry(
 async function workspaceNeed(workspace: Workspace, kind: SandboxKind): Promise<SandboxNeed> {
   if (kind !== "container") return { memoryMb: 0, cpus: 0 };
   if (workspace.kind === "local" || !workspace.image) return DEFAULT_NEED;
-  const { findImage, readLimits } = await import("../images/store.ts");
+  const { findImage, effectiveLimits } = await import("../images/store.ts");
   const row = await findImage(workspace.image.id).catch(() => null);
-  const limits = row?.ownerId === null ? readLimits(row.limits) : null;
-  return limits ? { memoryMb: limits.memoryMb, cpus: limits.cpus } : DEFAULT_NEED;
+  if (!row) return DEFAULT_NEED;
+  const { memoryMb, cpus } = effectiveLimits(row);
+  return { memoryMb, cpus };
 }
 
 /**
@@ -623,7 +624,7 @@ async function imageConfigFor(
         "this server's sandbox mode has changed since. Start a new conversation, or ask an admin.",
     );
   }
-  const { customImagesBlocked, findImage, readLimits, DEFAULT_IMAGE_LIMITS, ensureImagePresent } = await import("../images/store.ts");
+  const { customImagesBlocked, findImage, effectiveLimits, ensureImagePresent } = await import("../images/store.ts");
   const { useRefusal } = await import("../images/access.ts");
   // The engine can change after a pull too, and this path may pull again
   // (ensureImagePresent). On Podman a pull with no login can fall back to the
@@ -635,7 +636,7 @@ async function imageConfigFor(
   if (refusal || !row?.digest || row.uid === null || row.gid === null) {
     throw new Error(`This conversation's image "${chosen.label}" can't be used: ${refusal ?? "it has no good pull."}`);
   }
-  const limits = row.ownerId === null ? (readLimits(row.limits) ?? DEFAULT_IMAGE_LIMITS) : DEFAULT_IMAGE_LIMITS;
+  const limits = effectiveLimits(row);
   const digest = row.digest;
   return {
     image: {
@@ -923,12 +924,11 @@ async function wake(
  * image's, or the default. Null when its image's row has gone, which leaves
  * nothing to follow. */
 async function processLimitFor(workspace: Workspace | null): Promise<number | null> {
-  const { findImage, readLimits, DEFAULT_IMAGE_LIMITS } = await import("../images/store.ts");
+  const { findImage, effectiveLimits, DEFAULT_IMAGE_LIMITS } = await import("../images/store.ts");
   const chosen = workspace && "image" in workspace ? workspace.image : undefined;
   if (!chosen) return DEFAULT_IMAGE_LIMITS.pids;
   const row = await findImage(chosen.id);
-  if (!row) return null;
-  return row.ownerId === null ? (readLimits(row.limits)?.pids ?? DEFAULT_IMAGE_LIMITS.pids) : DEFAULT_IMAGE_LIMITS.pids;
+  return row ? effectiveLimits(row).pids : null;
 }
 
 async function recordProcessLimit(rowId: string, pids: number): Promise<void> {
@@ -964,32 +964,71 @@ export async function syncProcessLimit(handle: SandboxHandle, rowId: string): Pr
   }
 }
 
+/** Each image's propagation in flight. Saves close together queue behind one
+ * another, and each reads the image's limit when its turn comes, so the last
+ * save is the one its sandboxes end on. */
+const processLimitQueues = new Map<string, Promise<void>>();
+
+/** How long one container's update may take before the queue moves on. */
+const PROCESS_LIMIT_UPDATE_MS = 15_000;
+
 /**
- * Applies a shared image's new process limit to its running sandboxes, in
- * place. Paused ones pick it up when they wake. A sandbox that cannot be
- * updated keeps its old limit, and the save it came from still stands.
+ * Applies a shared image's process limit to its running sandboxes, in place.
+ * Paused ones pick it up when they wake. A sandbox already on it is left
+ * alone, so saving only memory or CPUs costs nothing here. Never rejects: a
+ * sandbox that cannot be updated keeps its old limit, and the save it came
+ * from still stands.
  */
-export async function applyImageProcessLimit(imageId: string, pids: number): Promise<void> {
-  const rows = await db
-    .select({ id: sandboxes.id, containerId: sandboxes.containerId })
-    .from(sandboxes)
-    .innerJoin(conversations, eq(conversations.id, sandboxes.conversationId))
-    .where(and(
-      eq(sandboxes.status, "running"),
-      eq(sandboxes.provider, "container"),
-      sql`${conversations.workspace}->'image'->>'id' = ${imageId}`,
-    ));
-  if (rows.length === 0) return;
-  const provider = await getProviderByKind("container");
-  await Promise.all(rows.map(async (row) => {
-    try {
-      const handle = await provider.attach(row.containerId);
-      await handle.setProcessLimit?.(pids);
-      await recordProcessLimit(row.id, pids);
-    } catch (err) {
-      console.warn(`could not update sandbox ${row.id}'s process limit: ${(err as Error).message}`);
-    }
-  }));
+export function applyImageProcessLimit(imageId: string): Promise<void> {
+  const next = (processLimitQueues.get(imageId) ?? Promise.resolve()).then(() => applyCurrentProcessLimit(imageId));
+  processLimitQueues.set(imageId, next);
+  void next.finally(() => {
+    if (processLimitQueues.get(imageId) === next) processLimitQueues.delete(imageId);
+  });
+  return next;
+}
+
+async function applyCurrentProcessLimit(imageId: string): Promise<void> {
+  try {
+    const { findImage, effectiveLimits } = await import("../images/store.ts");
+    const image = await findImage(imageId);
+    if (!image) return;
+    const pids = effectiveLimits(image).pids;
+    const rows = await db
+      .select({ id: sandboxes.id, containerId: sandboxes.containerId })
+      .from(sandboxes)
+      .innerJoin(conversations, eq(conversations.id, sandboxes.conversationId))
+      .where(and(
+        eq(sandboxes.status, "running"),
+        eq(sandboxes.provider, "container"),
+        sql`${conversations.workspace}->'image'->>'id' = ${imageId}`,
+        sql`${sandboxes.limits}->>'pids' is distinct from ${String(pids)}`,
+      ));
+    if (rows.length === 0) return;
+    const provider = await getProviderByKind("container");
+    await Promise.all(rows.map(async (row) => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([
+          (async () => {
+            const handle = await provider.attach(row.containerId);
+            if (!handle.setProcessLimit) return;
+            await handle.setProcessLimit(pids);
+            await recordProcessLimit(row.id, pids);
+          })(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => { reject(new Error("the engine did not answer")); }, PROCESS_LIMIT_UPDATE_MS);
+          }),
+        ]);
+      } catch (err) {
+        console.warn(`could not update sandbox ${row.id}'s process limit: ${(err as Error).message}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }));
+  } catch (err) {
+    console.warn(`could not apply image ${imageId}'s process limit: ${(err as Error).message}`);
+  }
 }
 
 /** Records a use of a row still `running`; false when it no longer is. */
