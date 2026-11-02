@@ -23,7 +23,7 @@
 import { browser } from '@wdio/globals';
 import { provisionUser, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, isVisible, platform, tap, typeInto, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, platform, tap, typeInto, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   assistantModels,
   closePlusMenu,
@@ -140,8 +140,8 @@ describe('routines', () => {
 
     // What keeps an unattended routine bounded is not offered here.
     await openPlusMenu();
-    expect(await isVisible('composer.plus.stepLimit')).toBe(false);
-    expect(await isVisible('composer.plus.loopCheck')).toBe(false);
+    expect(await byTestId('composer.plus.stepLimit').isDisplayed().catch(() => false)).toBe(false);
+    expect(await byTestId('composer.plus.loopCheck').isDisplayed().catch(() => false)).toBe(false);
     await closePlusMenu();
 
     await waitForRunDone(creds, run.conversationId);
