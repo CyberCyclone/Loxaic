@@ -137,13 +137,10 @@ export function mcpRoutes(app: FastifyInstance) {
         reply.code(400);
         return { error: `Unknown builtin "${body.builtinKey}"` };
       }
-      const launch = entry.resolveLaunch();
       insert = {
         name: entry.name,
         slug: entry.slug,
         transport: entry.transport,
-        command: launch.command,
-        args: launch.args,
         builtinKey: entry.key,
       };
     } else {

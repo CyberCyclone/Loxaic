@@ -66,6 +66,13 @@ describe("the catalog", () => {
     const res = await app.inject({ method: "POST", url: "/v1/mcp/servers", payload: { builtinKey: "github" } });
     expect(res.statusCode).toBe(400);
   });
+
+  it("stores no launch for a catalog server: its path changes with the package version", async () => {
+    const res = await app.inject({ method: "POST", url: "/v1/mcp/servers", payload: { builtinKey: "brave" } });
+    expect(res.statusCode).toBe(200);
+    const row = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, res.json<{ id: string }>().id) });
+    expect(row).toMatchObject({ builtinKey: "brave", transport: "stdio", command: null, args: null });
+  });
 });
 
 describe("per-kind defaults", () => {

@@ -59,6 +59,7 @@ export function McpCatalogCard({ entry, onEnable }: McpCatalogCardProps) {
             </Text>
             <Input className="border-border bg-background">
               <InputField
+                testID={`mcp.catalogSecret.${k.env}`}
                 value={values[k.env] ?? ''}
                 onChangeText={(v) => { setValues((prev) => ({ ...prev, [k.env]: v })); }}
                 placeholder={k.env}
