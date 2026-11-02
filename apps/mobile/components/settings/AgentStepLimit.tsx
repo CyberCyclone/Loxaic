@@ -53,7 +53,7 @@ export function AgentStepLimit({
         How many tool calls the agent makes while answering one message before it pauses and asks
         whether to keep going, answer with what it has, or stop. It also asks early if it notices
         itself repeating the same calls. It is never cut off, and it always finishes on its own
-        once it has an answer.
+        once it has an answer. Either pause can be turned off for one chat from its + menu.
       </Text>
     </VStack>
   );

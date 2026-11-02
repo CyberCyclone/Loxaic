@@ -7,9 +7,10 @@
  * run that does not pause is the switch working and nothing else.
  */
 import { browser } from '@wdio/globals';
-import { uniqueCreds } from '../helpers/auth.ts';
+import { BASE_URL } from '../../scripts/standup.ts';
+import { apiToken, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, isVisible, platform, tap, waitForGone, waitForSwitch, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, closeKeyboard, isVisible, platform, tap, waitForGone, waitForSwitch, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   CHECKIN_SCENARIO_DONE,
   CHECKIN_SCENARIO_PROMPT,
@@ -56,6 +57,16 @@ async function flip(id: string, on: boolean): Promise<void> {
   await closePlusMenu();
 }
 
+/** The same PATCH from a connection of its own, as the owner's other device. */
+async function switchElsewhere(creds: { email: string; password: string }, conversationId: string, body: Record<string, boolean>): Promise<void> {
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}`, {
+    method: 'PATCH',
+    headers: { authorization: `Bearer ${await apiToken(creds)}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`[e2e] limits patch failed (${String(res.status)}): ${await res.text()}`);
+}
+
 describe('a chat turns its own step limit and loop check off and on', () => {
   const creds = uniqueCreds();
 
@@ -83,6 +94,8 @@ describe('a chat turns its own step limit and loop check off and on', () => {
       await closePlusMenu();
 
       await sendMessage(CHECKIN_SCENARIO_PROMPT);
+      // With a keyboard up, a phone's agent thread is a sliver under the banner.
+      await closeKeyboard();
       await waitForTextIn('chat.messageList', CHECKIN_SCENARIO_DONE, 90_000);
       const [conversation] = await listConversations(creds);
       await waitForRunDone(creds, conversation.id);
@@ -134,6 +147,30 @@ describe('a chat turns its own step limit and loop check off and on', () => {
       if (surface === 'agent') {
         await waitForTextIn('agent.run.status', 'Done');
       }
+    });
+  }
+
+  for (const surface of ['chat', 'agent'] as const) {
+    it(`follows a switch flipped on another device, with the menu open (${surface})`, async function () {
+      this.timeout(2 * 60_000);
+      await patchPrefs(creds, { maxIterations: 100 });
+      await newThread(surface);
+      await sendMessage('nothing to do here');
+      await closeKeyboard();
+      await browser.waitUntil(async () => (await listConversations(creds)).length > 0);
+      const [conversation] = await listConversations(creds);
+      await waitForRunDone(creds, conversation.id);
+
+      await openPlusMenu();
+      await waitForSwitch(STEP_LIMIT, true);
+      await waitForSwitch(LOOP_CHECK, true);
+      await switchElsewhere(creds, conversation.id, { step_limit_off: true, loop_check_off: true });
+      await waitForSwitch(STEP_LIMIT, false);
+      await waitForSwitch(LOOP_CHECK, false);
+      await switchElsewhere(creds, conversation.id, { step_limit_off: false });
+      await waitForSwitch(STEP_LIMIT, true);
+      await waitForSwitch(LOOP_CHECK, false);
+      await closePlusMenu();
     });
   }
 
