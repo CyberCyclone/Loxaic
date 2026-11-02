@@ -7,7 +7,7 @@ import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
 import { deleteConversation } from "../conversations/delete.ts";
 import { isRewindScope, previewRewind, rewindConversation, RewindError } from "../conversations/rewind.ts";
-import { claimConversation, ConversationBusyError, unregisterRun } from "../streams/registry.ts";
+import { claimConversation, ConversationBusyError, listChildRuns, unregisterRun } from "../streams/registry.ts";
 import { announceConversationEvent } from "../streams/watchers.ts";
 import { replaceConversationSandbox, SandboxLimitError } from "../agent/sandbox-manager.ts";
 import { sandboxLimitBody } from "./errors.ts";
@@ -77,6 +77,13 @@ async function replaceWhileClaimed(
   }
   const timer = setTimeout(() => { claim.abort.abort(); }, imageSwitchTimeoutMs());
   try {
+    // A sub-agent works in its parent's sandbox and can outlive the parent's
+    // run, so the claim alone does not say the sandbox is idle. None can
+    // start while the claim is held.
+    if (listChildRuns(conversationId).length > 0) {
+      reply.code(409);
+      return { error: words.busy, code: new ConversationBusyError().code };
+    }
     return await replaceConversationSandbox(conversationId, next, claim.abort.signal);
   } catch (err) {
     // With the numbers, so the client can offer the Sandboxes screen (#254).
@@ -360,7 +367,7 @@ export function conversationRoutes(app: FastifyInstance) {
     const next: Workspace = image ? { ...rest, image } : rest;
 
     const replaced = await replaceWhileClaimed(reply, conversationId, userId, next, {
-      busy: "Stop the run first: the image can't change while it is running.",
+      busy: "Stop the run first: the image can't change while it, or one of its sub-agents, is running.",
       failed: "The image was not changed",
     });
     if ("error" in replaced) return replaced;
@@ -396,7 +403,7 @@ export function conversationRoutes(app: FastifyInstance) {
       return { error: "A folder on your own machine has no sandbox to restart." };
     }
     const replaced = await replaceWhileClaimed(reply, conversationId, userId, workspace, {
-      busy: "Stop the run first: the sandbox can't restart while it is running.",
+      busy: "Stop the run first: the sandbox can't restart while it, or one of its sub-agents, is running.",
       failed: "The sandbox was not restarted",
     });
     if ("error" in replaced) return replaced;

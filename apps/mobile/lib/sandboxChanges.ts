@@ -9,6 +9,16 @@ export const RESTART_SANDBOX_NOTE =
   'Restarting stops anything running in this sandbox. Your files in /home/loxaic move to the new one; ' +
   'anything installed elsewhere does not. The next message re-reads the whole conversation once.';
 
+const KNOWN = new Set<string>(['memory', 'cpus', 'network', 'kvm', 'image']);
+
+/** The changes a chat's banner shows, from its sandbox rows: the server puts
+ * them on the one a restart would replace, whichever that is. Kinds this build
+ * doesn't know are left out, so a newer server's alone show no banner. */
+export function pendingChangesOf(rows: { pending_changes?: SandboxChange[] }[]): SandboxChange[] {
+  const changes = rows.find((row) => row.pending_changes?.length)?.pending_changes ?? [];
+  return changes.filter((change) => KNOWN.has(change.kind));
+}
+
 function line(change: SandboxChange): string {
   switch (change.kind) {
     case 'memory':

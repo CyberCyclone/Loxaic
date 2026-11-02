@@ -45,12 +45,15 @@ export function sandboxRoutes(app: FastifyInstance) {
     // policy the reaper will actually apply — see sandboxReapAt(). Null means
     // reaping is switched off, which the UI must render as "kept", never as an
     // unknown date.
-    return Promise.all(rows.map(async (row) => ({
+    // For one chat only, and on the one sandbox a restart would replace: the
+    // chat shows it whichever row it is. Another person's chat has none of
+    // the caller's rows to carry it.
+    const pending = conversation_id ? await pendingSandboxChanges(conversation_id) : null;
+    return rows.map((row) => ({
       ...row,
       reap_at: row.status === "destroyed" ? null : sandboxReapAt(row.lastUsedAt)?.toISOString() ?? null,
-      // For one chat only: it takes a read per row, and only a chat shows it.
-      ...(conversation_id ? { pending_changes: await pendingSandboxChanges(row) } : {}),
-    })));
+      ...(conversation_id ? { pending_changes: row.id === pending?.sandboxId ? pending.changes : [] } : {}),
+    }));
   });
 
   /**

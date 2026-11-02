@@ -34,13 +34,6 @@ export type PermissionMode = "planning" | "manual" | "auto";
  */
 export type WorkspaceIsolation = "direct" | "container";
 /**
- * A custom image a server-side workspace runs in (#253), instead of Loxaic's
- * own. `id` names a `sandbox_images` row: a shared one an admin loaded, or the
- * conversation owner's own. Containers are created from that row's digest,
- * re-checked each time, so these fields describe the choice and grant nothing.
- * Absent means the built-in image.
- */
-/**
  * One way a conversation's sandbox differs from what it would be given today,
  * which only a new container picks up (a restart). Process limits are not
  * here: they reach a sandbox by themselves.
@@ -53,6 +46,13 @@ export type SandboxChange =
   /** Its image has been pulled again since this sandbox was made. */
   | { kind: "image" };
 
+/**
+ * A custom image a server-side workspace runs in (#253), instead of Loxaic's
+ * own. `id` names a `sandbox_images` row: a shared one an admin loaded, or the
+ * conversation owner's own. Containers are created from that row's digest,
+ * re-checked each time, so these fields describe the choice and grant nothing.
+ * Absent means the built-in image.
+ */
 export interface WorkspaceImage {
   id: string;
   scope: "shared" | "personal";

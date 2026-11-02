@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SandboxChange } from '@loxaic/types';
-import { sandboxChangesText } from './sandboxChanges';
+import { pendingChangesOf, sandboxChangesText } from './sandboxChanges';
 
 describe('sandboxChangesText', () => {
   it('says what each change is', () => {
@@ -19,5 +19,20 @@ describe('sandboxChangesText', () => {
   it('leaves out a kind this build does not know', () => {
     const newer = { kind: 'gpu' } as unknown as SandboxChange;
     expect(sandboxChangesText([newer, { kind: 'image' }])).toBe('A newer pull of its image');
+  });
+});
+
+describe('pendingChangesOf', () => {
+  const memory: SandboxChange = { kind: 'memory', fromMb: 768, toMb: 1024 };
+
+  it('takes them from whichever row carries them, not only the newest', () => {
+    expect(pendingChangesOf([{ pending_changes: [] }, { pending_changes: [memory] }])).toEqual([memory]);
+    expect(pendingChangesOf([{}, { pending_changes: [] }])).toEqual([]);
+  });
+
+  it('shows nothing when every change is of a kind this build does not know', () => {
+    const newer = { kind: 'gpu' } as unknown as SandboxChange;
+    expect(pendingChangesOf([{ pending_changes: [newer] }])).toEqual([]);
+    expect(pendingChangesOf([{ pending_changes: [newer, memory] }])).toEqual([memory]);
   });
 });

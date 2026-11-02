@@ -9,7 +9,7 @@ import { Icon } from '@/components/ui/icon';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { ImageApiError, restartConversationSandbox } from '@loxaic/api-client';
 import type { SandboxChange } from '@loxaic/types';
-import { describeRequestError } from '@/lib/connection';
+import { describeRequestError, useServerReachable } from '@/lib/connection';
 import { RESTART_SANDBOX_NOTE, sandboxChangesText } from '@/lib/sandboxChanges';
 
 interface SandboxChangesBannerProps {
@@ -30,6 +30,7 @@ export function SandboxChangesBanner({ conversationId, changes, running, onResta
   const [confirming, setConfirming] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState<{ text: string; allocation: boolean } | null>(null);
+  const reachable = useServerReachable();
 
   const restart = async () => {
     setRestarting(true);
@@ -65,7 +66,7 @@ export function SandboxChangesBanner({ conversationId, changes, running, onResta
           size="sm"
           variant="outline"
           className="shrink-0"
-          isDisabled={running || restarting}
+          isDisabled={!reachable || running || restarting}
           onPress={() => { setConfirming(true); }}
         >
           {restarting ? <ButtonSpinner /> : <ButtonText>Restart sandbox</ButtonText>}

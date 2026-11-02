@@ -212,7 +212,7 @@ export default function AgentScreen() {
   // Refetched whenever a run ends: a turn that used a tool is exactly what
   // creates a workspace, or brings a paused one back, and nothing else in the
   // stream says so.
-  const { sandbox, refresh: refreshSandbox } = useWorkspaceStatus(activeId, runState);
+  const { sandbox, pendingChanges, refresh: refreshSandbox } = useWorkspaceStatus(activeId, runState);
   // Looked for on the conversation's first run, so asked again as runs end.
   const instructions = useProjectInstructions(activeRun ? activeId : null, runState);
   // The list the Inspector shows: the newest loaded, else the server's, asked
@@ -573,10 +573,10 @@ export default function AgentScreen() {
           </Pressable>
         )}
         {/* Only the owner's rows come back, so nobody else is offered it. */}
-        {activeId && sandbox?.pending_changes?.length ? (
+        {activeId && pendingChanges.length ? (
           <SandboxChangesBanner
             conversationId={activeId}
-            changes={sandbox.pending_changes}
+            changes={pendingChanges}
             running={busy}
             onRestarted={() => { void refreshSandbox(); }}
           />
