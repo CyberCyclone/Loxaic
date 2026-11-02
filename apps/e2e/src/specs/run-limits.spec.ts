@@ -218,8 +218,8 @@ describe('a chat turns its own step limit and loop check off and on', () => {
     // Step one, and a limit of 1 does not stop it: it reaches the second approval.
     await waitForVisible('agent.permission.bar', 60_000);
     await tap('agent.permission.allow');
-    await waitForGone('agent.permission.bar');
-    await waitForVisible('agent.permission.bar', 60_000);
+    // By its file: on a fast lane the second bar replaces the first with no gap.
+    await waitForTextIn('agent.permission.bar', 'second.txt', 60_000);
 
     await flip(STEP_LIMIT, true);
     await tap('agent.permission.allow');
