@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ComponentRef, type React
 import { Modal, StyleSheet } from 'react-native';
 import { Brain, Check, ChevronLeft, ChevronRight, Layers, Paperclip, Plug, Plus } from 'lucide-react-native';
 import { Pressable } from '@/components/ui/pressable';
+import { Box } from '@/components/ui/box';
 import { Icon } from '@/components/ui/icon';
 import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
@@ -256,11 +257,11 @@ export function ComposerPlusMenu({
             ) : null}
             {runLimits ? (
               <div
-                style={{ borderTop: '1px solid var(--color-border)', marginTop: 4, paddingTop: 4 }}
                 onMouseEnter={() => {
                   if (sub) scheduleCloseSub();
                 }}
               >
+                <Box className="my-1 h-px bg-border" />
                 <RunLimitRows limits={runLimits} />
               </div>
             ) : null}
