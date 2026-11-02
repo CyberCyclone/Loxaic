@@ -10,7 +10,7 @@ import { browser } from '@wdio/globals';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { apiToken, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, closeKeyboard, isVisible, platform, tap, waitForGone, waitForSwitch, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, isVisible, platform, tap, waitForGone, waitForSwitch, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   CHECKIN_SCENARIO_DONE,
   CHECKIN_SCENARIO_PROMPT,
@@ -57,6 +57,22 @@ async function flip(id: string, on: boolean): Promise<void> {
   await closePlusMenu();
 }
 
+/** Sends into the thread on screen, new so far, and says which it is: until the
+ * send lands the newest row is the last case's. */
+async function sendInNewThread(creds: { email: string; password: string }, prompt: string): Promise<string> {
+  const before = new Set((await listConversations(creds)).map((c) => c.id));
+  await sendMessage(prompt);
+  let id = '';
+  await browser.waitUntil(
+    async () => {
+      id = (await listConversations(creds)).find((c) => !before.has(c.id))?.id ?? '';
+      return id !== '';
+    },
+    { timeout: 20_000, timeoutMsg: 'the new thread never reached the conversation list' },
+  );
+  return id;
+}
+
 /** The same PATCH from a connection of its own, as the owner's other device. */
 async function switchElsewhere(creds: { email: string; password: string }, conversationId: string, body: Record<string, boolean>): Promise<void> {
   const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}`, {
@@ -93,14 +109,14 @@ describe('a chat turns its own step limit and loop check off and on', () => {
       await shot(`run-limits-off-${surface}`);
       await closePlusMenu();
 
-      await sendMessage(CHECKIN_SCENARIO_PROMPT);
-      // With a keyboard up, a phone's agent thread is a sliver under the banner.
-      await closeKeyboard();
-      await waitForTextIn('chat.messageList', CHECKIN_SCENARIO_DONE, 90_000);
-      const [conversation] = await listConversations(creds);
-      await waitForRunDone(creds, conversation.id);
+      const conversationId = await sendInNewThread(creds, CHECKIN_SCENARIO_PROMPT);
+      await waitForRunDone(creds, conversationId);
+      // The header on Agent: with a keyboard up, a phone's agent thread is a
+      // sliver under the banner and the reply is off it.
+      if (surface === 'chat') await waitForTextIn('chat.messageList', CHECKIN_SCENARIO_DONE, 90_000);
+      else await waitForTextIn('agent.run.status', 'Done', 90_000);
       expect(await isVisible('checkin.banner')).toBe(false);
-      expect((await getToolResults(creds, conversation.id)).length).toBe(2);
+      expect((await getToolResults(creds, conversationId)).length).toBe(2);
 
       // It belongs to the conversation, not the session.
       if (platform() === 'web' || platform() === 'electron') {
@@ -108,7 +124,7 @@ describe('a chat turns its own step limit and loop check off and on', () => {
         await waitForComposerReady();
       }
       await goToSurface(surface);
-      await selectThread(conversation.id, surface);
+      await selectThread(conversationId, surface);
       await openPlusMenu();
       await waitForSwitch(STEP_LIMIT, false);
       await waitForSwitch(LOOP_CHECK, true);
@@ -155,19 +171,16 @@ describe('a chat turns its own step limit and loop check off and on', () => {
       this.timeout(2 * 60_000);
       await patchPrefs(creds, { maxIterations: 100 });
       await newThread(surface);
-      await sendMessage('nothing to do here');
-      await closeKeyboard();
-      await browser.waitUntil(async () => (await listConversations(creds)).length > 0);
-      const [conversation] = await listConversations(creds);
-      await waitForRunDone(creds, conversation.id);
+      const conversationId = await sendInNewThread(creds, 'nothing to do here');
+      await waitForRunDone(creds, conversationId);
 
       await openPlusMenu();
       await waitForSwitch(STEP_LIMIT, true);
       await waitForSwitch(LOOP_CHECK, true);
-      await switchElsewhere(creds, conversation.id, { step_limit_off: true, loop_check_off: true });
+      await switchElsewhere(creds, conversationId, { step_limit_off: true, loop_check_off: true });
       await waitForSwitch(STEP_LIMIT, false);
       await waitForSwitch(LOOP_CHECK, false);
-      await switchElsewhere(creds, conversation.id, { step_limit_off: false });
+      await switchElsewhere(creds, conversationId, { step_limit_off: false });
       await waitForSwitch(STEP_LIMIT, true);
       await waitForSwitch(LOOP_CHECK, false);
       await closePlusMenu();
