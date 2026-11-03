@@ -41,9 +41,16 @@ The stream log, run registry and conversation authorization shared by every run 
 - `stream.stop` only aborts the run's signal. Every part of a run that can block (approval and check-in waits, the per-call loop, exec, fetch, queue waits) must honour it.
 - An abort listener added to an already-aborted signal never fires: re-check `signal.aborted` after every await that precedes adding the listener.
 - Treat a failure as a stop when `err.name === "AbortError" || signal.aborted` — a mid-stream Stop surfaces as `TypeError: terminated`. Never key on the name alone.
-- Always handle `runToolLoop`'s promise: `engine.ts` rethrows anything but `RunSlotAbortedError`, and there is no `unhandledRejection` handler (the stream would stay "active" forever).
+- Always handle `runToolLoop`'s promise: `engine.ts` rethrows anything but a stop (`RunSlotAbortedError`, or any throw once the run's signal is aborted), and there is no `unhandledRejection` handler (the stream would stay "active" forever).
 
 ## Runs (`runs/`)
+
+### Tool failures
+
+- A tool call's failure is a failed result on its card, never a failed run: the calls after it run and the model answers without it. Only a stop or a fault outside the calls ends a run, and a fault leaves an error row in the thread (`recordFailure`), answering the newest stored reply and keeping what a streaming one had. A stop adds no error row.
+- "Stopped before this tool call ran" is `RunSlotAbortedError`'s alone; any other throw after a stop came while the call ran and says so.
+- `runSubagentGroup` never throws: a fault fails only the calls it reached.
+- Everything bound for a `jsonb` block or the prompt goes through `jsonbSafe`, in both places, so the replay matches: Postgres refuses NUL and lone surrogates.
 
 ### Starters
 

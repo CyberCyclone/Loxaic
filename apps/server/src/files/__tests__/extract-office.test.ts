@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { user } from "@loxaic/db/schema";
-import { extractText, readExtractedText, stopAllExtractionSandboxes } from "../extract.ts";
+import { extractDocumentBytes, extractText, readExtractedText, stopAllExtractionSandboxes } from "../extract.ts";
 import { attachmentPath } from "../storage.ts";
 import { sandboxImageReady } from "../../sandbox/__tests__/docker-available.ts";
 
@@ -137,3 +137,40 @@ function buildZipBomb(): Buffer {
 
   return Buffer.concat([local, name, payload, central, name, end]);
 }
+
+describe.skipIf(!dockerReady)("a document nothing stored, in a real sandbox", () => {
+  const read = (fixture: string, signal?: AbortSignal) =>
+    extractDocumentBytes({ bytes: readFileSync(path.join(FIXTURES, fixture)), mime: "application/pdf", userId, signal });
+
+  it("reads a PDF", async () => {
+    const result = await read("sample.pdf");
+    expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.text).toContain("Loxaic sample manual: wash the filter monthly.");
+  }, 60_000);
+
+  it("says a PDF with no text layer may be a scan", async () => {
+    expect(await read("blank.pdf")).toEqual({ ok: false, reason: "this document has no readable text; it may be a scan." });
+  }, 60_000);
+
+  it("says a damaged PDF could not be read", async () => {
+    const result = await extractDocumentBytes({ bytes: Buffer.from("%PDF-1.6 and nothing after"), mime: "application/pdf", userId });
+    expect(result).toEqual({ ok: false, reason: "this document could not be read. It may be damaged, or too large to read in time." });
+  }, 60_000);
+});
+
+describe("a document with no container to read it", () => {
+  it.each(["off", "host"])("refuses in SANDBOX_MODE=%s rather than parsing it on the server", async (mode) => {
+    const prev = process.env.SANDBOX_MODE;
+    process.env.SANDBOX_MODE = mode;
+    try {
+      const result = await extractDocumentBytes({ bytes: Buffer.from("%PDF-1.6"), mime: "application/pdf", userId });
+      expect(result).toEqual({
+        ok: false,
+        reason: "this file type can't be read safely without a container sandbox, and this server has none.",
+      });
+    } finally {
+      if (prev === undefined) delete process.env.SANDBOX_MODE;
+      else process.env.SANDBOX_MODE = prev;
+    }
+  });
+});

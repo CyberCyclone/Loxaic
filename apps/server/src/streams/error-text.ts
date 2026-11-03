@@ -43,6 +43,11 @@ export const INTERRUPTED_BY_RESTART = "The server restarted before this response
  * backend. Deliberately says nothing more: the real message is logged. */
 export const TURN_FAILED = "Something went wrong on the server while finishing this response.";
 
+/** A tool call's result when the call threw rather than failed, which is our
+ * server's fault, not the tool's. Says no more for the same reason: it reaches
+ * the card, the transcript and the model. */
+export const TOOL_FAILED = "This tool call failed on the server, so it has no result.";
+
 const backendErrors = new WeakSet();
 
 /**
@@ -72,7 +77,13 @@ export function isBackendError(err: unknown): boolean {
  * (the engine's vision hint).
  */
 export function turnErrorText(err: unknown, label: string, backendText?: string): string {
+  if (!isBackendError(err)) console.error(`${label}:`, err);
+  return shownTurnError(err, backendText);
+}
+
+/** `turnErrorText`'s answer without its log line, for a caller that rethrows
+ * to whatever logs it. */
+export function shownTurnError(err: unknown, backendText?: string): string {
   if (isBackendError(err)) return capErrorText(backendText ?? (err as Error).message) ?? TURN_FAILED;
-  console.error(`${label}:`, err);
   return TURN_FAILED;
 }

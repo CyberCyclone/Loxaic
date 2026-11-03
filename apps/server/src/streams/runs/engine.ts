@@ -75,8 +75,10 @@ import {
 import type { SubagentCall, SubagentOutcome, SubagentParent } from "./subagentRun.ts";
 import { turnDraftUsage, usageRecordValues } from "./usage-record.ts";
 import { recordRequestShape } from "./request-shape.ts";
+import { jsonbSafe } from "./jsonb-safe.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
+import { extractDocumentBytes } from "../../files/extract.ts";
 import { recordBeforeWrite, type CheckpointTurn } from "../../agent/checkpoints.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
 import { answerSkillCall, prepareRunSkills, type RunSkills } from "../../skills/session.ts";
@@ -111,7 +113,7 @@ import { loadRunLimits } from "../../conversations/run-limits.ts";
 import { checkinWithdrawn, StepGate } from "./step-gate.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
-import { markBackendErrors, turnErrorText } from "../error-text.ts";
+import { markBackendErrors, shownTurnError, TOOL_FAILED, turnErrorText } from "../error-text.ts";
 import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
 import { TodoStaleness } from "./todo-staleness.ts";
 import {
@@ -197,10 +199,12 @@ function canonicalJson(value: unknown): string {
 }
 
 export function toolCallsForPrompt(calls: { id: string; name: string; args: unknown }[]): ToolCall[] {
+  // jsonbSafe for the reason toolResultMessageForPrompt's is: the stored row
+  // went through it, so the live request must too.
   return calls.map((c) => ({
-    id: c.id,
+    id: jsonbSafe(c.id),
     type: "function" as const,
-    function: { name: c.name, arguments: canonicalJson(c.args ?? {}) },
+    function: { name: jsonbSafe(c.name), arguments: canonicalJson(jsonbSafe(c.args ?? {})) },
   }));
 }
 
@@ -212,16 +216,41 @@ export function assistantMessageForPrompt(text: string, calls: ToolCall[]): Chat
   // `content: "Running it.\n"` during the run and `content: "Running it."` on
   // the next one, breaking the prefix at that message and recording
   // reusable_tokens: 0 for the turn after it. Whitespace-only text was worse:
-  // live sent "\n" (truthy) where the replay sent null.
-  const content = text.trim();
+  // live sent "\n" (truthy) where the replay sent null. jsonbSafe because the
+  // stored text went through it: a NUL or half an emoji would differ too.
+  const content = jsonbSafe(text.trim());
   // Key order matters as well as content: prompt fingerprints hash each
   // message with JSON.stringify, so two objects that differ only in key order
   // hash differently.
   return { role: "assistant", content: content || null, ...(calls.length ? { tool_calls: calls } : {}) };
 }
 
+/**
+ * What a tool call that threw reads as, on its card and to the model.
+ * `RunSlotAbortedError` is a stop at the call's approval, before it ran. Any
+ * other throw after a stop came while the call was running, and it may already
+ * have changed the workspace, so it never says the call didn't run.
+ */
+function toolThrowText(err: unknown, stopped: boolean, label: string): string {
+  if (err instanceof RunSlotAbortedError) return STOPPED_BEFORE_RUN;
+  if (stopped) {
+    // An abort is the stop itself; anything else is worth a line.
+    if ((err as Error).name !== "AbortError") console.warn(`${label} after a stop:`, err);
+    return STOPPED_WHILE_RUNNING;
+  }
+  console.error(`${label}:`, err);
+  return TOOL_FAILED;
+}
+
 export function toolResultMessageForPrompt(callId: string, name: string | undefined, output: string): ChatMessage {
-  return { role: "tool", tool_call_id: callId, ...(name === undefined ? {} : { name }), content: output };
+  // The live request and the replay both pass through here, so the prefix
+  // stays the same whatever the tool produced.
+  return {
+    role: "tool",
+    tool_call_id: jsonbSafe(callId),
+    ...(name === undefined ? {} : { name: jsonbSafe(name) }),
+    content: jsonbSafe(output),
+  };
 }
 
 /**
@@ -590,6 +619,76 @@ export async function runToolLoop(ctx: {
   // back only while waiting on a human — see acquireRunSlot.
   let slot: RunSlot | null = null;
 
+  // Two messages persisted less than a millisecond apart both take
+  // Date.now() as their lamport, and loadHistory's ORDER BY lamport (then
+  // createdAt) breaks the tie arbitrarily rather than by insertion order.
+  // Not hypothetical: an iteration whose tool call does no real work (e.g.
+  // two todo_write calls back to back, as a mock scenario step can) reliably
+  // lands that iteration's tool-result message and the next iteration's
+  // assistant message in the same millisecond, and a swap there is a genuine
+  // prompt-prefix break on the conversation's very next turn. Scoped to this
+  // one run — only the two inserts below share this counter — so it changes
+  // nothing about the cross-device LWW ordering packages/sync relies on.
+  // Seeded from the user message rather than zero: with a zero seed the
+  // first insert was a bare Date.now(), unguarded against the user message
+  // that had just been written with one — the same tie, at the one
+  // boundary the counter did not cover.
+  let lastLamport = ctx.userLamport ?? 0;
+  const nextLamport = (): number => {
+    lastLamport = monotonicLamport(lastLamport);
+    return lastLamport;
+  };
+
+  let parentId = ctx.userMsgId;
+  // The assistant row a failure would leave saying "streaming" for good, and
+  // what it has streamed so far, which the person watched arrive and keeps.
+  let streamingMsgId: string | null = null;
+  let streamedSoFar = (): ContentBlock[] => [];
+  // A run that dies past the model's own failures has only the stream's end
+  // to say so, which is a toast for whoever is watching and nothing after a
+  // reload: the thread just stops. So it goes in the thread too.
+  const recordFailure = async (err: unknown): Promise<void> => {
+    const error = shownTurnError(err);
+    if (streamingMsgId) {
+      await db
+        .update(messages)
+        .set({ content: jsonbSafe(streamedSoFar()), status: "error", error })
+        .where(eq(messages.id, streamingMsgId));
+      producer.emit({ kind: "message.end", message_id: streamingMsgId, status: "error", error });
+      return;
+    }
+    // Its steps ended complete and stay that way, so the failure is a reply
+    // of its own, the same shape as a turn refused for being full.
+    const id = uuid();
+    const lamport = nextLamport();
+    await db.insert(messages).values({
+      id,
+      conversationId: convId,
+      parentId,
+      authorType: "assistant",
+      origin: "server",
+      model,
+      lamport,
+      content: [] as ContentBlock[],
+      status: "error",
+      error,
+      createdAt: new Date(),
+    });
+    producer.emit({ kind: "message.start", message_id: id, author_type: "assistant", parent_id: parentId, lamport, model });
+    producer.emit({ kind: "message.end", message_id: id, status: "error", error });
+  };
+  // A stop that broke something on its way out: the reply it cut short ends
+  // cancelled with what it had, as a stop mid-stream leaves it, never as an
+  // error, and nothing else is added to the thread.
+  const recordStop = async (): Promise<void> => {
+    if (!streamingMsgId) return;
+    await db
+      .update(messages)
+      .set({ content: jsonbSafe(streamedSoFar()), status: "cancelled" })
+      .where(eq(messages.id, streamingMsgId));
+    producer.emit({ kind: "message.end", message_id: streamingMsgId, status: "cancelled" });
+  };
+
   try {
     // One read for both: the iteration ceiling and the builtin allowlist live
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
@@ -727,25 +826,6 @@ export async function runToolLoop(ctx: {
     // the next request's size is that plus an estimate of what was appended.
     let lastPrompt: { tokens: number; completion: number; messages: number } | null = null;
 
-    // Two messages persisted less than a millisecond apart both take
-    // Date.now() as their lamport, and loadHistory's ORDER BY lamport (then
-    // createdAt) breaks the tie arbitrarily rather than by insertion order.
-    // Not hypothetical: an iteration whose tool call does no real work (e.g.
-    // two todo_write calls back to back, as a mock scenario step can) reliably
-    // lands that iteration's tool-result message and the next iteration's
-    // assistant message in the same millisecond, and a swap there is a genuine
-    // prompt-prefix break on the conversation's very next turn. Scoped to this
-    // one run — only the two inserts below share this counter — so it changes
-    // nothing about the cross-device LWW ordering packages/sync relies on.
-    // Seeded from the user message rather than zero: with a zero seed the
-    // first insert was a bare Date.now(), unguarded against the user message
-    // that had just been written with one — the same tie, at the one
-    // boundary the counter did not cover.
-    let lastLamport = ctx.userLamport ?? 0;
-    const nextLamport = (): number => {
-      lastLamport = monotonicLamport(lastLamport);
-      return lastLamport;
-    };
     // The stored row this run's next request ends on and has not answered:
     // the person's message until the first reply is written, then any nudge
     // the run writes after a reply. A compaction keeps it after the summary
@@ -831,7 +911,6 @@ export async function runToolLoop(ctx: {
       return;
     }
 
-    let parentId = ctx.userMsgId;
     // The end of the *current* step window, absolute rather than relative:
     // each "keep going" pushes it out by another `maxIterations`, so the
     // client can render "7/100" and then "104/200" without having to track
@@ -1086,6 +1165,7 @@ export async function runToolLoop(ctx: {
         status: "streaming",
         createdAt: new Date(),
       });
+      streamingMsgId = assistantMsgId;
       producer.emit({
         kind: "message.start",
         message_id: assistantMsgId,
@@ -1111,6 +1191,13 @@ export async function runToolLoop(ctx: {
       let text = "";
       let thinking = "";
       let toolCalls: ToolCall[] = [];
+      const streamedBlocks = (): ContentBlock[] => {
+        const out: ContentBlock[] = [];
+        if (thinking) out.push({ kind: "thinking", text: thinking });
+        if (text) out.push({ kind: "text", text });
+        return out;
+      };
+      streamedSoFar = streamedBlocks;
       let doneResult: CompletionResult | null = null;
 
       const breakdownMeta = {
@@ -1215,9 +1302,7 @@ export async function runToolLoop(ctx: {
         // phrasing, which is different for every runtime.
         const raw = (err as Error).message;
         const backendText = hadImages ? (visionErrorMessage(raw) ?? raw) : raw;
-        const blocks: ContentBlock[] = [];
-        if (thinking) blocks.push({ kind: "thinking", text: thinking });
-        if (text) blocks.push({ kind: "text", text });
+        const blocks = streamedBlocks();
         // Stored as well as emitted: the event reaches only the clients
         // watching right now, and a reload used to show a bare empty reply.
         // A cancel stores nothing — a user stop is not an error.
@@ -1229,7 +1314,7 @@ export async function runToolLoop(ctx: {
         const errorCode = !isAbort && isStreamErrorCode(code) ? code : undefined;
         await db
           .update(messages)
-          .set({ content: blocks, status, error: eventError ?? null, errorCode: errorCode ?? null })
+          .set({ content: jsonbSafe(blocks), status, error: eventError ?? null, errorCode: errorCode ?? null })
           .where(eq(messages.id, assistantMsgId))
           .catch(() => undefined);
         producer.emit({
@@ -1294,9 +1379,8 @@ export async function runToolLoop(ctx: {
       }
 
       // Persist the assistant turn as ordered blocks: thinking, prose, calls.
-      const blocks: ContentBlock[] = [];
-      if (thinking) blocks.push({ kind: "thinking", text: thinking });
-      if (text) blocks.push({ kind: "text", text });
+      const blocks = streamedBlocks();
+      streamedSoFar = () => blocks;
       for (const call of toolCalls) {
         blocks.push({
           kind: "tool_call",
@@ -1314,8 +1398,11 @@ export async function runToolLoop(ctx: {
       }
       await db
         .update(messages)
-        .set({ content: blocks.length ? blocks : [{ kind: "text", text: "" }], status: "complete" })
+        .set({ content: blocks.length ? jsonbSafe(blocks) : [{ kind: "text", text: "" }], status: "complete" })
         .where(eq(messages.id, assistantMsgId));
+      // From here a failure is a reply to this one, not beside it.
+      streamingMsgId = null;
+      parentId = assistantMsgId;
 
       /**
        * Ends the turn as a success, from whichever branch got there.
@@ -1421,7 +1508,6 @@ export async function runToolLoop(ctx: {
         toolCalls.map((c) => ({ id: c.id, name: c.function.name, args: safeParseArgs(c.function.arguments) })),
       );
       chatMessages.push(assistantMessageForPrompt(text, promptCalls));
-      parentId = assistantMsgId;
 
       if (answerNow) {
         // The request went out with `tool_choice: "none"` and the backend
@@ -1549,6 +1635,7 @@ export async function runToolLoop(ctx: {
         // sub-agent (or a chat run) that names it anyway falls through to the
         // unknown-tool answer below.
         if (subagents && call.function.name === SUBAGENT_TOOL_NAME && toolset.get(SUBAGENT_TOOL_NAME)) {
+          // Never throws: every call gets the result its tool_call needs.
           subagentOutcomes = await runSubagentGroup({
             calls: [...toolCalls.entries()]
               .filter(([, c]) => c.function.name === SUBAGENT_TOOL_NAME)
@@ -1570,16 +1657,19 @@ export async function runToolLoop(ctx: {
             },
           });
           const mine = subagentOutcomes.get(callIndex) ?? { output: SUBAGENT_NOT_RUN, ok: false };
+          // A child's report is a model's words: cleaned before the event, so
+          // the live card reads as the reload will.
+          const output = jsonbSafe(mine.output);
           producer.emit({
             kind: "tool.result",
             message_id: assistantMsgId,
             call_id: call.id,
             tool: call.function.name,
-            output: mine.output,
+            output,
             ok: mine.ok,
           });
-          resultBlocks.push({ kind: "tool_result", call_id: call.id, output: mine.output, ok: mine.ok });
-          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, mine.output));
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output, ok: mine.ok });
+          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
           continue;
         }
         let outcome: Awaited<ReturnType<typeof runOneToolCall>>;
@@ -1621,19 +1711,20 @@ export async function runToolLoop(ctx: {
             call,
           );
         } catch (err) {
-          if (!(err instanceof RunSlotAbortedError)) throw err;
-          // Stopped at this call's approval prompt: the approval handed the
-          // inference slot back, and re-entering the queue for an aborted run
-          // throws. Nothing ran for *this* call, so it is recorded exactly
-          // like a skipped one — which is what keeps the calls before it,
-          // which did run and did write, in the transcript and the prompt.
-          // Letting the throw escape the loop used to skip the insert below
-          // and discard those results: the model then had no record that a
-          // file it had written existed, and the user watched a result
-          // arrive live that was gone after a reload. The per-call check
-          // above skips the rest; the abort branch after the insert ends the
-          // turn.
-          const output = "Stopped by the user before this tool call ran.";
+          // A call that throws is a failed call, never a failed run: the card
+          // says so, the calls after it still run, and the model answers
+          // without this one. `executeTool` already turns a tool's own errors
+          // into a result, so what lands here is our server's own fault, and
+          // its message stays in the log (it can carry SQL).
+          //
+          // The other way here is a stop at this call's approval prompt: the
+          // approval handed the inference slot back, and re-entering the queue
+          // for an aborted run throws. Nothing ran for *this* call, so it is
+          // recorded exactly like a skipped one — which is what keeps the
+          // calls before it, which did run and did write, in the transcript
+          // and the prompt. The per-call check above skips the rest; the abort
+          // branch after the insert ends the turn.
+          const output = toolThrowText(err, isAborted(abort), `${call.function.name} failed in ${convId}`);
           producer.emit({
             kind: "tool.result",
             message_id: assistantMsgId,
@@ -1684,7 +1775,7 @@ export async function runToolLoop(ctx: {
         authorType: "tool",
         origin: "server",
         lamport: nextLamport(),
-        content: resultBlocks,
+        content: jsonbSafe(resultBlocks),
         status: "complete",
         createdAt: new Date(),
       });
@@ -1872,14 +1963,25 @@ export async function runToolLoop(ctx: {
       answerNow = true;
     }
   } catch (err) {
-    // The one error this function is allowed to expect. It means the user
-    // pressed stop while the run was waiting to get back into the queue after
-    // an approval, and the right response is the same one every other cancel
-    // gets. Anything else keeps propagating rather than being flattened into a
-    // cancelled turn that hides a real fault.
-    if (!(err instanceof RunSlotAbortedError)) throw err;
-    await producer.end("cancelled").catch(() => undefined);
-    return;
+    // A stop: `RunSlotAbortedError` (the user pressed stop while the run waited
+    // to get back into the queue after an approval), or whatever a stop broke
+    // on its way out, such as an aborted call. Both get the response every
+    // other cancel gets. Anything else keeps propagating rather than being
+    // flattened into a cancelled turn that hides a real fault.
+    if (err instanceof RunSlotAbortedError || isAborted(abort)) {
+      if (!(err instanceof RunSlotAbortedError) && (err as Error).name !== "AbortError") {
+        console.warn(`run in ${convId} stopped, and failed on the way out:`, err);
+      }
+      await recordStop().catch(() => undefined);
+      await producer.end("cancelled").catch(() => undefined);
+      return;
+    }
+    // If the database is what failed this can fail too, and the stream's end
+    // still reports the run.
+    await recordFailure(err).catch((recordErr: unknown) => {
+      console.error(`recording a failed run in ${convId} failed:`, recordErr);
+    });
+    throw err;
   } finally {
     // Before unregisterRun, so the next run in line starts against a registry
     // that no longer thinks this conversation is busy.
@@ -1960,12 +2062,13 @@ const SUBAGENT_NOT_RUN = "This sub-agent was not started.";
  *
  * Returns an outcome for **every** call it was given, by call index — a
  * refusal for one past the cap or with unusable arguments, the child's report
- * for one that ran. Never throws for a stop: `yieldWhile` re-enters the queue
+ * for one that ran. Never throws. A stop: `yieldWhile` re-enters the queue
  * after its work and throws for an aborted run, but by then every child has
  * ended and its outcome is in hand, so the throw is caught here and the caller
  * records what really happened. (The slot is not held after that throw, which
  * is the state the abort branch after the batch expects — the same one a stop
- * at an approval leaves.)
+ * at an approval leaves.) A fault fails only the calls it reached, so an
+ * outcome already settled keeps its own words.
  */
 async function runSubagentGroup(input: {
   calls: { index: number; call: ToolCall }[];
@@ -1974,34 +2077,50 @@ async function runSubagentGroup(input: {
   slot: RunSlot;
   parent: SubagentParent;
 }): Promise<Map<number, SubagentOutcome>> {
-  const { parseSubagentArgs, runSubagent } = await import("./subagentRun.ts");
+  const failed = (err: unknown): SubagentOutcome => ({
+    output: toolThrowText(err, input.parent.signal.aborted, `a sub-agent failed in ${input.parent.convId}`),
+    ok: false,
+  });
   const outcomes = new Map<number, SubagentOutcome>();
+  let loaded: typeof import("./subagentRun.ts");
+  try {
+    loaded = await import("./subagentRun.ts");
+  } catch (err) {
+    const outcome = failed(err);
+    for (const { index } of input.calls) outcomes.set(index, outcome);
+    return outcomes;
+  }
+  const { parseSubagentArgs, runSubagent } = loaded;
   const starting: { index: number; spec: SubagentCall }[] = [];
   for (const { index, call } of input.calls) {
     if (starting.length >= MAX_SUBAGENTS_PER_MESSAGE) {
       outcomes.set(index, { output: tooManySubagentsText(MAX_SUBAGENTS_PER_MESSAGE), ok: false });
       continue;
     }
-    const parsed = parseSubagentArgs(safeParseArgs(call.function.arguments));
-    if ("error" in parsed) {
-      outcomes.set(index, { output: parsed.error, ok: false });
-      continue;
+    try {
+      const parsed = parseSubagentArgs(safeParseArgs(call.function.arguments));
+      if ("error" in parsed) {
+        outcomes.set(index, { output: parsed.error, ok: false });
+        continue;
+      }
+      const chosen = subagentModelFor({
+        policy: input.subagents.policy,
+        parentModel: input.parentModel,
+        requested: parsed.model,
+        offered: input.subagents.offered,
+        routine: input.subagents.routine,
+      });
+      if ("error" in chosen) {
+        outcomes.set(index, { output: chosen.error, ok: false });
+        continue;
+      }
+      starting.push({
+        index,
+        spec: { callId: call.id, description: parsed.description, prompt: parsed.prompt, model: chosen.model },
+      });
+    } catch (err) {
+      outcomes.set(index, failed(err));
     }
-    const chosen = subagentModelFor({
-      policy: input.subagents.policy,
-      parentModel: input.parentModel,
-      requested: parsed.model,
-      offered: input.subagents.offered,
-      routine: input.subagents.routine,
-    });
-    if ("error" in chosen) {
-      outcomes.set(index, { output: chosen.error, ok: false });
-      continue;
-    }
-    starting.push({
-      index,
-      spec: { callId: call.id, description: parsed.description, prompt: parsed.prompt, model: chosen.model },
-    });
   }
   if (starting.length === 0) return outcomes;
 
@@ -2033,7 +2152,10 @@ async function runSubagentGroup(input: {
       settled.forEach((outcome, i) => outcomes.set(starting[i].index, outcome));
     });
   } catch (err) {
-    if (!(err instanceof RunSlotAbortedError)) throw err;
+    if (!(err instanceof RunSlotAbortedError)) {
+      const outcome = failed(err);
+      for (const { index } of starting) if (!outcomes.has(index)) outcomes.set(index, outcome);
+    }
   }
   return outcomes;
 }
@@ -2303,6 +2425,9 @@ async function runOneToolCall(
       ...(builtinName === "web_fetch" && getBrowserSettings().enabled
         ? { renderer: (url: URL, o: { screenshot: "required" | "best-effort"; maxTextChars: number }) => renderPage(ctx.convId, url, { ...o, signal: ctx.signal }) }
         : {}),
+      ...(builtinName === "web_fetch"
+        ? { readDocument: (bytes: Buffer, mime: string, signal?: AbortSignal) => extractDocumentBytes({ bytes, mime, userId, signal }) }
+        : {}),
     },
   );
   // A read inside a subdirectory with its own AGENTS.md brings that file
@@ -2345,6 +2470,9 @@ async function runOneToolCall(
       result.output += `\n${stored.note}`;
     }
   }
+  // Before the event, so the live card reads as the reload will.
+  result.output = jsonbSafe(result.output);
+  if (result.diff) result.diff = jsonbSafe(result.diff);
   producer.emit({
     kind: "tool.result",
     message_id: assistantMsgId,
@@ -2396,6 +2524,7 @@ type Gate =
   | { kind: "refused"; output: string; permission?: ToolPermission };
 
 const STOPPED_BEFORE_RUN = "Stopped by the user before this tool call ran.";
+const STOPPED_WHILE_RUNNING = "Stopped by the user while this tool call was running, so it may have done part of its work.";
 
 async function permissionGate(
   ctx: Parameters<typeof runOneToolCall>[0],
