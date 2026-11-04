@@ -41,8 +41,8 @@
     "expo-router": "~57.0.19",
     "expo-secure-store": "~57.0.3",
     "expo-updates": "~57.0.21",
-    "lucide-react-native": "^1.61.0",
-    "marked": "^18.1.1",
+    "lucide-react-native": "^1.66.0",
+    "marked": "^18.1.2",
     "react": "^19.2.3",
     "react-dom": "19.2.3",
     "react-native": "^0.86.3",
@@ -53,7 +53,7 @@
     "react-native-svg": "15.15.4",
     "react-native-web": "^0.21.0",
     "react-native-worklets": "0.10.1",
-    "uniwind": "^1.13.0"
+    "uniwind": "^1.13.1"
   },
   "devDependencies": {
     "@loxaic/agent": "workspace:*",

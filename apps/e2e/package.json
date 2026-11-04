@@ -28,7 +28,7 @@
     "@wdio/mocha-framework": "^9.32.0",
     "@wdio/spec-reporter": "^9.32.0",
     "@wdio/types": "^9.32.0",
-    "appium": "^3.8.0",
+    "appium": "^3.9.0",
     "expect-webdriverio": "^6.1.0",
     "tsx": "^4.23.15",
     "typescript": "^5.7.0",
