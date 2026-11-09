@@ -225,7 +225,9 @@ Hardware virtualisation (KVM) for this image in Settings → Container Images, o
           EXPO_PUBLIC_API_URL="http://10.0.2.2:$E2E_PORT" ./gradlew assembleRelease) || return $?
       fi
       if [ ! -d apps/e2e/.appium ]; then
-        (cd apps/e2e && APPIUM_HOME=./.appium npx appium driver install uiautomator2) || return $?
+        # Pinned with setup:appium in apps/e2e/package.json: an unpinned
+        # install takes the newest driver, which can need a newer Appium.
+        (cd apps/e2e && APPIUM_HOME=./.appium npx appium driver install --source=npm appium-uiautomator2-driver@8.7.0) || return $?
       fi
       cd apps/e2e && without_egress npx wdio run ./wdio.android.ts "$@"
       ;;

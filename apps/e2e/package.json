@@ -11,7 +11,7 @@
     "test:electron-dev": "wdio run ./wdio.electron-dev.ts",
     "test:ios": "wdio run ./wdio.ios.ts",
     "test:android": "wdio run ./wdio.android.ts",
-    "setup:appium": "APPIUM_HOME=./.appium appium driver install uiautomator2 && APPIUM_HOME=./.appium appium driver install xcuitest",
+    "setup:appium": "APPIUM_HOME=./.appium appium driver install --source=npm appium-uiautomator2-driver@8.7.0 && APPIUM_HOME=./.appium appium driver install --source=npm appium-xcuitest-driver@12.20.0",
     "standup": "tsx scripts/standup.ts",
     "teardown": "tsx scripts/teardown.ts",
     "typecheck": "tsc --noEmit"
