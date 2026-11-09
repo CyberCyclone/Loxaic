@@ -196,8 +196,8 @@ async function newestTyped(convId: string) {
     .where(and(eq(messages.conversationId, convId), eq(messages.authorType, "user"), isNull(messages.deletedAt)))
     .orderBy(desc(messages.lamport), desc(messages.createdAt))
     .limit(20);
-  // The newest user rows may be nudges the last run wrote (a check-in's
-  // "answer now", a compaction's "continue"); the message to answer again is
+  // The newest user rows may be notes the last run wrote (a progress review's,
+  // a compaction's "continue"); the message to answer again is
   // the newest one a person typed.
   return rows.find((r) => !isNudgeText(textOf(r.content as ContentBlock[])));
 }

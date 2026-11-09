@@ -15,8 +15,8 @@ The stream log, run registry and conversation authorization shared by every run 
 ## Run registry
 
 - Every starter claims the conversation before writing (`claimConversation`: busy check + `registerRun`, synchronously, no await between). A rewind holds a `rewind-<uuid>` claim. Both refuse with `ConversationBusyError` (409 `conversation_busy`).
-- Mutate run state only through the registry mutators (`setRunApproval`/`clearRunApproval`, `setRunCheckin`/`takeRunCheckin`/`clearRunCheckin`, `setRunQueuePosition`/`clearRunQueuePosition`, `seedRunLimits`/`setRunLimits`, `registerRun`/`unregisterRun`), never directly (e.g. `run.approvals.set`): they announce activity changes to watchers.
-- `runActivityOf` owns the activity vocabulary and precedence: check-in → approval → queued → running.
+- Mutate run state only through the registry mutators (`setRunApproval`/`clearRunApproval`, `setRunQueuePosition`/`clearRunQueuePosition`, `seedRunLimits`/`setRunLimits`, `registerRun`/`unregisterRun`), never directly (e.g. `run.approvals.set`): they announce activity changes to watchers.
+- `runActivityOf` owns the activity vocabulary and precedence: approval → queued → running.
 - A sub-agent counts as another conversation using a model only while running, under its parent's thread, never as the asking thread's own (`runsUsingModel`, `RunHandle.parentConversationId`; `recentUses`/`usesByThread` in `llama/`). Compare parent ids in SQL with `IS DISTINCT FROM`, never `<>` (null drops every row).
 
 ## Access (authz.ts)
@@ -38,7 +38,7 @@ The stream log, run registry and conversation authorization shared by every run 
 
 ## Stopping
 
-- `stream.stop` only aborts the run's signal. Every part of a run that can block (approval and check-in waits, the per-call loop, exec, fetch, queue waits) must honour it.
+- `stream.stop` only aborts the run's signal. Every part of a run that can block (approval waits, a paused progress review, the per-call loop, exec, fetch, queue waits) must honour it.
 - An abort listener added to an already-aborted signal never fires: re-check `signal.aborted` after every await that precedes adding the listener.
 - Treat a failure as a stop when `err.name === "AbortError" || signal.aborted` — a mid-stream Stop surfaces as `TypeError: terminated`. Never key on the name alone.
 - Always handle `runToolLoop`'s promise: `engine.ts` rethrows anything but a stop (`RunSlotAbortedError`, or any throw once the run's signal is aborted), and there is no `unhandledRejection` handler (the stream would stay "active" forever).
@@ -54,7 +54,7 @@ The stream log, run registry and conversation authorization shared by every run 
 
 ### Starters
 
-- A run reads its limits (`RunHandle.limits`, `StepGate`) every step, never from a value captured earlier; turning off what raised a parked check-in answers it (`checkinWithdrawn`). Only chat and agent threads have them (`loadRunLimits` checks the kind): a routine's run and every sub-agent stay bounded. Turning a limit off reaches only the sender's live run; turning one on reaches any.
+- A run reads its progress-review switch (`RunHandle.limits`) each time a review is due, never from a value captured earlier. Only chat and agent threads can turn it off (`loadRunLimits` checks the kind): a routine's run and every sub-agent are always reviewed. Turning it off reaches only the sender's live run; turning it on reaches any.
 - Chat and Agent share `runToolLoop`; `chatRun.ts`/`agentRun.ts` differ only in setup and system prompt. Chat always has manual-mode approval semantics. Chat, agent and retry all start through `startRunOnRow`.
 - Call `assertModelUsable` in every starter beside `assertAttachmentsOwned`, before any row is written — it makes the provider allowlist a spending limit.
 - `recordModelUse` only on a send, keyed to the sender; never for compaction or the literal `"default"`. One SQL statement, awaited, skipped when unchanged.
@@ -70,7 +70,16 @@ The stream log, run registry and conversation authorization shared by every run 
 - One `usage_records` row per completion, written through `usageRecordValues` (rounds fractional llama.cpp timings for integer columns). Inserts are best-effort and never fail a turn or a summary.
 - `cached_tokens` null means "backend doesn't report"; never write `?? 0` on that path.
 
-### Waits: approvals and check-ins
+### Progress review (`runs/progress-review.ts`)
+
+- Nothing but the review bounds a run: there is no step limit and no check-in, and a review never asks a person.
+- A review's verdict enters the run only as a persisted user row (`progressNoteText`, null author), pushed live and replayed byte for byte; never interpolate anything into it the replay cannot reproduce.
+- A review request never carries `conversationId` (it must not restore or overwrite the conversation's saved KV cache) and is shown a bounded digest, never the run's prompt.
+- Take a spare slot only through `tryAcquireRunSlot`, which never queues; without one, review in the run's own slot at a step boundary.
+- A review that interrupts a reply aborts only that request (its own controller beside `abort`): the partial row ends `cancelled`, which no replay sends.
+- Count working time as wall clock less `RunSlot.parkedMs()`.
+
+### Waits: approvals
 
 - A standing grant comes only from `always: true` and only from the run's sender (`always && answeredBy === userId`); an editor's "always" approves once.
 - `approval.request` carries the run's `mode` and `granter_user_id`; clients must not infer either.
@@ -88,7 +97,7 @@ The stream log, run registry and conversation authorization shared by every run 
 
 - Offer `subagent` on the agent surface and in routines only; never in chat or to a child.
 - A child is its own conversation row (`kind: "subagent"`), never rows in the parent's. It shares only, via `role`: the parent's sandbox (`workspaceConvId`), the parent's MCP state, the parent run's sender as `userId`, and the parent's abort signal.
-- A child: no plan tools or nudge (`subagentSystemPrompt`, never `planningSystemPrompt`), no step check-in (answers now), no request shape, no after-turn compaction, never extends a context stage.
+- A child: no plan tools or nudge (`subagentSystemPrompt`, never `planningSystemPrompt`), told to answer on any progress review but `progressing`, no request shape, no after-turn compaction, never extends a context stage.
 
 ### Tests
 

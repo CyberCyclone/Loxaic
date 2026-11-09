@@ -1,14 +1,7 @@
-import type {
-  CheckinReason,
-  PermissionCheckNote,
-  PermissionMode,
-  StepsDecision,
-  TimeoutBasis,
-  WaitDeadlineFields,
-} from '@loxaic/api-client';
+import type { PermissionCheckNote, PermissionMode, TimeoutBasis, WaitDeadlineFields } from '@loxaic/api-client';
 
 /**
- * When a parked run stops waiting, on *this device's* clock.
+ * When a parked run stops waiting for an approval, on *this device's* clock.
  *
  * The server stamps `expires_at` on its own clock. A phone a minute fast would
  * show a minute too few if it counted down to that directly, so the deadline
@@ -21,22 +14,6 @@ export interface WaitDeadline {
   deadlineAt: number;
   timeoutMs: number;
   basis?: TimeoutBasis;
-}
-
-export interface PendingCheckin {
-  n: number;
-  max: number;
-  /** The step limit is off for this conversation, so `max` is no limit. */
-  unlimited?: true;
-  reason: CheckinReason;
-  pattern?: { tool: string }[];
-  deadline?: WaitDeadline;
-  /** What an unanswered check-in will do, and where it is on the ladder. */
-  onTimeout?: StepsDecision;
-  unattended?: number;
-  autoContinues?: number;
-  /** The run that asked. Absent from a caller that does not know it. */
-  streamId?: string;
 }
 
 export interface PendingApproval {
@@ -66,41 +43,11 @@ export function localDeadline(src: WaitDeadlineFields, now: number, serverNow?: 
   return { deadlineAt, timeoutMs: src.timeout_ms, ...(src.timeout_basis ? { basis: src.timeout_basis } : {}) };
 }
 
-export function toPendingCheckin(
-  src: WaitDeadlineFields & {
-    n: number;
-    max: number;
-    unlimited?: true;
-    reason: CheckinReason;
-    pattern?: { tool: string }[];
-    on_timeout?: StepsDecision;
-    unattended?: number;
-    auto_continues?: number;
-  },
-  now: number,
-  serverNow?: number,
-  streamId?: string,
-): PendingCheckin {
-  const deadline = localDeadline(src, now, serverNow);
-  return {
-    n: src.n,
-    max: src.max,
-    ...(src.unlimited ? { unlimited: true as const } : {}),
-    reason: src.reason,
-    ...(src.pattern ? { pattern: src.pattern } : {}),
-    ...(deadline ? { deadline } : {}),
-    ...(src.on_timeout ? { onTimeout: src.on_timeout } : {}),
-    ...(src.unattended != null ? { unattended: src.unattended } : {}),
-    ...(src.auto_continues != null ? { autoContinues: src.auto_continues } : {}),
-    ...(streamId ? { streamId } : {}),
-  };
-}
-
 /**
  * Which question a prompt on screen is, as a React `key`. The permission bar
- * and the check-in banner dismiss a phone's keyboard when they mount, and a
- * prop change is not a mount: switching between two threads that are both
- * waiting — or from a sub-agent's approval to the run's own — kept the same
+ * dismisses a phone's keyboard when it mounts, and a prop change is not a
+ * mount: switching between two threads that are both waiting — or from a
+ * sub-agent's approval to the run's own — kept the same
  * instance with new props, and a keyboard left up stayed over the new
  * question's buttons. A key per question remounts it. A resync of the same
  * question keeps the key, so it does not take the keyboard from someone
@@ -108,10 +55,6 @@ export function toPendingCheckin(
  */
 export function approvalKey(pending: PendingApproval): string {
   return `${pending.streamId ?? ''}:${pending.callId}`;
-}
-
-export function checkinKey(pending: PendingCheckin): string {
-  return `${pending.streamId ?? ''}:${String(pending.n)}`;
 }
 
 export function toPendingApproval(

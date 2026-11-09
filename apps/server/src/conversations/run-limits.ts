@@ -6,51 +6,43 @@ import { announceConversationEvent } from "../streams/watchers.ts";
 
 /** Choices as the columns they set, leaving out any not made. */
 export function runLimitColumns(choices: RunLimitChoices | undefined): Partial<RunLimits> {
-  return {
-    ...(choices?.step_limit_off !== undefined ? { stepLimitOff: choices.step_limit_off } : {}),
-    ...(choices?.loop_check_off !== undefined ? { loopCheckOff: choices.loop_check_off } : {}),
-  };
+  return choices?.progress_review_off !== undefined ? { progressReviewOff: choices.progress_review_off } : {};
 }
 
-/** A conversation's limits as a run starts. An unreadable row means every limit
- * on: a limit is only ever off because someone said so. Only a chat or an agent
- * thread has any to turn off, whatever its columns say: a routine runs
- * unattended and a sub-agent asks nobody, so each stays bounded. */
+/** A conversation's switches as a run starts. An unreadable row means the
+ * review on: it is only ever off because someone said so. Only a chat or an
+ * agent thread can switch it off, whatever its column says: a routine runs
+ * unattended and a sub-agent's parent waits on it, so each is always reviewed. */
 export async function loadRunLimits(conversationId: string): Promise<RunLimits> {
   try {
     const row = await db.query.conversations.findFirst({
       where: eq(conversations.id, conversationId),
-      columns: { kind: true, stepLimitOff: true, loopCheckOff: true },
+      columns: { kind: true, progressReviewOff: true },
     });
     if (row?.kind !== "chat" && row?.kind !== "agent") return LIMITS_ON;
-    return { stepLimitOff: row.stepLimitOff, loopCheckOff: row.loopCheckOff };
+    return { progressReviewOff: row.progressReviewOff };
   } catch {
     return LIMITS_ON;
   }
 }
 
 /**
- * A change of the stored limits, as it reaches everything following the
- * conversation: its live run, and the owner's other devices. Turning a limit
- * off answers a parked check-in as `userId`, so only the run's sender switches
- * one off mid-run (anyone else's applies from the next run); turning one back
- * on is a brake, and reaches the run whoever sent it. Its sub-agents are not
- * touched: they run bounded whatever their parent's switches say.
+ * A change of the stored switch, as it reaches everything following the
+ * conversation: its live run, and the owner's other devices. Only the run's
+ * sender switches the review off mid-run (anyone else's applies from the next
+ * run); switching it back on reaches the run whoever sent it. Its sub-agents
+ * are not touched: they are reviewed whatever their parent's switch says.
  */
 export function applyRunLimits(userId: string, conversationId: string, limits: RunLimits): void {
   const run = getRunByConversation(conversationId);
   if (run) {
     const current = run.limits ?? LIMITS_ON;
-    const next = run.userId === userId ? limits : {
-      stepLimitOff: current.stepLimitOff && limits.stepLimitOff,
-      loopCheckOff: current.loopCheckOff && limits.loopCheckOff,
-    };
-    if (next.stepLimitOff !== current.stepLimitOff || next.loopCheckOff !== current.loopCheckOff) setRunLimits(run, next, userId);
+    const next: RunLimits = run.userId === userId ? limits : { progressReviewOff: current.progressReviewOff && limits.progressReviewOff };
+    if (next.progressReviewOff !== current.progressReviewOff) setRunLimits(run, next);
   }
   announceConversationEvent({
     type: "conversation.limits",
     conversation_id: conversationId,
-    step_limit_off: limits.stepLimitOff,
-    loop_check_off: limits.loopCheckOff,
+    progress_review_off: limits.progressReviewOff,
   });
 }

@@ -5,9 +5,9 @@ import { VStack } from '@/components/ui/vstack';
 import type { RunLimitSwitches } from '@/hooks/useRunLimits';
 
 /**
- * This conversation's step limit and loop check, a switch each. In the `+` menu
- * on every platform, and the menu stays open on a press: what a switch did is
- * written on its row.
+ * This conversation's progress review, as a switch. In the `+` menu on every
+ * platform, and the menu stays open on a press: what the switch did is written
+ * on its row.
  */
 export function RunLimitRows({ limits }: { limits: RunLimitSwitches }) {
   return (

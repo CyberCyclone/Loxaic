@@ -343,7 +343,6 @@ export function snapshotMessageToMessage(
     compaction: role === 'summary' ? sm.compaction : undefined,
     attachments: role === 'user' ? sm.attachments : undefined,
     ...('author_user_id' in sm ? { authorUserId: sm.author_user_id } : {}),
-    ...(sm.checkin_decision ? { checkinDecision: sm.checkin_decision } : {}),
     ...(role === 'user' && sm.instructions_update ? { instructionsUpdate: sm.instructions_update } : {}),
     ...(role === 'user' && sm.skill ? { skill: sm.skill } : {}),
     ...(role === 'user' && sm.skills_update ? { skillsUpdate: sm.skills_update } : {}),
@@ -429,22 +428,6 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
           ...('author_user_id' in event ? { authorUserId: event.author_user_id } : {}),
         },
       ];
-    }
-    case 'steps.decision': {
-      // Mirrors the server's fold: a check-in nobody answered is noted on the
-      // assistant turn it followed, so the transcript can say the run kept
-      // going on its own. A person's decision needs no note.
-      if (event.by !== 'timeout') return msgs;
-      let idx = -1;
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === 'assistant') {
-          idx = i;
-          break;
-        }
-      }
-      if (idx < 0) return msgs;
-      const { kind: _kind, ...note } = event;
-      return msgs.map((m, i) => (i === idx ? { ...m, checkinDecision: note } : m));
     }
     case 'text.delta':
       return msgs.map((m) => (m.id === event.message_id ? { ...m, text: m.text + event.text } : m));

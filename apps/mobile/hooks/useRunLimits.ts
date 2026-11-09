@@ -72,8 +72,7 @@ export function useRunLimits(
         if (carried && !sameLimits(stored, carried)) {
           try {
             const updated = await send(() => updateConversation(conversationId, {
-              step_limit_off: carried.stepLimitOff,
-              loop_check_off: carried.loopCheckOff,
+              progress_review_off: carried.progressReviewOff,
             }));
             if (!cancelled()) setLimits(limitsOf(updated));
           } catch {
@@ -104,7 +103,8 @@ export function useRunLimits(
       limitsRef.current = next;
       setLimits(next);
       if (toggleTarget(conversationId) === 'pending' || conversationId === null) return;
-      send(() => updateConversation(conversationId, key === 'stepLimitOff' ? { step_limit_off: !on } : { loop_check_off: !on })).catch(() => {
+      // `progressReviewOff` is the only key there is.
+      send(() => updateConversation(conversationId, { progress_review_off: next.progressReviewOff })).catch(() => {
         // Only undo this toggle if nothing has changed since.
         setLimits((cur) => (cur === next ? before : cur));
         showToast('Could not update this conversation');

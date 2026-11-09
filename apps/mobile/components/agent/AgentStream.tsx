@@ -1,4 +1,4 @@
-import type { PromptCacheStatus, PromptStats } from '@loxaic/api-client';
+import type { PromptCacheStatus, PromptStats, ReviewMode } from '@loxaic/api-client';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Box } from '@/components/ui/box';
@@ -8,10 +8,10 @@ import { RunHeader } from './RunHeader';
 import { ModeSwitch } from './ModeSwitch';
 import { PlanningBanner } from './PlanningBanner';
 import { PermissionBar } from './PermissionBar';
-import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
+import { ReviewStatus } from '@/components/chat/ReviewStatus';
 import type { Conversation, AgentMode } from '@/lib/types';
-import type { RunState, PendingApproval, PendingCheckin } from '@/hooks/useAgentSession';
-import { approvalKey, checkinKey } from '@/lib/pendingWaits';
+import type { RunState, PendingApproval } from '@/hooks/useAgentSession';
+import { approvalKey } from '@/lib/pendingWaits';
 
 interface AgentStreamProps {
   run: Conversation | null;
@@ -20,7 +20,7 @@ interface AgentStreamProps {
   /** Choosing the mode (#266) — the control moved from the composer's chip
    * row into the header (and this screen's empty state). */
   onModeChange: (mode: AgentMode) => void;
-  iteration: { n: number; max: number; unlimited?: true } | null;
+  iteration: { n: number } | null;
   loadingModel?: boolean;
   promptStats?: PromptStats | null;
   queuePosition?: number | null;
@@ -29,7 +29,8 @@ interface AgentStreamProps {
   /** Set when the approval shown is a sub-agent's rather than the run's own:
    * its description, so the bar says who is asking. */
   approvalSource?: string;
-  pendingCheckin: PendingCheckin | null;
+  /** A progress review of the run under way, and how; null when none is. */
+  reviewing?: ReviewMode | null;
   /** Scroll-back through older history — see MessageList. */
   history?: MessageHistory | null;
   /** The latest step of a context-stage switch in this run. */
@@ -42,9 +43,6 @@ interface AgentStreamProps {
   /** "Allow always" on the bar (#266) — see PermissionBar. */
   onAllowAlways: () => void;
   onDeny: () => void;
-  onCheckinContinue: () => void;
-  onCheckinAnswer: () => void;
-  onCheckinStop: () => void;
 }
 
 export function AgentStream({
@@ -59,7 +57,7 @@ export function AgentStream({
   responseStartedAt,
   pendingApproval,
   approvalSource,
-  pendingCheckin,
+  reviewing = null,
   history,
   stageCard,
   promptCache,
@@ -67,9 +65,6 @@ export function AgentStream({
   onAllow,
   onAllowAlways,
   onDeny,
-  onCheckinContinue,
-  onCheckinAnswer,
-  onCheckinStop,
 }: AgentStreamProps) {
   if (!run) {
     return (
@@ -129,19 +124,7 @@ export function AgentStream({
           onDeny={onDeny}
         />
       )}
-      {/* Never both: a run parked on an approval is not also parked on a
-          check-in, and the approval is the more specific question. Both take
-          layout space above the composer rather than covering the list — the
-          transcript is what either decision is made from. */}
-      {!pendingApproval && pendingCheckin && (
-        <StepCheckInBanner
-          key={checkinKey(pendingCheckin)}
-          {...pendingCheckin}
-          onContinue={onCheckinContinue}
-          onAnswer={onCheckinAnswer}
-          onStop={onCheckinStop}
-        />
-      )}
+      <ReviewStatus mode={reviewing} />
     </VStack>
   );
 }

@@ -32,11 +32,11 @@ describe("foldSnapshot drops the queue position once the run moves on", () => {
 
   it("clears it on a delta, for a run re-queued after an approval", () => {
     const snapshot = broker.foldSnapshot([
-      rec(1, { kind: "iteration", n: 1, max: 20 }),
+      rec(1, { kind: "iteration", n: 1 }),
       rec(2, { kind: "run.queued", position: 1 }),
       rec(3, { kind: "text.delta", message_id: "m1", text: "hi" }),
     ]);
     expect(snapshot.queued).toBeUndefined();
-    expect(snapshot.iteration).toEqual({ n: 1, max: 20 });
+    expect(snapshot.iteration).toEqual({ n: 1 });
   });
 });

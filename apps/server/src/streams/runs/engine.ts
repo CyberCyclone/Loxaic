@@ -2,25 +2,19 @@ import { v4 as uuid } from "uuid";
 import { and, db, eq, gt, isNull } from "@loxaic/db";
 import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
 import {
-  CHECKIN_ANSWER_NUDGE,
   PLAN_REQUIRED_NUDGE,
-  DEFAULT_CHECKIN_AUTO_CONTINUES,
-  DEFAULT_LOOP_SENSITIVITY,
   DEFAULT_PROVIDER_ID,
   type PromptProgress,
   type PromptStats,
   type StreamEventKind,
-  isLoopSensitivity,
+  progressNoteText,
   sanitizeFilename,
   isStreamErrorCode,
   type AttachmentRef,
-  type CheckinReason,
   type ContentBlock,
   type ContextBreakdown,
   LIMITS_ON,
-  type LoopSensitivity,
   type RunLimits,
-  type StepsDecision,
   type TimeoutBasis,
   type TurnUsage,
   DEFAULT_THINKING_LEVEL,
@@ -60,7 +54,7 @@ import {
   type ContextTally,
 } from "../../inference/context.ts";
 import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
-import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
+import { fingerprintPrompt, measureReuse, recordPrompt, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ResolvedTool, ToolName } from "@loxaic/agent";
 import { HANDOVER_TOOL_NAMES, SKILL_TOOL_NAME, SUBAGENT_TOOL_NAME } from "@loxaic/agent";
 import {
@@ -108,47 +102,18 @@ import { countShownScreenshots, screenshotMessage, screenshotTurnsOf, SCREENSHOT
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
-import { clearRunApproval, clearRunCheckin, clearRunQueuePosition, getRun, onRunLimitsChange, onRunModeChange, seedRunLimits, setRunApproval, setRunCheckin, setRunQueuePosition, takeRunCheckin, unregisterRun } from "../registry.ts";
+import { clearRunApproval, clearRunQueuePosition, getRun, onRunModeChange, seedRunLimits, setRunApproval, setRunQueuePosition, unregisterRun } from "../registry.ts";
 import { loadRunLimits } from "../../conversations/run-limits.ts";
-import { checkinWithdrawn, StepGate } from "./step-gate.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
 import { markBackendErrors, shownTurnError, TOOL_FAILED, turnErrorText } from "../error-text.ts";
-import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
+import { ProgressReviewer, resolveReviewPrefs, type DigestStep, type ReviewDecision, type ReviewPrefs } from "./progress-review.ts";
 import { TodoStaleness } from "./todo-staleness.ts";
-import {
-  clampAutoContinues,
-  clampWaitTimeoutMs,
-  effectiveTimeoutMs,
-  serverDefaultTimeoutMs,
-  unattendedDecision,
-} from "./timeouts.ts";
+import { clampWaitTimeoutMs, effectiveTimeoutMs, serverDefaultTimeoutMs } from "./timeouts.ts";
 
-/**
- * Tool round-trips one user message may take **between check-ins**, when the
- * user has expressed no preference.
- *
- * This is a cadence, not a ceiling. It used to be one: the loop stopped dead
- * at 20 and ended the stream with an error nothing on the client rendered, so
- * a run that was working perfectly well simply went red with no reason given
- * (#157). Twenty is also far too few — a planning run reading its way around a
- * repository spends that in a couple of minutes on a local model, and being
- * cut off there is not a safety property, just an interruption.
- *
- * So the loop now pauses at the window's edge and *asks*, handing its
- * inference slot back exactly as a tool approval does. 100 is roughly a
- * quarter of an hour of real tool work — long enough that an ordinary task
- * never sees it, short enough that a genuinely confused model does not run
- * unattended all afternoon. Loop detection asks sooner when the run is
- * repeating itself, which is the case the old ceiling was really standing in
- * for.
- */
-export const DEFAULT_MAX_ITERATIONS = 100;
-export const MIN_MAX_ITERATIONS = 1;
-export const MAX_MAX_ITERATIONS = 500;
-// What an unanswered wait does, and how long it lasts, live in timeouts.ts —
-// the check-in ladder and the adaptive window are pure functions there, and
-// the per-user choices come from `loadRunPrefs` below.
+// How long an approval waits, and the adaptive window, live in timeouts.ts;
+// when a run is reviewed, and what a review does, in progress-review.ts. The
+// per-user choices for both come from `loadRunPrefs` below.
 
 /**
  * The next lamport value a run's own messages should take, given the last one
@@ -254,77 +219,51 @@ export function toolResultMessageForPrompt(callId: string, name: string | undefi
 }
 
 /**
- * The `user_prefs` fields a run needs up front, in one read.
+ * How long this run waits for a person at a tool approval.
  *
- * `maxIterations` is clamped on read as well as on write: the column is plain
- * data, and a value that arrived any other way (a migration, a hand-edited
- * row, a future admin tool) must not be able to remove the only brake auto
- * mode has. A failed lookup falls back to the default, never to "unlimited".
- * The one way past it is a conversation's owner saying so (`RunLimits`).
- */
-export function clampMaxIterations(value: number): number {
-  return Math.min(MAX_MAX_ITERATIONS, Math.max(MIN_MAX_ITERATIONS, value));
-}
-
-/**
- * How long this run waits for a person, and what it does when nobody comes.
- *
- * The two windows are `null` when the user has not chosen one, and resolved
- * against the server default at the moment of the wait — not here — so an
- * operator's `APPROVAL_TIMEOUT_MS` read at call time keeps working for tests
- * and deployments alike.
+ * The window is `null` when the user has not chosen one, and resolved against
+ * the server default at the moment of the wait — not here — so an operator's
+ * `APPROVAL_TIMEOUT_MS` read at call time keeps working for tests and
+ * deployments alike.
  */
 export interface RunWaitPrefs {
-  checkinTimeoutMs: number | null;
   approvalTimeoutMs: number | null;
   adaptive: boolean;
-  autoContinues: number;
-  loopSensitivity: LoopSensitivity;
 }
 
+/** The `user_prefs` fields a run needs up front, in one read. */
 async function loadRunPrefs(
   userId: string,
-): Promise<{ maxIterations: number; allowlist: Set<string>; waits: RunWaitPrefs }> {
+): Promise<{ allowlist: Set<string>; waits: RunWaitPrefs; review: ReviewPrefs }> {
   try {
     const row = await db.query.userPrefs.findFirst({
       where: eq(userPrefs.userId, userId),
       columns: {
-        maxIterations: true,
         toolAllowlist: true,
-        checkinTimeoutMs: true,
         approvalTimeoutMs: true,
         adaptiveTimeout: true,
-        checkinAutoContinues: true,
-        loopSensitivity: true,
+        progressReview: true,
+        progressCheckMs: true,
+        progressCheckSteps: true,
+        progressReviewPrompt: true,
       },
     });
     return {
-      maxIterations: clampMaxIterations(row?.maxIterations ?? DEFAULT_MAX_ITERATIONS),
       allowlist: new Set(Array.isArray(row?.toolAllowlist) ? row.toolAllowlist.map(String) : []),
       waits: {
-        checkinTimeoutMs: clampWaitTimeoutMs(row?.checkinTimeoutMs),
         approvalTimeoutMs: clampWaitTimeoutMs(row?.approvalTimeoutMs),
         adaptive: row?.adaptiveTimeout ?? true,
-        autoContinues: clampAutoContinues(row?.checkinAutoContinues) ?? DEFAULT_CHECKIN_AUTO_CONTINUES,
-        loopSensitivity: isLoopSensitivity(row?.loopSensitivity) ? row.loopSensitivity : DEFAULT_LOOP_SENSITIVITY,
       },
+      review: resolveReviewPrefs(row),
     };
   } catch {
-    // Every half fails safe: the default ceiling rather than "unlimited", and
-    // an empty allowlist, which means every write tool asks rather than none.
-    // And **no** auto-continues: a run whose preferences could not be read
-    // must not be granted unattended work windows on a guess — it answers on
-    // the first unanswered check-in, as it always used to.
+    // Every part fails safe: an empty allowlist, which means every write tool
+    // asks rather than none, and the review on at its defaults — a run whose
+    // preferences could not be read is not left unwatched on a guess.
     return {
-      maxIterations: DEFAULT_MAX_ITERATIONS,
       allowlist: new Set(),
-      waits: {
-        checkinTimeoutMs: null,
-        approvalTimeoutMs: null,
-        adaptive: true,
-        autoContinues: 0,
-        loopSensitivity: DEFAULT_LOOP_SENSITIVITY,
-      },
+      waits: { approvalTimeoutMs: null, adaptive: true },
+      review: resolveReviewPrefs(null),
     };
   }
 }
@@ -576,8 +515,8 @@ export async function runToolLoop(ctx: {
    *   that conversation's kind and switches, not its own row's;
    * - it is never offered the sub-agent tool (one level deep) or the plan and
    *   questions tools, and a planning one is not nudged to hand over;
-   * - a step check-in is not asked: it wraps up, since there is nobody to ask
-   *   and its parent is parked waiting on it;
+   * - a progress review that finds it anything but progressing has it
+   *   answer at once, since its parent is parked waiting on it;
    * - it leaves no request shape and starts no compaction or context
    *   extension after its turn — it is one run long. Filling up inside that
    *   run, it compacts between its own requests like any run, but never
@@ -618,6 +557,9 @@ export async function runToolLoop(ctx: {
   // Held from just before the first model call until the run ends, and handed
   // back only while waiting on a human — see acquireRunSlot.
   let slot: RunSlot | null = null;
+  // Reviews this run's progress every so often (progress-review.ts). Out here
+  // so the `finally` can drop a review still running beside it.
+  let reviewer: ProgressReviewer | null = null;
 
   // Two messages persisted less than a millisecond apart both take
   // Date.now() as their lamport, and loadHistory's ORDER BY lamport (then
@@ -690,10 +632,10 @@ export async function runToolLoop(ctx: {
   };
 
   try {
-    // One read for both: the iteration ceiling and the builtin allowlist live
-    // in the same `user_prefs` row, and buildToolset would otherwise fetch it
+    // One read for all of them: the review settings and the builtin allowlist
+    // live in the same `user_prefs` row, and buildToolset would otherwise fetch it
     // again on the next line.
-    const { maxIterations, allowlist, waits } = await loadRunPrefs(userId);
+    const { allowlist, waits, review: reviewPrefs } = await loadRunPrefs(userId);
     // A sub-agent is seeded with every limit on already. Re-read after the
     // await: the run may have been stopped meanwhile.
     const startingLimits = await loadRunLimits(convId);
@@ -853,12 +795,11 @@ export async function runToolLoop(ctx: {
     // inference/scheduler.ts.
     //
     // The trade-off, stated plainly: the slot is held across everything
-    // *between* the model calls too — every sandboxed `bash`, up to
-    // max_iterations of them — and is only handed back while a human is
-    // asked for approval. At concurrency 1 (LM Studio, llama.cpp without
-    // --parallel: the common case) one auto-mode run can therefore hold a
-    // shared deployment for the length of its tool work with the backend
-    // idle. Yielding around tool execution would not recover that for free:
+    // *between* the model calls too — every sandboxed `bash` — and is only
+    // handed back while a human is asked for approval. At concurrency 1 (LM
+    // Studio, llama.cpp without --parallel: the common case) one auto-mode
+    // run can therefore hold a shared deployment for the length of its tool
+    // work with the backend idle. Yielding around tool execution would not recover that for free:
     // another run admitted in the gap evicts the prefix, and this run then
     // pays a full re-evaluation when it comes back, which is the cost the
     // queue exists to avoid. Fairness beyond FIFO is a follow-up.
@@ -911,34 +852,74 @@ export async function runToolLoop(ctx: {
       return;
     }
 
-    // The end of the *current* step window, absolute rather than relative:
-    // each "keep going" pushes it out by another `maxIterations`, so the
-    // client can render "7/100" and then "104/200" without having to track
-    // how many windows have been granted.
-    let budgetEnd = maxIterations;
-    const gate = new StepGate(new LoopDetector(loopDetectorOptions(waits.loopSensitivity)), maxIterations);
+    // Working time is wall clock from here, less every wait out of the slot
+    // (approvals, sub-agents, the queue back in): what the review counts.
+    const workStartedAt = Date.now();
+    const heldSlot = slot;
+    // The task, as the reviewer is told it: the newest thing a person (or, for
+    // a sub-agent, its parent) asked.
+    const lastAsk = [...history.messages].reverse().find((m) => m.role === "user");
+    reviewer = new ProgressReviewer({
+      prefs: reviewPrefs,
+      subagent: ctx.role !== undefined,
+      task: lastAsk ? textOfContent(lastAsk.content) : "",
+      model,
+      providerId,
+      // As little thinking as the model allows: a verdict, not a project.
+      thinking: thinkingFields(thinkingInfo?.thinking, "None"),
+      runSignal: abort.signal,
+      workedMs: () => Date.now() - workStartedAt - heldSlot.parkedMs(),
+      switchedOff: () => liveLimits().progressReviewOff,
+      emit: (event) => {
+        producer.emit(event);
+      },
+    });
     // Whether the todo list has gone stale — see todo-staleness.ts. Seeded from
     // the replay, so a list written in an earlier turn counts, and seeded again
     // when the run compacts: a list now only in the summary is not reminded about.
     let todoStaleness = TodoStaleness.fromHistory(history.messages);
-    // Iteration key -> the calls that produced it, so a loop check-in can name
-    // what is repeating. Bounded: only the last few keys can ever be part of a
-    // hit, and a 500-step run must not accumulate every argument string it saw.
-    const recentCalls = new Map<string, string[]>();
-    // Set once the user asks for a final answer: the next request goes out
-    // with `tool_choice: "none"` and the loop ends after it either way.
+    // Set once a progress review asks for a final answer: the next request
+    // goes out with `tool_choice: "none"` and the loop ends after it either way.
     let answerNow = false;
     // Planning mode ends every turn in a plan or questions (#199). A model that
     // answers in prose anyway is asked once, and that one follow-up request is
     // sent with `tool_choice: "required"`; prose a second time ends the turn.
     let planNudged = false;
     let requireTool = false;
+    // A progress review's verdict, written into the run as a user row: the
+    // next request reads it, and so does every replay (it is persisted for
+    // the reason the plan nudge is — the prefix has to replay byte for
+    // byte). Null author: nobody typed it. The caller sets `answerNow` for an
+    // "answer", which ends the run after one more request, made without tools.
+    const writeProgressNote = async (decision: ReviewDecision, after: string): Promise<void> => {
+      const text = progressNoteText(decision.action === "answer" ? "answer" : "steer", decision.reason);
+      const id = uuid();
+      const lamport = nextLamport();
+      await db.insert(messages).values({
+        id,
+        conversationId: convId,
+        parentId: after,
+        authorType: "user",
+        authorUserId: null,
+        origin: "server",
+        lamport,
+        content: [{ kind: "text", text }] as ContentBlock[],
+        status: "complete",
+        createdAt: new Date(),
+      });
+      producer.emit({ kind: "message.start", message_id: id, author_type: "user", parent_id: after, lamport, text, author_user_id: null });
+      producer.emit({ kind: "message.end", message_id: id, status: "complete" });
+      // Key order matches loadHistory's own `{ role, content }` — see
+      // prompt-prefix.test.ts for what a mismatch here costs.
+      chatMessages.push({ role: "user", content: text });
+      parentId = id;
+      unanswered = { id, lamport };
+      // Nothing left to review once it is told to answer: the run ends after it.
+      if (decision.action === "answer") reviewer?.dispose();
+    };
     // The longest a single model request has taken in this run, send to done.
     // The adaptive wait floor is built on it — see effectiveTimeoutMs.
     let slowestTurnMs = 0;
-    // Check-ins in a row that nobody answered. A person answering resets it;
-    // it is what walks an abandoned run down the ladder in unattendedDecision.
-    let unattended = 0;
 
     if (isAborted(abort)) {
       // Stopped between getting the slot and the first iteration. This used to
@@ -961,10 +942,11 @@ export async function runToolLoop(ctx: {
     // A run that has compacted and still does not fit is not compacted again.
     let compactedThisRun = false;
 
-    // Unbounded: the window is a checkpoint, not a ceiling — every exit from
-    // this loop now returns or breaks deliberately.
+    // Unbounded: what ends a run that will not stop is its progress review,
+    // and every exit from this loop returns or breaks deliberately.
     for (let iteration = 1; ; iteration++) {
-      producer.emit({ kind: "iteration", n: iteration, max: budgetEnd, ...(liveLimits().stepLimitOff ? { unlimited: true as const } : {}) });
+      producer.emit({ kind: "iteration", n: iteration });
+      const stepStartedAt = Date.now();
 
       const assistantMsgId = uuid();
       // The model's window; whether a load sits inside this request's TTFT (no
@@ -1228,10 +1210,20 @@ export async function runToolLoop(ctx: {
       // out: a nudged request that calls a read tool instead of handing over
       // would otherwise force a tool on every request after it, so the model
       // could never answer in words again and would work on, holding the
-      // slot, until it planned or reached the step check-in.
+      // slot, until it planned or a progress review stopped it.
       const forceTool = requireTool;
       requireTool = false;
       let restoreStartedAt: number | null = null;
+      // A review beside the run that wants it to change course ends this
+      // request rather than waiting out a generation that can run for many
+      // minutes — the run that prompted the review wrote 90K characters of
+      // thinking a step. Only the request: a stop is still `abort`.
+      const interrupt = new AbortController();
+      reviewer.interrupt = () => {
+        interrupt.abort();
+      };
+      // A decision that landed since the last step boundary acts now.
+      if (reviewer.hasDecision()) interrupt.abort();
       try {
         // markBackendErrors is what separates the backend's words from ours:
         // only what the stream itself throws is stored as the reason, since
@@ -1239,7 +1231,7 @@ export async function runToolLoop(ctx: {
         for await (const event of markBackendErrors(
           streamCompletion(model, chatMessages, {
             tools,
-            signal: abort.signal,
+            signal: AbortSignal.any([abort.signal, interrupt.signal]),
             // Tools stay in the request even when they may not be called —
             // see StreamOptions.toolChoice for why dropping them would cost a
             // full prompt re-evaluation on exactly the wrong request.
@@ -1295,6 +1287,22 @@ export async function runToolLoop(ctx: {
           }
         }
       } catch (err) {
+        reviewer.interrupt = null;
+        // Ended by a progress review, not by anyone pressing Stop: what was
+        // streamed stays on screen as a cut-off reply (a cancelled row, which
+        // no replay sends), the review's note follows it, and the run goes on.
+        const decision = interrupt.signal.aborted && !abort.signal.aborted ? reviewer.takeReady() : null;
+        if (decision) {
+          await db
+            .update(messages)
+            .set({ content: jsonbSafe(streamedBlocks()), status: "cancelled" })
+            .where(eq(messages.id, assistantMsgId));
+          producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "cancelled" });
+          streamingMsgId = null;
+          await writeProgressNote(decision, assistantMsgId);
+          answerNow = decision.action === "answer";
+          continue;
+        }
         const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
         const status = isAbort ? "cancelled" : "error";
         // A text-only model choking on image parts is a user-fixable
@@ -1327,6 +1335,8 @@ export async function runToolLoop(ctx: {
         await producer.end(status, { error: eventError, errorCode }).catch(() => undefined);
         return;
       }
+
+      reviewer.interrupt = null;
 
       // A window read before a JIT load is the model's max, not what the
       // backend allocated. Re-read it as soon as the request that caused the
@@ -1463,9 +1473,9 @@ export async function runToolLoop(ctx: {
           // put it back — including skipping an empty one, which loadHistory
           // does — or the next turn's prefix breaks at this message.
           if (text.trim()) chatMessages.push(assistantMessageForPrompt(text, []));
-          // Persisted rather than injected, for the reason the check-in nudge
-          // is (CHECKIN_ANSWER_NUDGE below): the next turn has to replay the
-          // same bytes. Null author — nobody typed it.
+          // Persisted rather than injected, for the reason a progress note is
+          // (writeProgressNote above): the next turn has to replay the same
+          // bytes. Null author — nobody typed it.
           const nudgeId = uuid();
           const nudgeLamport = nextLamport();
           await db.insert(messages).values({
@@ -1493,7 +1503,6 @@ export async function runToolLoop(ctx: {
           chatMessages.push({ role: "user", content: PLAN_REQUIRED_NUDGE });
           parentId = nudgeId;
           unanswered = { id: nudgeId, lamport: nudgeLamport };
-          budgetEnd = Math.max(budgetEnd, iteration + 1);
           continue;
         }
         await endTurnComplete(assistantMsgId);
@@ -1800,167 +1809,55 @@ export async function runToolLoop(ctx: {
       // No further model request: what happens next is the user's decision on
       // the plan, and it arrives as their next message (#199). Letting the loop
       // run on would have the model restate the plan, or start on one nobody
-      // accepted. Before the check-in, so a plan is never followed by a
-      // question about whether to keep going; after the abort check, so a stop
-      // pressed during the plan's own call still ends the turn cancelled.
+      // accepted. Before the progress review, so a plan is never followed by a
+      // note about progress; after the abort check, so a stop pressed during
+      // the plan's own call still ends the turn cancelled.
       if (handedOver) {
         await endTurnComplete(toolMsgId, true);
         break;
       }
 
-      // ── Check in, if this iteration earned one ─────────────
+      // ── Progress review ────────────────────────────────────
       //
-      // Deliberately here: after the tool row is persisted (so a run stopped
-      // at the question keeps a complete transcript) and after the abort check
-      // (so a stop pressed during the last tool is not answered with a
-      // question), but before the next assistant row exists.
-      const executed = toolCalls.map((c) => ({
-        tool: c.function.name,
-        args: safeParseArgs(c.function.arguments),
-      }));
-      const iterationKey = sha(executed.map((c) => sha(`${c.tool}\0${canonicalJson(c.args)}`)).join("|"));
-      // Names only. The args went into the key above and are not needed
-      // again; keeping them here would put an `fs_write` loop's file content
-      // into the check-in event — see the `pattern` type for why not.
-      recentCalls.set(iterationKey, executed.map((c) => c.tool));
-      // Only the last few keys can be part of a hit; anything older is dead
-      // weight in a run that may take hundreds of steps.
-      if (recentCalls.size > 8) {
-        const oldest = recentCalls.keys().next().value;
-        if (oldest !== undefined) recentCalls.delete(oldest);
-      }
-      const verdict = gate.afterStep(iterationKey, iteration, budgetEnd, liveLimits());
-      const { hit, reason } = verdict;
-      budgetEnd = verdict.budgetEnd;
-      if (!reason) continue;
-
-      // A sub-agent asks nobody. Its parent is parked waiting on it and the
-      // person is looking at the parent's thread, so a question here would sit
-      // unseen for the whole wait window, and the ladder's "keep going" would
-      // then grant an unwatched child more whole windows of work. It wraps up
-      // with what it has instead — the same "answer now" a person would press —
-      // and its parent decides what to do with a partial report.
-      const asksNobody = ctx.role !== undefined;
-
-      // One deadline, used for both the event and the timer, so the countdown a
-      // person sees is exactly when the run gives up waiting.
-      const deadline = waitDeadline(waits.checkinTimeoutMs, waits.adaptive, slowestTurnMs);
-      const onTimeout = unattendedDecision(unattended, waits.autoContinues, "timeout");
-      if (!asksNobody) producer.emit({
-        kind: "steps.checkin",
-        n: iteration,
-        max: budgetEnd,
-        ...(verdict.unlimited ? { unlimited: true as const } : {}),
-        reason,
-        ...(hit ? { pattern: hit.unit.flatMap((k) => (recentCalls.get(k) ?? []).map((tool) => ({ tool }))) } : {}),
-        timeout_ms: deadline.ms,
-        expires_at: deadline.expiresAt,
-        timeout_basis: deadline.basis,
-        on_timeout: onTimeout,
-        unattended,
-        auto_continues: waits.autoContinues,
-      });
-
-      let outcome: { decision: StepsDecision; byUserId: string | null };
-      try {
-        outcome = asksNobody ? { decision: "answer", byUserId: null } : await slot.yieldWhile(async () => {
-          const answered = await waitForStepsDecision(streamId, abort.signal, deadline.ms, reason);
-          const byPerson = answered.kind === "continue" || answered.kind === "answer";
-          // The ladder: nobody answered, so this is decided by how many in a
-          // row have gone unanswered — carry on for the first few, then wrap
-          // up. `aborted` never reaches a decision (re-entering the queue for
-          // an aborted run throws); `gone` always wraps up.
-          const decision: StepsDecision = byPerson
-            ? answered.kind
-            : unattendedDecision(unattended, waits.autoContinues, answered.kind === "gone" ? "gone" : "timeout");
-          if (byPerson) {
-            unattended = 0;
-          } else if (answered.kind !== "aborted") {
-            unattended += 1;
-          }
-          // Emitted from inside `yieldWhile`, before the run re-enters the
-          // queue. A decision emitted after re-entry would leave a client
-          // catching up mid-wait showing "Queued" *and* the check-in bar for
-          // however long the queue took. An unattended "keep going" is told
-          // only by this event, never by a message row, which would enter the
-          // next prompt and break its prefix.
-          if (answered.kind !== "aborted") {
-            producer.emit({
-              kind: "steps.decision",
-              decision,
-              by: byPerson ? "user" : "timeout",
-              n: iteration,
-              ...(byPerson ? {} : { unattended, auto_continues: waits.autoContinues }),
-            });
-          }
-          return { decision, byUserId: byPerson ? answered.byUserId : null };
+      // After the tool row is persisted, so a note follows a complete step,
+      // and after the abort check, so a stop pressed during the last tool is
+      // not answered with a review.
+      {
+        const results = new Map<string, { output: string; ok: boolean }>();
+        for (const block of resultBlocks) {
+          if (block.kind === "tool_result") results.set(block.call_id, { output: block.output, ok: block.ok ?? false });
+        }
+        const step: DigestStep = {
+          calls: toolCalls.map((c) => ({
+            tool: c.function.name,
+            args: c.function.arguments,
+            result: results.get(c.id)?.output ?? "",
+            ok: results.get(c.id)?.ok ?? false,
+          })),
+          ms: Date.now() - stepStartedAt,
+          thinkingChars: thinking.length,
+          completionTokens: doneResult?.usage.completion_tokens ?? null,
+        };
+        reviewer.recordStep(step, {
+          text,
+          thinking,
+          contextTokens: doneResult ? doneResult.usage.prompt_tokens + doneResult.usage.completion_tokens : null,
         });
-      } catch (err) {
-        // Stopped while parked. Re-entering the queue for an aborted run
-        // throws, which is how an abort at an approval unwinds too — the
-        // difference is only that there is no tool result to record here,
-        // because nothing was mid-flight.
-        if (!(err instanceof RunSlotAbortedError)) throw err;
-        await db
-          .update(conversations)
-          .set({ activeLeafId: toolMsgId, updatedAt: new Date() })
-          .where(eq(conversations.id, convId));
-        await producer.end("cancelled");
-        return;
+        const decision = await reviewer.atStepEnd();
+        if (isAborted(abort)) {
+          // Stopped while the run was paused for a review.
+          await db
+            .update(conversations)
+            .set({ activeLeafId: toolMsgId, updatedAt: new Date() })
+            .where(eq(conversations.id, convId));
+          await producer.end("cancelled");
+          return;
+        }
+        if (decision) {
+          await writeProgressNote(decision, toolMsgId);
+          answerNow = decision.action === "answer";
+        }
       }
-
-      if (outcome.decision === "continue") {
-        budgetEnd = gate.keepGoing(iteration);
-        continue;
-      }
-
-      // "Answer now". The instruction is persisted as a user message rather
-      // than injected only into the live prompt: the next turn's replay has to
-      // produce byte-identical bytes at this position or the whole prefix — and
-      // with it the backend's cache for this conversation — is lost. A `system`
-      // row would need a new branch in `loadHistory` *and* in the client, and
-      // several chat templates reject a system message that is not first.
-      const nudgeId = uuid();
-      const nudgeLamport = nextLamport();
-      await db.insert(messages).values({
-        id: nudgeId,
-        conversationId: convId,
-        parentId: toolMsgId,
-        authorType: "user",
-        // Null when the timeout decided: nobody asked for this, and recording
-        // a user who did not press the button would be a lie the transcript
-        // keeps forever.
-        authorUserId: outcome.byUserId,
-        origin: "server",
-        lamport: nudgeLamport,
-        content: [{ kind: "text", text: CHECKIN_ANSWER_NUDGE }] as ContentBlock[],
-        status: "complete",
-        createdAt: new Date(),
-      });
-      producer.emit({
-        kind: "message.start",
-        message_id: nudgeId,
-        author_type: "user",
-        parent_id: toolMsgId,
-        lamport: nudgeLamport,
-        text: CHECKIN_ANSWER_NUDGE,
-        // The same fact the row records, on the wire: without it a client could
-        // only match the text, and printed "You asked for an answer" when
-        // nobody had.
-        author_user_id: outcome.byUserId,
-      });
-      producer.emit({ kind: "message.end", message_id: nudgeId, status: "complete" });
-      // Key order matches loadHistory's own `{ role, content }` — see
-      // prompt-prefix.test.ts for what a mismatch here costs.
-      chatMessages.push({ role: "user", content: CHECKIN_ANSWER_NUDGE });
-      parentId = nudgeId;
-      unanswered = { id: nudgeId, lamport: nudgeLamport };
-      // The answer is one more iteration, and the window genuinely grants it:
-      // without this a budget check-in at 100/100 answered here would emit
-      // the final turn as `101/100`, and the header, the banner's "Step N of
-      // M" and the numbers the user just reasoned about would all disagree.
-      budgetEnd = Math.max(budgetEnd, iteration + 1);
-      answerNow = true;
     }
   } catch (err) {
     // A stop: `RunSlotAbortedError` (the user pressed stop while the run waited
@@ -1983,6 +1880,8 @@ export async function runToolLoop(ctx: {
     });
     throw err;
   } finally {
+    // A review still running beside the run is dropped, and says nothing.
+    reviewer?.dispose();
     // Before unregisterRun, so the next run in line starts against a registry
     // that no longer thinks this conversation is busy.
     slot?.release();
@@ -2708,73 +2607,12 @@ function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "approved" | "reg
  * that is the orphan pair `loadHistory` has to strip, and most backends reject
  * it outright on the next turn.
  */
-const ANSWER_NOW_NOT_RUN = "Not run — the user asked for a final answer without tools.";
+const ANSWER_NOW_NOT_RUN = "Not run — a final answer without tools was asked for.";
 
 /** A call made after a plan or questions in the same message. Fixed text — it
  * is replayed in every later prompt. */
 export const HANDOVER_ALREADY_SUBMITTED =
   "Not run — a plan or questions were submitted earlier in the same message, which ends the turn.";
-
-/** How a step check-in ended. `continue`/`answer` are a person's answer;
- * `timeout` and `gone` are decided by `unattendedDecision`, and `aborted` is a
- * stop, which unwinds through the slot rather than being answered. */
-type CheckinOutcome =
-  | { kind: "continue" | "answer"; byUserId: string | null }
-  | { kind: "timeout" | "aborted" | "gone" };
-
-/**
- * Waits for someone to answer a step check-in.
- *
- * Deliberately shaped like `waitForApproval` below — same `settle` teardown,
- * same abort listener, a window the caller computes, registered after the
- * `aborted` re-check so an abort landing mid-setup cannot be missed. A check-in
- * is the same kind of pause as an approval (a run parked on a human), so the
- * two should fail in the same ways rather than each inventing its own.
- *
- * The one difference is the key: this registers a single resolver on the run
- * rather than an entry in a per-call map, because a run has at most one
- * check-in outstanding and it is addressed by `stream_id` — ours and unique,
- * unlike the model-supplied `call_id` an approval has to tolerate colliding.
- */
-function waitForStepsDecision(streamId: string, signal: AbortSignal, timeoutMs: number, reason: CheckinReason): Promise<CheckinOutcome> {
-  return new Promise<CheckinOutcome>((resolve) => {
-    if (signal.aborted) {
-      resolve({ kind: "aborted" });
-      return;
-    }
-    const run = getRun(streamId);
-    if (!run) {
-      resolve({ kind: "gone" });
-      return;
-    }
-    let done = false;
-    const settle = (outcome: CheckinOutcome) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-      stopWatchingLimits();
-      // Through the registry, so the row stops saying "Waiting for you" the
-      // moment the wait settles however it settles — including the engine's
-      // own timeout, which no socket ever answers (#282).
-      clearRunCheckin(run);
-      resolve(outcome);
-    };
-    const onAbort = () => { settle({ kind: "aborted" }); };
-    const timer = setTimeout(() => { settle({ kind: "timeout" }); }, timeoutMs);
-    // Turning off what raised the question answers it, as that person pressing
-    // Keep going would. Through the same slot as a button, so the check-in
-    // clears and is told the same way, and the first answer still wins.
-    const withdraw = (byUserId: string) => {
-      if (checkinWithdrawn(reason, run.limits ?? LIMITS_ON)) takeRunCheckin(run)?.("continue", byUserId);
-    };
-    const stopWatchingLimits = onRunLimitsChange(run, withdraw);
-    setRunCheckin(run, (decision, byUserId) => { settle({ kind: decision, byUserId }); });
-    signal.addEventListener("abort", onAbort, { once: true });
-    // Switched between the step that earned this and the slot above.
-    withdraw(run.userId);
-  });
-}
 
 /** Approvals are run-scoped (registry), not connection-scoped — a different
  * device/socket than the one that started the run can approve or deny. */

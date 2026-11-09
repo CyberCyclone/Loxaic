@@ -5,9 +5,8 @@
  *
  * Every step is one assistant row and one tool row, so `LONG_HISTORY_STEPS`
  * steps put more than 200 rows into a single turn. Each step's arguments
- * differ — identical steps would trip the loop detector's check-in after the
- * third — and a spec driving it must raise `maxIterations` above the step
- * count, or the step check-in pauses the run at 100.
+ * differ, so the rows are told apart; a spec driving it turns the progress
+ * review off, which would otherwise review it every twenty steps.
  */
 export const LONG_HISTORY_PROMPT = 'Fill a long history, one step at a time.';
 export const LONG_HISTORY_STEPS = 110;

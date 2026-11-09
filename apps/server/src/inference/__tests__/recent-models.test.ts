@@ -85,12 +85,12 @@ describe("recordModelUse", () => {
   });
 
   it("does not disturb other preferences", async () => {
-    await db.insert(userPrefs).values({ userId, adaptiveTimeout: false, maxIterations: 42 });
+    await db.insert(userPrefs).values({ userId, adaptiveTimeout: false, progressCheckSteps: 42 });
     __resetRecentModelsForTest();
     await recordModelUse(userId, "a");
     const row = await db.query.userPrefs.findFirst({ where: eq(userPrefs.userId, userId) });
     expect(row?.adaptiveTimeout).toBe(false);
-    expect(row?.maxIterations).toBe(42);
+    expect(row?.progressCheckSteps).toBe(42);
     expect(row?.recentModels).toEqual(["a"]);
   });
 

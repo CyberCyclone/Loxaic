@@ -182,7 +182,7 @@ describe('check-in provenance', () => {
     expect(silent[0]).not.toHaveProperty('authorUserId');
   });
 
-  it('from a snapshot, with the timed-out decision on its turn', () => {
+  it('from a snapshot', () => {
     const snapshot: StreamSnapshot = {
       messages: [
         {
@@ -193,7 +193,6 @@ describe('check-in provenance', () => {
           thinking: '',
           tool_calls: [],
           status: 'complete',
-          checkin_decision: { decision: 'continue', by: 'timeout', n: 3, unattended: 1, auto_continues: 2 },
         },
         {
           message_id: 'n1',
@@ -208,20 +207,7 @@ describe('check-in provenance', () => {
       ],
     };
     const msgs = applySnapshotToMsgs([], snapshot);
-    expect(msgs[0].checkinDecision).toMatchObject({ decision: 'continue', by: 'timeout', n: 3 });
     expect(msgs[1]).toHaveProperty('authorUserId', null);
-  });
-
-  it('live: a timed-out decision lands on the newest assistant turn, and a person\'s does not', () => {
-    const msgs: Message[] = [
-      { id: 'a1', role: 'assistant', text: '' },
-      { id: 'u1', role: 'user', text: 'x' },
-      { id: 'a2', role: 'assistant', text: '' },
-    ];
-    const timed = applyEventToMsgs(msgs, { kind: 'steps.decision', decision: 'continue', by: 'timeout', n: 4, unattended: 1, auto_continues: 2 });
-    expect(timed[2].checkinDecision).toEqual({ decision: 'continue', by: 'timeout', n: 4, unattended: 1, auto_continues: 2 });
-    expect(timed[0].checkinDecision).toBeUndefined();
-    expect(applyEventToMsgs(msgs, { kind: 'steps.decision', decision: 'continue', by: 'user', n: 4 })).toBe(msgs);
   });
 });
 

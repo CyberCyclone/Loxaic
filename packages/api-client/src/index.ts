@@ -1343,11 +1343,9 @@ export interface Conversation {
    * what the thread opens in (#311). Null until a run or a pick records one;
    * absent on an older server. */
   permissionMode?: import("@loxaic/types").PermissionMode | null;
-  /** Whether its owner turned the step limit off. Absent on an older server,
-   * which means on. */
-  stepLimitOff?: boolean;
-  /** As `stepLimitOff`, for the loop check. */
-  loopCheckOff?: boolean;
+  /** Whether its owner turned the progress review off for its runs. Absent on
+   * an older server, which has no such review. */
+  progressReviewOff?: boolean;
   createdAt: string;
   updatedAt: string;
   /** What the caller may do here. Present on list and single-conversation
@@ -1769,8 +1767,7 @@ export async function updateConversation(
   patch: {
     model_pref?: import("@loxaic/types").ModelPref;
     mcp_overrides?: import("@loxaic/types").McpOverrides;
-    step_limit_off?: boolean;
-    loop_check_off?: boolean;
+    progress_review_off?: boolean;
   },
 ): Promise<Conversation> {
   return (
@@ -2568,51 +2565,51 @@ export interface UserPrefs {
    * tool loop runs. MCP tools have their own per-server allowlist instead. */
   toolAllowlist: string[];
   /**
-   * Tool round-trips the agent takes for one message before it pauses and
-   * asks whether to keep going. A cadence, not a ceiling — the run is never
-   * cut off. 1-500; defaults to 100.
+   * Whether runs get a progress review (a second model call that decides
+   * whether a run is stuck, and steers or ends it). Default true.
    *
    * Optional, like every field below, because a server that predates a field
    * simply omits it — it does not error — and the client talks to servers it
-   * was not shipped with (desktop Client mode, any remote host). Typing these
-   * as always-present made `undefined` sail past a `=== null` guard and render
-   * a settings control with nothing selected, which would then PATCH a field
-   * the old server ignores. Callers must treat absence as "this server has no
-   * such setting", not as a value.
+   * was not shipped with (desktop Client mode, any remote host). Callers must
+   * treat absence as "this server has no such setting", not as a value.
    */
-  maxIterations?: number;
+  progressReview?: boolean;
   /**
    * Model references this user most recently sent with, newest first.
    * **Read-only** — the server records it when a model is actually used, and
    * `PATCH /v1/prefs` refuses the key. Optional for the same reason as
-   * `maxIterations`: a server that predates it omits it, and absence means
+   * `progressReview`: a server that predates it omits it, and absence means
    * "this server does not track it", never "nothing has been used".
    */
   recentModels?: string[];
-  /**
-   * How long a step check-in waits for an answer, in ms. **Null means the
-   * server default** (`serverDefaults.checkinTimeoutMs`) — a choice, not a
-   * missing value; PATCH null to go back to it. 5,000-86,400,000. Optional —
-   * see `maxIterations`.
-   */
-  checkinTimeoutMs?: number | null;
-  /** The same, for a tool approval. Separate because "may this run?" and
-   * "keep going?" are different questions. */
+  /** Working time between progress reviews, in ms. **Null means the server
+   * default** (`serverDefaults.progressCheckMs`) — a choice, not a missing
+   * value; PATCH null to go back to it. */
+  progressCheckMs?: number | null;
+  /** Steps between progress reviews; null means the server default. Whichever
+   * of the two comes first starts a review. */
+  progressCheckSteps?: number | null;
+  /** The user's instructions for the reviewer; null means the built-in ones
+   * (`serverDefaults.progressReviewPrompt`). PATCH null to reset. */
+  progressReviewPrompt?: string | null;
+  /** How long a tool approval waits for an answer, in ms. **Null means the
+   * server default** (`serverDefaults.approvalTimeoutMs`); PATCH null to go
+   * back to it. 5,000-86,400,000. */
   approvalTimeoutMs?: number | null;
-  /** Stretch a wait to twice this run's slowest model request when that is
-   * longer than the setting, so a slow backend is not answered for you. */
+  /** Stretch the approval wait to twice this run's slowest model request when
+   * that is longer than the setting, so a slow backend is not answered for you. */
   adaptiveTimeout?: boolean;
-  /** Unanswered check-ins in a row that keep going on their own before the
-   * next one wraps up. 0-3; default 2. */
-  checkinAutoContinues?: number;
-  /** How readily a repeating run is noticed. */
-  loopSensitivity?: import("@loxaic/types").LoopSensitivity;
-  /** **Read-only** — the window a null setting resolves to on this server.
-   * PATCH refuses it. */
-  serverDefaults?: { checkinTimeoutMs: number; approvalTimeoutMs: number };
+  /** **Read-only** — what a null setting resolves to on this server. PATCH
+   * refuses it. Each field is optional: an older server sends fewer. */
+  serverDefaults?: {
+    approvalTimeoutMs: number;
+    progressCheckMs?: number;
+    progressCheckSteps?: number;
+    progressReviewPrompt?: string;
+  };
   /** Which model a sub-agent runs on: the parent's unless the agent picks
    * another it is offered (`choose`), always the parent's (`parent`), or one
-   * fixed model (`fixed`). Optional — see `maxIterations`. */
+   * fixed model (`fixed`). Optional — see `progressReview`. */
   subagentModelMode?: import("@loxaic/types").SubAgentModelMode;
   /** The model `fixed` uses. Null when none was ever picked; kept when the
    * mode moves away from `fixed`. */
@@ -2827,9 +2824,6 @@ export type {
   ContextPart,
   PermissionMode,
   Todo,
-  CheckinReason,
-  StepsDecision,
-  CheckinDecisionNote,
   WaitDeadlineFields,
   PromptStats,
   PromptProgress,
@@ -2842,7 +2836,9 @@ export type {
   PromptCacheView,
   PromptCacheLossReason,
   TimeoutBasis,
-  LoopSensitivity,
+  ReviewVerdict,
+  ReviewAction,
+  ReviewMode,
   CompactionStats,
   PaletteSkill,
   SkillSource,
@@ -2861,7 +2857,7 @@ export type {
   PermissionCheckNote,
   ToolPermission,
 } from "@loxaic/types";
-import type { MySkills, PaletteSkill, PromptCacheView, ServerMessage, SkillInput, StepsDecision, SubAgentLive, UserSkill } from "@loxaic/types";
+import type { MySkills, PaletteSkill, PromptCacheView, ServerMessage, SkillInput, SubAgentLive, UserSkill } from "@loxaic/types";
 export {
   commandQuery, parseCommand, isValidSkillName, SKILL_NAME_MAX,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,
@@ -2869,8 +2865,10 @@ export {
   attachmentClass, maxBytesForMime, resolveAttachmentMime, sanitizeFilename,
   CHECKIN_ANSWER_NUDGE, isNudgeText,
   DEFAULT_WAIT_TIMEOUT_MS, MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS,
-  MAX_CHECKIN_AUTO_CONTINUES, DEFAULT_CHECKIN_AUTO_CONTINUES,
-  LOOP_SENSITIVITIES, DEFAULT_LOOP_SENSITIVITY,
+  PROGRESS_NOTE_PREFIX, progressNoteText, parseProgressNote,
+  DEFAULT_PROGRESS_CHECK_MS, MIN_PROGRESS_CHECK_MS, MAX_PROGRESS_CHECK_MS,
+  DEFAULT_PROGRESS_CHECK_STEPS, MIN_PROGRESS_CHECK_STEPS, MAX_PROGRESS_CHECK_STEPS,
+  MAX_PROGRESS_REVIEW_PROMPT_CHARS,
   SUBAGENT_TOOL_NAME, SUBAGENT_MODEL_MODES, DEFAULT_SUBAGENT_MODEL_MODE,
   foldSubAgentEvent, endStaleSubAgents, sortSubAgents,
 } from "@loxaic/types";
@@ -3141,11 +3139,4 @@ export function approveTool(ws: WebSocket, callId: string, streamId?: string, al
 
 export function denyTool(ws: WebSocket, callId: string, streamId?: string): boolean {
   return trySend(ws, { type: "agent.deny", call_id: callId, ...(streamId ? { stream_id: streamId } : {}) });
-}
-
-/** Answers a `steps.checkin` — "keep going" or "answer with what you have".
- * Stopping is not a decision here: that stays `stopStream`, which works on any
- * run whether or not it is parked. */
-export function sendStepsDecision(ws: WebSocket, streamId: string, decision: StepsDecision): boolean {
-  return trySend(ws, { type: "agent.steps", stream_id: streamId, decision });
 }

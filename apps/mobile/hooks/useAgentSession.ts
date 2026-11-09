@@ -10,7 +10,6 @@ import {
   setAgentMode,
   approveTool,
   denyTool,
-  sendStepsDecision,
   createConversation,
   deleteConversation,
   getConversation,
@@ -21,7 +20,6 @@ import {
   type AttachmentRef,
   type StreamSnapshot,
   type PermissionMode,
-  type StepsDecision,
   type PromptCacheStatus,
   type PromptStats,
 } from '@loxaic/api-client';
@@ -66,7 +64,7 @@ import { followSelector, modeChangeNotice, ownStoredMode, type SelectorSource } 
 export type { WorkspaceChoice } from '@/lib/types';
 
 export type { RunState } from '@/lib/agentRunState';
-export type { PendingApproval, PendingCheckin } from '@/lib/pendingWaits';
+export type { PendingApproval } from '@/lib/pendingWaits';
 
 /** Per-conversation in-flight stream state — see useChatSession for why this
  * is preserved across a reconnect rather than cleared on close. */
@@ -713,8 +711,7 @@ export function useAgentSession(
       } else if (event.type === 'conversation.limits') {
         // See useChatSession.
         runLimits?.current?.onChange(event.conversation_id, {
-          stepLimitOff: event.step_limit_off,
-          loopCheckOff: event.loop_check_off,
+          progressReviewOff: event.progress_review_off,
         });
       } else if (event.type === 'conversation.workspace') {
         // Its owner moved it to another image (#253), maybe on another
@@ -1135,25 +1132,6 @@ export function useAgentSession(
     clearApproval(callId);
   }, [approvalStream, clearApproval, showToast]);
 
-  /** Answers a step check-in. Stop is not one of these — the banner's Stop
-   * goes to `handleStop`, which works on any run whether parked or not. */
-  const handleSteps = useCallback((decision: StepsDecision) => {
-    const id = activeIdRef.current;
-    const stream = id ? streamingByConvRef.current[id] : undefined;
-    // Same reasoning as handleStop: a parked run is waiting on exactly this
-    // frame, so a press that goes nowhere has to say so rather than leave the
-    // question sitting there looking answerable.
-    if (!wsRef.current || !id || !stream) {
-      showToast('Not connected to this run — reload the page and try again', 4000);
-      return;
-    }
-    if (isOffline() || !sendStepsDecision(wsRef.current, stream.streamId, decision)) {
-      showToast(NOT_SENT_RECONNECTING, 4000);
-      return;
-    }
-    updateRunLevel(id, (prev) => ({ ...prev, pendingCheckin: null, runState: 'running' }));
-  }, [showToast, updateRunLevel]);
-
   const handleFork = useCallback(
     (id: string) => {
       setRuns((prev) => {
@@ -1231,7 +1209,7 @@ export function useAgentSession(
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
   const todos = useMemo(() => (activeRun ? todosInMessages(activeRun.msgs) : null), [activeRun]);
   const activeStream = activeId ? streamingByConv[activeId] : undefined;
-  const { runState, pendingApproval, pendingCheckin, iteration, queuePosition } = runLevelOf(runLevels, activeId);
+  const { runState, pendingApproval, reviewing, iteration, queuePosition } = runLevelOf(runLevels, activeId);
   // Overlaid on whatever the server last said, rather than replacing it: the
   // run genuinely is still running until its stream ends, and the events that
   // keep arriving until then would otherwise overwrite this the moment the
@@ -1244,8 +1222,7 @@ export function useAgentSession(
   // is real, it simply has not started. Stopping counts too: it has not ended
   // yet, and offering Send again would let a second turn race the first.
   const busy = effectiveRunState === 'queued' || effectiveRunState === 'running'
-    || effectiveRunState === 'awaiting_approval' || effectiveRunState === 'awaiting_checkin'
-    || effectiveRunState === 'stopping';
+    || effectiveRunState === 'awaiting_approval' || effectiveRunState === 'stopping';
 
   // Absent for a thread whose history was never fetched — the record type
   // does not say so, hence the cast.
@@ -1272,7 +1249,8 @@ export function useAgentSession(
     promptCache: activeStream?.promptCache ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
-    pendingCheckin,
+    /** How a progress review of the open run is going, or null. */
+    reviewing,
     /** The open run's latest context-stage step, or null. */
     stageCard: activeId ? (stageCardByConv[activeId] ?? null) : null,
     iteration,
@@ -1298,7 +1276,6 @@ export function useAgentSession(
     handleApprove,
     handleAllowAlways,
     handleDeny,
-    handleSteps,
     handleFork,
     handleDelete,
     handleRename,

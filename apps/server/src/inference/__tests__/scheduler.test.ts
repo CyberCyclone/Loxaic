@@ -11,6 +11,7 @@ import {
   resolveMaxConcurrent,
   resetSlotProbe,
   schedulerState,
+  tryAcquireRunSlot,
 } from "../scheduler.ts";
 
 /**
@@ -509,5 +510,93 @@ describe("taking the whole backend (a context-stage switch)", () => {
     expect(schedulerState()).toMatchObject({ running: 2 });
     (await behind)?.release();
     running?.release();
+  });
+});
+
+describe("tryAcquireRunSlot (a progress review beside its run)", () => {
+  it("takes a spare slot, and gives it back", async () => {
+    pin(2);
+    const run = await acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+    const spare = await tryAcquireRunSlot();
+    expect(spare).not.toBeNull();
+    expect(schedulerState().running).toBe(2);
+    spare?.release();
+    spare?.release();
+    expect(schedulerState().running).toBe(1);
+    run?.release();
+  });
+
+  it("never waits: no spare slot is null, and the run lends its own", async () => {
+    pin(1);
+    const run = await acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+    expect(await tryAcquireRunSlot()).toBeNull();
+    expect(schedulerState()).toMatchObject({ running: 1, waiting: 0 });
+    run?.release();
+  });
+
+  it("does not jump ahead of someone's queued chat", async () => {
+    pin(2);
+    const a = await acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+    const b = await acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+    const queued = acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(schedulerState().waiting).toBe(1);
+    // A slot frees and the waiter takes it; with the waiter gone, the queue is
+    // full again and a review still gets nothing.
+    a?.release();
+    const c = await queued;
+    expect(await tryAcquireRunSlot()).toBeNull();
+    b?.release();
+    c?.release();
+  });
+
+  it("hands a freed slot to a waiter, not to a review", async () => {
+    pin(1);
+    const run = await acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+    const queued = acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+    await new Promise((r) => setTimeout(r, 10));
+    pin(2);
+    // Room now, but someone is in line: the review must not take it first.
+    expect(await tryAcquireRunSlot()).toBeNull();
+    kickScheduler();
+    const next = await queued;
+    run?.release();
+    next?.release();
+  });
+});
+
+describe("RunSlot.parkedMs (a run's working time)", () => {
+  it("counts the time out of the slot, including getting back in", async () => {
+    pin(1);
+    const slot = await acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+    if (!slot) throw new Error("no slot");
+    expect(slot.parkedMs()).toBe(0);
+    // Someone else holds the backend while this run waits for a person, so
+    // re-entry waits too.
+    let other: { release(): void } | null = null;
+    await slot.yieldWhile(async () => {
+      other = await acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+      await new Promise((r) => setTimeout(r, 60));
+      setTimeout(() => other?.release(), 60);
+    });
+    expect(slot.parkedMs()).toBeGreaterThanOrEqual(110);
+    const before = slot.parkedMs();
+    await slot.yieldWhile(async () => new Promise((r) => setTimeout(r, 30)));
+    expect(slot.parkedMs()).toBeGreaterThanOrEqual(before + 25);
+    slot.release();
+  });
+
+  it("counts a wait that failed", async () => {
+    pin(1);
+    const slot = await acquireRunSlot({ signal: new AbortController().signal, onQueued: noop });
+    if (!slot) throw new Error("no slot");
+    await expect(
+      slot.yieldWhile(async () => {
+        await new Promise((r) => setTimeout(r, 40));
+        throw new Error("approval failed");
+      }),
+    ).rejects.toThrow("approval failed");
+    expect(slot.parkedMs()).toBeGreaterThanOrEqual(35);
+    slot.release();
   });
 });

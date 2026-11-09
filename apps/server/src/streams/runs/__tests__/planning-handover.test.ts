@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import { CHECKIN_ANSWER_NUDGE, PLAN_REJECTED_MESSAGE, PLAN_REQUIRED_NUDGE, type ContentBlock } from "@loxaic/types";
+import { PLAN_REJECTED_MESSAGE, PLAN_REQUIRED_NUDGE, parseProgressNote, type ContentBlock } from "@loxaic/types";
 import { PLAN_TOOL_NAME, QUESTIONS_TOOL_NAME } from "@loxaic/agent";
 import type { ChatMessage, StreamOptions } from "../../../inference/provider.ts";
 
@@ -39,7 +39,9 @@ vi.mock("../../../inference/provider.ts", async (importOriginal) => {
   return {
     ...actual,
     streamCompletion: (model: string, msgs: ChatMessage[], options?: StreamOptions) => {
-      requests.push({ toolChoice: options?.toolChoice });
+      // The run's own requests only: a progress review is a request too, with
+      // no tools, and says nothing about how the run itself was asked.
+      if (options?.tools) requests.push({ toolChoice: options.toolChoice });
       if (mentions(msgs, stubborn)) return actual.streamCompletion(model, msgs, { ...options, toolChoice: "none" });
       if (options?.toolChoice === "required" && mentions(msgs, detours)) {
         // The mock plans from the last user message; show it one that asks
@@ -214,24 +216,25 @@ describe("a planning turn always ends in a plan or questions", () => {
     expect(callsOf(await rowsOf(convId))).toEqual([PLAN_TOOL_NAME, QUESTIONS_TOOL_NAME]);
   }, 30_000);
 
-  it("never asks after 'answer now', which is the user asking for prose", async () => {
+  it("never asks for a plan after a progress review said to answer, which asks for prose", async () => {
+    // Reviewed after every step; the mock's reviewer says it is finished.
     await db
       .insert(userPrefs)
-      .values({ userId, maxIterations: 1 })
-      .onConflictDoUpdate({ target: userPrefs.userId, set: { maxIterations: 1 } });
+      .values({ userId, progressCheckSteps: null })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { progressCheckSteps: null } });
+    process.env.PROGRESS_CHECK_STEPS = "1";
     try {
       const convId = await newConversation();
       // "todo" makes the mock call todo_write — offered in planning, no
-      // sandbox — so the one-step window ends on a tool and asks.
-      await startAgentRun({ userId, content: "make a todo list first", model: MODEL, mode: "planning", conversationId: convId });
-      await waitFor("the check-in", () => !!getRunByConversation(convId)?.stepsDecision);
-      getRunByConversation(convId)?.stepsDecision?.("answer", userId);
+      // sandbox — so the first step ends on a tool and is reviewed.
+      await startAgentRun({ userId, content: "make a todo list first, review-finished", model: MODEL, mode: "planning", conversationId: convId });
       await waitFor("the run to end", () => getRunByConversation(convId) === undefined);
       const rows = await rowsOf(convId);
-      expect(rows.some((r) => textOf(r) === CHECKIN_ANSWER_NUDGE)).toBe(true);
+      expect(rows.some((r) => parseProgressNote(textOf(r) ?? "")?.action === "answer")).toBe(true);
       expect(rows.some((r) => textOf(r) === PLAN_REQUIRED_NUDGE)).toBe(false);
       expect(requests.map((r) => r.toolChoice)).toEqual([undefined, "none"]);
     } finally {
+      delete process.env.PROGRESS_CHECK_STEPS;
       await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
     }
   }, 30_000);

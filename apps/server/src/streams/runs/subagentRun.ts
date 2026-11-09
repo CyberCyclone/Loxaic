@@ -485,7 +485,7 @@ export function mirrorProgress(
   hooks: {
     onInLine?: () => void;
     /** It is waiting for a slot: first in line, or back in line after
-     * handing its slot back (an approval, a check-in). */
+     * handing its slot back (an approval). */
     onQueued?: () => void;
     /** Its first iteration: the moment it got a slot, once. */
     onAdmitted?: (at: number) => void;

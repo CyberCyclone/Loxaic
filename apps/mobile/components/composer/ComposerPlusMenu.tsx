@@ -52,8 +52,8 @@ export interface ComposerPlusMenuProps {
   /** The thinking level; null leaves the row out (a routine's chat, whose
    * runs the server starts). */
   thinking?: ComposerThinking | null;
-  /** This conversation's step limit and loop check; null leaves them out (a
-   * routine's chat, which is what those keep bounded). */
+  /** This conversation's progress review switch; null leaves it out (a
+   * routine's chat, which is always reviewed). */
   runLimits?: RunLimitSwitches | null;
   /** An attachment is uploaded as soon as it is picked, and the MCP switches
    * are saved on the server, so there is nothing to do while it is

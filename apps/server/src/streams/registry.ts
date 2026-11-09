@@ -1,4 +1,4 @@
-import type { PermissionMode, RunActivity, RunLimits, StepsDecision } from "@loxaic/types";
+import type { PermissionMode, RunActivity, RunLimits } from "@loxaic/types";
 import { announceRunActivity } from "./watchers.ts";
 
 /**
@@ -27,19 +27,6 @@ export interface RunHandle {
   /** call_id -> resolver. Approvals are run-scoped, not connection-scoped: a
    * different device/socket than the one that started the run can approve. */
   approvals: Map<string, ApprovalResolver>;
-  /**
-   * Set only while the run is parked at a step check-in, cleared the moment it
-   * is answered. Run-scoped like `approvals`, for the same reason — whoever
-   * can act on the conversation can answer, from any device.
-   *
-   * A plain field rather than a Map: a run has at most one check-in
-   * outstanding, and it is addressed by `stream_id`, which is ours and unique
-   * — unlike a model-supplied `call_id`, which is why approvals need a
-   * collision-tolerant plural lookup and this does not.
-   *
-   * `byUserId` is null when nobody answered and the timeout decided.
-   */
-  stepsDecision?: (decision: StepsDecision, byUserId: string | null) => void;
   /** A sub-agent's run names the conversation that spawned it, so a question
    * about "other conversations" can tell a thread's own children from them. */
   parentConversationId?: string;
@@ -71,15 +58,12 @@ export interface RunHandle {
    * when the mode changes. Through `onRunModeChange` only. */
   modeListeners?: Set<() => void>;
   /**
-   * What its conversation's owner has turned off, as it stands now. The tool
-   * loop reads it every step. Absent until the loop has read the conversation,
-   * and meaning every limit on. Written only by `seedRunLimits` and
-   * `setRunLimits`.
+   * What its conversation's owner has switched off, as it stands now. The
+   * progress review reads it each time one is due. Absent until the loop has
+   * read the conversation, and meaning everything on. Written only by
+   * `seedRunLimits` and `setRunLimits`.
    */
   limits?: RunLimits;
-  /** A check-in waiting in this run, told when the limits change. Through
-   * `onRunLimitsChange` only. */
-  limitListeners?: Set<(byUserId: string) => void>;
 }
 
 /**
@@ -140,33 +124,21 @@ export function seedRunLimits(handle: RunHandle, limits: RunLimits): void {
   handle.limits ??= limits;
 }
 
-/** Change a live run's limits, and tell a check-in it is waiting on. */
-export function setRunLimits(handle: RunHandle, limits: RunLimits, byUserId: string): void {
+/** Change a live run's switches. */
+export function setRunLimits(handle: RunHandle, limits: RunLimits): void {
   handle.limits = limits;
-  for (const listener of [...(handle.limitListeners ?? [])]) listener(byUserId);
-}
-
-/** Be told when the run's limits change; returns the way to stop. */
-export function onRunLimitsChange(handle: RunHandle, listener: (byUserId: string) => void): () => void {
-  handle.limitListeners ??= new Set();
-  handle.limitListeners.add(listener);
-  return () => { handle.limitListeners?.delete(listener); };
 }
 
 /**
  * What this run is doing, in the words a thread-list row says (#282).
  *
- * The order is `runLevelFromSnapshot`'s (apps/mobile/lib/agentRunState.ts)
- * with one exception, check-in and approval swapped (below), and for the same
- * reason: a run parked on an approval has handed its slot
+ * The order is `runLevelFromSnapshot`'s (apps/mobile/lib/agentRunState.ts),
+ * and for the same reason: a run parked on an approval has handed its slot
  * back and may well be queuing to get it again, so it can carry a queue
  * position and a question at once — and the question is the thing a person can
- * act on. A check-in outranks an approval only because the run asks one thing
- * of them at a time and the check-in is the newer, blocking-er of the two; in
- * practice a run holds at most one.
+ * act on.
  */
 export function runActivityOf(handle: RunHandle): RunActivity {
-  if (handle.stepsDecision) return "awaiting_checkin";
   if (handle.approvals.size > 0) return "awaiting_approval";
   if (handle.queuePosition !== null && handle.queuePosition !== undefined) return "queued";
   return "running";
@@ -204,33 +176,6 @@ export function setRunApproval(handle: RunHandle, callId: string, resolver: Appr
  * *later* call's prompt from the row. */
 export function clearRunApproval(handle: RunHandle, callId: string): void {
   if (!handle.approvals.delete(callId)) return;
-  announceActivity(handle);
-}
-
-/** Park the run at a step check-in. */
-export function setRunCheckin(handle: RunHandle, resolver: (decision: StepsDecision, byUserId: string | null) => void): void {
-  handle.stepsDecision = resolver;
-  announceActivity(handle);
-}
-
-/** Take the outstanding check-in's resolver, or null when the run is not
- * parked. Taking it is the answer landing (from any device, or the timeout),
- * so the row stops saying "Waiting for you". */
-export function takeRunCheckin(handle: RunHandle): ((decision: StepsDecision, byUserId: string | null) => void) | null {
-  const resolver = handle.stepsDecision ?? null;
-  if (!resolver) return null;
-  handle.stepsDecision = undefined;
-  announceActivity(handle);
-  return resolver;
-}
-
-/** Clear the check-in slot when the wait settles by any other route (the
- * engine's own timeout or abort). A no-op — and so a non-announcement — when
- * nobody had parked the run, which is the case once `takeRunCheckin` has
- * already run. */
-export function clearRunCheckin(handle: RunHandle): void {
-  if (!handle.stepsDecision) return;
-  handle.stepsDecision = undefined;
   announceActivity(handle);
 }
 
@@ -406,18 +351,6 @@ export function isConversationBusy(conversationId: string): boolean {
  * silently swallow the legitimate one. Handing back all candidates lets the
  * caller pick the run they are actually allowed to answer for.
  */
-/**
- * Whether a check-in answer off a socket is one we recognise.
- *
- * Takes `unknown` on purpose, the same way `isValidRef` does. The wire type
- * already *says* `StepsDecision`, so a check written against that type is
- * narrowed to a tautology and compiled away — but the type is a claim a client
- * made, not a fact, and this is the only place it becomes one.
- */
-export function isStepsDecision(value: unknown): value is StepsDecision {
-  return value === "continue" || value === "answer";
-}
-
 export function findRunsByApprovalCallId(callId: string): RunHandle[] {
   const out: RunHandle[] = [];
   for (const handle of runsByStreamId.values()) {

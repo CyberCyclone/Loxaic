@@ -3,6 +3,7 @@ import type { RunLimitChoices, TimeoutBasis } from "./waits";
 import type { McpOverrides } from "./mcp-state";
 import type { ThinkingLevel } from "./thinking";
 import type { SubAgentEvent, SubAgentLive } from "./subagents";
+import { parseProgressNote, type ReviewAction, type ReviewMode, type ReviewVerdict } from "./progress-review";
 
 /** Duplicated (structurally, not nominally) from @loxaic/agent so this
  * package stays dependency-free — packages/agent is the authority for
@@ -71,14 +72,6 @@ export interface ToolPermission {
 
 export interface Todo { id?: string; text: string; status: "pending" | "in_progress" | "completed" }
 
-/** Why a run stopped to ask whether to keep going: it reached the end of its
- * step window, or it noticed itself repeating the same calls. */
-export type CheckinReason = "budget" | "loop";
-
-/** The answer to a `steps.checkin`. Stopping is not one of these — that is the
- * existing `stream.stop`, which any run can be sent at any time. */
-export type StepsDecision = "continue" | "answer";
-
 /**
  * When a wait for a person runs out, carried on the event that starts the wait
  * and on the snapshot's pending entry — so a client can show a countdown, and
@@ -99,36 +92,16 @@ export interface WaitDeadlineFields {
 }
 
 /**
- * What an unattended check-in did, recorded where a client can find it.
+ * What an answered step check-in wrote as a user row, before the progress
+ * review replaced check-ins. Nothing writes it now; kept so stored rows are
+ * still recognised as the server's (`isNudgeText`) and shown as notices.
  *
- * An unanswered check-in that carries on leaves nothing in the transcript —
- * no message is written, deliberately, because anything persisted as a message
- * would enter the prompt. This is how a client can still say "nobody answered,
- * so it kept going": folded onto the assistant message whose tools the
- * check-in followed, from the stream's own log.
- */
-export interface CheckinDecisionNote {
-  decision: StepsDecision;
-  by: "user" | "timeout";
-  /** The step the check-in happened at. */
-  n?: number;
-  /** Timeout only: 1-based position in the unanswered streak. */
-  unattended?: number;
-  /** Timeout only: how many unanswered check-ins carry on before it wraps up. */
-  auto_continues?: number;
-}
-
-/**
- * Persisted as a user message when a check-in is answered with "answer now",
- * and pushed into the live prompt at the same position.
- *
- * Fixed text, never interpolated, and exported so both paths use the identical
- * string: it becomes part of the conversation's replay, and the prompt prefix
+ * The nudges below are fixed text, never interpolated, for the reason this one
+ * was: they become part of the conversation's replay, and the prompt prefix
  * only stays cacheable if the live push and the next turn's history load
- * produce the same bytes (see prompt-prefix.test.ts).
- *
- * Changing this or any nudge below leaves stored rows with the old text, which
- * `isNudgeText` and the client then no longer recognise.
+ * produce the same bytes (see prompt-prefix.test.ts). Changing one leaves
+ * stored rows with the old text, which `isNudgeText` and the client then no
+ * longer recognise.
  */
 export const CHECKIN_ANSWER_NUDGE =
   "Please stop using tools and give your best final answer now from what you have so far.";
@@ -155,7 +128,7 @@ export const PLAN_REJECTED_MESSAGE = "I'm rejecting this plan — don't implemen
  * Persisted as a user row when a planning turn answers in prose (#199): the
  * server asks, once, for a plan or questions, and sends that one request with
  * `tool_choice: "required"`. Fixed text, never interpolated, for the reason
- * CHECKIN_ANSWER_NUDGE is — the next turn has to replay it byte for byte —
+ * the check-in nudge was — the next turn has to replay it byte for byte —
  * and so the client can render it as a notice rather than as something the
  * user typed. Its row's author is null: nobody typed it.
  */
@@ -169,7 +142,7 @@ export const PLAN_REQUIRED_NUDGE =
  * system, summary, this — never ending on a system message, which several
  * chat templates refuse — and the model carries on with the task rather than
  * waiting for a turn that is not coming. Fixed text, never interpolated, for
- * the reason CHECKIN_ANSWER_NUDGE is, and so the client can show it as a
+ * the reason the others are, and so the client can show it as a
  * notice rather than as something the user typed. Its row's author is null.
  */
 export const COMPACTION_CONTINUE_NUDGE =
@@ -177,12 +150,18 @@ export const COMPACTION_CONTINUE_NUDGE =
 
 /**
  * Whether a user row's text is one the server wrote rather than a person:
- * the check-in, plan and compaction nudges. Rewind and retry target only what
- * someone typed, and the author alone cannot say so — an answered check-in's
- * nudge carries the id of the person who pressed the button.
+ * a progress note, the plan and compaction nudges, or an old check-in's.
+ * Rewind and retry target only what someone typed, and the author alone cannot
+ * say so — an old answered check-in's nudge carries the id of the person who
+ * pressed the button.
  */
 export function isNudgeText(text: string): boolean {
-  return text === CHECKIN_ANSWER_NUDGE || text === PLAN_REQUIRED_NUDGE || text === COMPACTION_CONTINUE_NUDGE;
+  return (
+    text === CHECKIN_ANSWER_NUDGE ||
+    text === PLAN_REQUIRED_NUDGE ||
+    text === COMPACTION_CONTINUE_NUDGE ||
+    parseProgressNote(text) !== null
+  );
 }
 
 /**
@@ -659,46 +638,24 @@ export type StreamEventKind =
   | {
       kind: "iteration";
       n: number;
-      max: number;
-      /** The step limit is off for this conversation, so `max` is no limit and
-       * only a client that predates the switch shows it. */
+      /** Only from an older server, which had a step limit. */
+      max?: number;
+      /** As `max`. */
       unlimited?: true;
     }
   /**
-   * The run has paused to ask whether to keep going. It has given its
-   * inference slot back and is waiting for a `agent.steps` answer, exactly as
-   * it does at a tool approval — so this is not a failure, and the tool
-   * results already in the transcript are real and stay.
-   *
-   * `n` is the iteration just finished; `max` is the current window's end
-   * (absolute, so it grows on each "keep going": 100, then 200).
+   * A progress review started (progress-review.ts). `alongside`: on a free
+   * inference slot, while the run carries on. `paused`: the run stopped at a
+   * step boundary to lend the review its own slot.
    */
-  | {
-      kind: "steps.checkin";
-      n: number;
-      max: number;
-      /** As on `iteration`: a loop check-in on a run with no step limit. */
-      unlimited?: true;
-      reason: CheckinReason;
-      /** `loop` only: the repeating unit, oldest first — tool names alone.
-       * Not the arguments: an `fs_write` loop is exactly what this exists to
-       * catch, and its args carry the file content, which would then sit in
-       * the 24h record log and be re-sent in every resync's snapshot for a
-       * banner that reads nothing but `tool`. */
-      pattern?: { tool: string }[];
-    } & WaitDeadlineFields & {
-      /** What happens if nobody answers before `expires_at`. */
-      on_timeout?: StepsDecision;
-      /** How many check-ins in a row had already gone unanswered before this one. */
-      unattended?: number;
-      /** How many unanswered check-ins carry on by themselves before it wraps up. */
-      auto_continues?: number;
-    }
-  /** How a `steps.checkin` was answered. Emitted *before* the run re-enters
-   * the inference queue, so a catching-up client never sees a stale check-in
-   * beside a queue position. The fields beyond `decision` and `by` are those
-   * of `CheckinDecisionNote`. */
-  | ({ kind: "steps.decision" } & CheckinDecisionNote)
+  | { kind: "run.review.start"; mode: ReviewMode }
+  /**
+   * A progress review ended. `verdict` is null when the reviewer gave none in
+   * time or could not be read. `action` is what the run did: a `steer` or an
+   * `answer` also leaves a persisted user row (a progress note) whose
+   * `message.start` follows this.
+   */
+  | { kind: "run.review.end"; verdict: ReviewVerdict | null; reason?: string; action: ReviewAction }
   | { kind: "tool.call"; message_id: string; call_id: string; tool: string; args: Record<string, unknown> }
   | ({ kind: "approval.request"; call_id: string; tool: string; args: Record<string, unknown> } & ApprovalContext &
       WaitDeadlineFields)
@@ -781,9 +738,6 @@ export interface StreamSnapshotMessage {
   error_code?: StreamErrorCode;
   /** Folded from `message.start` when present — see its doc. */
   author_user_id?: string | null;
-  /** Set on the assistant message a check-in followed, when nobody answered
-   * it — the only trace an unattended "keep going" leaves. */
-  checkin_decision?: CheckinDecisionNote;
 }
 
 /**
@@ -938,7 +892,7 @@ export interface StreamSnapshot {
    * ends too, so the card reads the same after a reconnect. */
   context_stage?: ContextStageStatus;
   // agent-only:
-  iteration?: { n: number; max: number; unlimited?: true };
+  iteration?: { n: number; max?: number; unlimited?: true };
   /** For older app builds only, like the `todos` event. */
   todos?: Todo[];
   pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> } & ApprovalContext &
@@ -949,19 +903,9 @@ export interface StreamSnapshot {
   prompt_stats?: PromptStats;
   /** The latest step of this run's saved-cache restore, if it made one. */
   prompt_cache?: PromptCacheStatus;
-  /** Present while the run is parked at a step check-in waiting for an answer.
-   * Both surfaces carry it — chat and agent share one tool loop. */
-  pending_checkin?: {
-    n: number;
-    max: number;
-    /** As on `steps.checkin`. */
-    unlimited?: true;
-    reason: CheckinReason;
-    pattern?: { tool: string }[];
-    on_timeout?: StepsDecision;
-    unattended?: number;
-    auto_continues?: number;
-  } & WaitDeadlineFields;
+  /** Present while a progress review of this run is under way, so a client
+   * that reconnects mid-review still says so. */
+  reviewing?: { mode: ReviewMode };
   /** The sub-agents this run spawned, folded from its `subagent.*` events.
    * Absent when it spawned none. */
   subagents?: SubAgentLive[];
@@ -984,7 +928,7 @@ export interface StreamSnapshot {
  * counterpart (#113), overlaid locally on the conversation whose Stop was
  * pressed.
  */
-export type RunActivity = "queued" | "running" | "awaiting_approval" | "awaiting_checkin";
+export type RunActivity = "queued" | "running" | "awaiting_approval";
 
 export type ServerMessage =
   /** A watched conversation's run started, changed what it is doing, or ended
@@ -1079,8 +1023,8 @@ export type ServerMessage =
    * the owner's other devices follow; only the owner's picks and sends set it.
    */
   | { type: "conversation.mode"; conversation_id: string; mode: PermissionMode }
-  /** Its owner turned a run limit off or on, maybe on another device. */
-  | { type: "conversation.limits"; conversation_id: string; step_limit_off: boolean; loop_check_off: boolean }
+  /** Its owner turned the progress review off or on, maybe on another device. */
+  | { type: "conversation.limits"; conversation_id: string; progress_review_off: boolean }
   | {
       type: "error";
       error: string;
@@ -1245,8 +1189,4 @@ export type ClientMessage =
    * approving this call. Honoured only from the approval's `granter_user_id`;
    * from anyone else it approves the one call. */
   | { type: "agent.approve"; call_id: string; stream_id?: string; always?: boolean }
-  | { type: "agent.deny"; call_id: string; stream_id?: string }
-  /** Answer a `steps.checkin`. Keyed by `stream_id`, not by a model-supplied
-   * id like approve/deny — a run has at most one check-in outstanding, and
-   * stream ids are ours and unique, so no plural lookup is needed. */
-  | { type: "agent.steps"; stream_id: string; decision: StepsDecision };
+  | { type: "agent.deny"; call_id: string; stream_id?: string };

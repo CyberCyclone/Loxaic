@@ -49,8 +49,8 @@ describe("a sub-agent's queued and running state", () => {
   it("queues, is admitted once, and later iterations only say running", () => {
     const h = harness();
     h.emit({ kind: "run.queued", position: 2 });
-    h.emit({ kind: "iteration", n: 1 } as StreamEventKind);
-    h.emit({ kind: "iteration", n: 2 } as StreamEventKind);
+    h.emit({ kind: "iteration", n: 1 });
+    h.emit({ kind: "iteration", n: 2 });
     expect(h.calls).toEqual(["queued", "admitted", "running"]);
   });
 
@@ -59,7 +59,7 @@ describe("a sub-agent's queued and running state", () => {
     // next iteration follows the whole batch, so without this the listing
     // read "Queued" for the length of the command.
     const h = harness();
-    h.emit({ kind: "iteration", n: 1 } as StreamEventKind);
+    h.emit({ kind: "iteration", n: 1 });
     h.emit(approval("c1"));
     h.emit({ kind: "run.queued", position: 1 });
     h.emit(result("c1"));
@@ -69,7 +69,7 @@ describe("a sub-agent's queued and running state", () => {
 
   it("a result for a call nobody was asked about changes nothing", () => {
     const h = harness();
-    h.emit({ kind: "iteration", n: 1 } as StreamEventKind);
+    h.emit({ kind: "iteration", n: 1 });
     h.emit(result("c9"));
     expect(h.calls).toEqual(["admitted"]);
   });

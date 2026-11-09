@@ -38,8 +38,10 @@ export function usePrefs() {
     };
   }, []);
 
+  /** `onSettled` is told whether the server stored it, after the screen has
+   * been put back on a failure. */
   const save = useCallback(
-    (patch: Partial<UserPrefs>) => {
+    (patch: Partial<UserPrefs>, onSettled?: (ok: boolean) => void) => {
       const previous = prefsRef.current;
       if (!previous) return;
       // Optimistic: a chip must not lag the tap. Rolled back on failure.
@@ -49,11 +51,13 @@ export function usePrefs() {
         try {
           const saved = await updatePrefs(patch);
           setPrefs((current) => (current ? { ...current, ...saved } : saved));
+          onSettled?.(true);
         } catch (err) {
           // Put back only the fields *this* save touched. Restoring the whole
           // snapshot would also undo a later save that succeeded, leaving the
           // screen disagreeing with the server until a reload.
           setPrefs((current) => revertPatch(current, previous, patch));
+          onSettled?.(false);
           showToast(`Could not save: ${(err as Error).message}`, 5000);
         } finally {
           setInFlight((n) => n - 1);

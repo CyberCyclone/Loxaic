@@ -140,8 +140,7 @@ describe('routines', () => {
 
     // What keeps an unattended routine bounded is not offered here.
     await openPlusMenu();
-    expect(await byTestId('composer.plus.stepLimit').isDisplayed().catch(() => false)).toBe(false);
-    expect(await byTestId('composer.plus.loopCheck').isDisplayed().catch(() => false)).toBe(false);
+    expect(await byTestId('composer.plus.progressReview').isDisplayed().catch(() => false)).toBe(false);
     await closePlusMenu();
 
     await waitForRunDone(creds, run.conversationId);
