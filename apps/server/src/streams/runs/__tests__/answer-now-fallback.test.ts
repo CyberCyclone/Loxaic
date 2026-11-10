@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
@@ -9,8 +12,8 @@ import type { ChatMessage, StreamEvent, StreamOptions } from "../../../inference
  * `tool_choice: "none"` is a request, and a backend is free to ignore it.
  *
  * LM Studio reports nothing about whether it honours the field, and the
- * deployment's backend is whatever the operator pointed us at — so "answer
- * now" cannot assume the model will comply. If it calls a tool anyway, the one
+ * deployment's backend is whatever the operator pointed us at — so a run a
+ * progress review told to answer cannot assume the model will comply. If it calls a tool anyway, the one
  * thing that must not happen is an assistant `tool_call` left without a
  * matching `tool_result`: that is the orphan `loadHistory` has to strip, and
  * most backends reject it outright on the next turn, which would break the
@@ -69,6 +72,7 @@ const { __resetMockScenariosForTest } = await import("../../../inference/mock-sc
 describe("answer now, against a backend that calls a tool anyway", () => {
   const userId = `test-answer-now-${uuid()}`;
   const convIds: string[] = [];
+  const dir = mkdtempSync(path.join(tmpdir(), "answer-now-"));
 
   beforeAll(async () => {
     await initStreamBroker();
@@ -92,6 +96,7 @@ describe("answer now, against a backend that calls a tool anyway", () => {
     await db.delete(user).where(eq(user.id, userId));
     delete process.env.MOCK_SCENARIOS_FILE;
     __resetMockScenariosForTest();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   async function waitFor(label: string, check: () => boolean, timeoutMs = 10_000): Promise<void> {
@@ -104,10 +109,19 @@ describe("answer now, against a backend that calls a tool anyway", () => {
   }
 
   it("pairs the ignored call with a result and ends the turn complete", async () => {
+    // Reviewed after every step, and the mock's reviewer says it is finished:
+    // the run is told so after its first step and told to answer, without
+    // tools, after its second.
     await db
       .insert(userPrefs)
-      .values({ userId, maxIterations: 1, updatedAt: new Date() })
-      .onConflictDoUpdate({ target: userPrefs.userId, set: { maxIterations: 1 } });
+      .values({ userId, progressCheckSteps: null, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { progressCheckSteps: null } });
+    process.env.PROGRESS_CHECK_STEPS = "1";
+    writeFileSync(path.join(dir, "scenarios.json"), JSON.stringify([{ match: "review-finished", steps: [1, 2].map((n) => ({ tool: "todo_write", args: { todos: [{ id: "1", text: `Step ${String(n)}`, status: "in_progress" }] } })) }]));
+    process.env.MOCK_SCENARIOS_FILE = path.join(dir, "scenarios.json");
+    __resetMockScenariosForTest();
+    // Before the run starts: its steps and reviews take milliseconds.
+    disobedient.on = true;
     const [conv] = await db
       .insert(conversations)
       .values({ ownerId: userId, title: "answer now", kind: "agent" })
@@ -116,21 +130,18 @@ describe("answer now, against a backend that calls a tool anyway", () => {
 
     const { streamId } = await startAgentRun({
       userId,
-      // A prompt the mock's own triggers answer with a todo_write, so the run
-      // reaches a check-in on its first iteration.
-      content: "make a todo list",
+      // Two scripted todo_write steps, so the run is reviewed twice.
+      content: "review-finished: two steps",
       model: "llama-3.1-8b-instruct",
       mode: "auto",
       conversationId: conv.id,
     });
 
-    await waitFor("the run to park", () => !!getRunByConversation(conv.id)?.stepsDecision);
-    disobedient.on = true;
     try {
-      getRunByConversation(conv.id)?.stepsDecision?.("answer", userId);
       await waitFor("the run to finish", () => getRunByConversation(conv.id) === undefined);
     } finally {
       disobedient.on = false;
+      delete process.env.PROGRESS_CHECK_STEPS;
     }
 
     // The turn ended cleanly: a model that would not stop calling tools is not

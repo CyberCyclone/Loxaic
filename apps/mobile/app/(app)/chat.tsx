@@ -15,8 +15,8 @@ import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
 import { PromptSuggestions } from '@/components/chat/PromptSuggestions';
 import { CHAT_APPROVAL_IDS, ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
-import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
-import { approvalKey, checkinKey } from '@/lib/pendingWaits';
+import { ReviewStatus } from '@/components/chat/ReviewStatus';
+import { approvalKey } from '@/lib/pendingWaits';
 import { useOverlayGone } from '@/hooks/useOverlayGone';
 import { Composer } from '@/components/composer/Composer';
 import { ModelModal } from '@/components/settings/ModelModal';
@@ -76,7 +76,7 @@ export default function ChatScreen() {
     queuePosition,
     responseStartedAt,
     pendingApproval,
-    pendingCheckin,
+    reviewing,
     handleSend,
     handleRetry,
     applyLocalRewind,
@@ -85,7 +85,6 @@ export default function ChatScreen() {
     handleNewChat,
     handleApprove,
     handleDeny,
-    handleSteps,
     handleAllowAlways,
     handleFork,
     handleDelete,
@@ -348,19 +347,10 @@ export default function ChatScreen() {
             }}
           />
         )}
-        {/* Above the composer, in the flow — not a dialog. Deciding whether
-            the agent should carry on means reading what it has already done,
-            so the transcript must stay visible and scrollable. */}
-        {pendingCheckin && (
-          <StepCheckInBanner
-            key={checkinKey(pendingCheckin)}
-            {...pendingCheckin}
-            onContinue={() => { handleSteps('continue'); }}
-            onAnswer={() => { handleSteps('answer'); }}
-            onStop={handleStop}
-          />
-        )}
-        {cacheNotice.banner && !pendingCheckin && (
+        {/* Above the composer, in the flow: a progress review of this run
+            under way. Nothing to press — it decides on its own. */}
+        <ReviewStatus mode={reviewing} />
+        {cacheNotice.banner && (
           <PromptCacheBanner banner={cacheNotice.banner} onDismiss={() => { if (cacheNotice.banner) cacheNotice.dismiss(cacheNotice.banner.key); }} />
         )}
         <Composer

@@ -132,7 +132,7 @@ export class StreamBroker {
     let iteration: StreamSnapshot["iteration"];
     let todos: StreamSnapshot["todos"];
     let pendingApproval: StreamSnapshot["pending_approval"];
-    let pendingCheckin: StreamSnapshot["pending_checkin"];
+    let reviewing: StreamSnapshot["reviewing"];
     let promptStats: StreamSnapshot["prompt_stats"];
     let promptCache: StreamSnapshot["prompt_cache"];
     let subagents: SubAgentLive[] = [];
@@ -227,6 +227,14 @@ export class StreamBroker {
         case "message.end": {
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
           if (promptCache?.message_id === event.message_id) promptCache = undefined;
+          if (event.discard) {
+            // Nothing was written and nobody stopped it: a client catching up
+            // is not shown it either.
+            const gone = messages.get(event.message_id);
+            messages.delete(event.message_id);
+            if (gone) orderedMessages.splice(orderedMessages.indexOf(gone), 1);
+            break;
+          }
           const m = ensure(event.message_id);
           m.status = event.status;
           if (event.usage) m.usage = event.usage;
@@ -253,38 +261,16 @@ export class StreamBroker {
           mode = event.mode;
           break;
         case "iteration":
-          iteration = { n: event.n, max: event.max, ...(event.unlimited ? { unlimited: true as const } : {}) };
-          // Reaching an iteration *is* the run moving on, so a check-in
-          // cannot still be outstanding. Belt and braces beside
-          // `steps.decision`, which is the real clear-point.
-          pendingCheckin = undefined;
+          iteration = { n: event.n };
           break;
-        case "steps.checkin": {
-          const { kind: _kind, ...question } = event;
-          // Every field, deadline included: someone reconnecting mid-wait is
-          // exactly who needs to know how long is left, and what happens then.
-          pendingCheckin = question;
-          // The question names the step it paused at, so a client that joins
-          // mid-wait can show "104/200" rather than nothing.
-          iteration = { n: event.n, max: event.max, ...(event.unlimited ? { unlimited: true as const } : {}) };
+        // Only while one is under way. A run that ends mid-review leaves no
+        // `run.review.end`; a client goes by the stream having ended.
+        case "run.review.start":
+          reviewing = { mode: event.mode };
           break;
-        }
-        case "steps.decision": {
-          pendingCheckin = undefined;
-          // An unattended decision is the one kind that leaves nothing else in
-          // the transcript — "keep going" writes no message — so it is kept
-          // here, on the assistant message whose tools the check-in followed.
-          // That is always the last assistant message seen: a check-in comes
-          // right after an iteration's tool results, before the next one starts.
-          if (event.by === "timeout") {
-            const lastAssistant = [...orderedMessages].reverse().find((m) => m.author_type === "assistant");
-            if (lastAssistant) {
-              const { kind: _kind, ...note } = event;
-              lastAssistant.checkin_decision = note;
-            }
-          }
+        case "run.review.end":
+          reviewing = undefined;
           break;
-        }
         case "tool.call":
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
           if (promptCache?.message_id === event.message_id) promptCache = undefined;
@@ -341,7 +327,7 @@ export class StreamBroker {
       ...(iteration ? { iteration } : {}),
       ...(todos ? { todos } : {}),
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),
-      ...(pendingCheckin ? { pending_checkin: pendingCheckin } : {}),
+      ...(reviewing ? { reviewing } : {}),
       ...(promptStats ? { prompt_stats: promptStats } : {}),
       ...(promptCache ? { prompt_cache: promptCache } : {}),
       ...(subagents.length ? { subagents } : {}),

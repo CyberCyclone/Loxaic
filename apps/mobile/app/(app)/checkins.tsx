@@ -6,11 +6,9 @@ import { Text } from '@/components/ui/text';
 import { Spinner } from '@/components/ui/spinner';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
-import { AgentStepLimit } from '@/components/settings/AgentStepLimit';
 import { WaitTimeout } from '@/components/settings/WaitTimeout';
 import { AdaptiveTimeoutToggle } from '@/components/settings/AdaptiveTimeoutToggle';
-import { UnattendedCheckins } from '@/components/settings/UnattendedCheckins';
-import { LoopSensitivity } from '@/components/settings/LoopSensitivity';
+import { ProgressReviewSettings } from '@/components/settings/ProgressReviewSettings';
 import { SubAgentModel } from '@/components/settings/SubAgentModel';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useModels } from '@/hooks/useModels';
@@ -20,10 +18,11 @@ import { useServerReachable } from '@/lib/connection';
 import { usePrefs } from '@/hooks/usePrefs';
 
 /**
- * Everything about when a run stops to ask a person, and what it does when
- * nobody answers. A screen of its own rather than rows in the settings modal:
- * that modal has run past the fold twice already, and these settings only
- * make sense read together.
+ * Approvals & progress: how long a run waits for a person to approve a tool,
+ * and how a long run is kept from going nowhere (the progress review). A
+ * screen of its own rather than rows in the settings modal: that modal has run
+ * past the fold twice already, and these settings only make sense read
+ * together. The route keeps its old name (`checkins`), which links point at.
  *
  * Each control hides itself when the server does not report its field — an
  * older server simply has no such setting.
@@ -58,41 +57,10 @@ export default function CheckinsScreen() {
     return (
       <VStack space="lg" className="p-4">
         <Text size="xs" className="text-muted-foreground">
-          The agent stops to ask before it runs a tool that needs your approval, and every so many
-          steps to ask whether it should keep going. These settings decide how long it waits for you
-          and what it does if you are away.
+          The agent stops to ask before it runs a tool that needs your approval, and a progress review
+          keeps a long run from going nowhere without asking you anything. These settings decide how
+          long an approval waits for you, and how often a run is reviewed.
         </Text>
-
-        {/* `!= null` hides it against a server that predates the field, which
-            answers 200 with the key simply absent. */}
-        {prefs.maxIterations != null && (
-          <AgentStepLimit
-            value={prefs.maxIterations}
-            onChoose={(v) => { save({ maxIterations: v }); }}
-            disabled={locked}
-          />
-        )}
-
-        {prefs.checkinTimeoutMs !== undefined && (
-          <WaitTimeout
-            label="Wait for an answer to a check-in"
-            help="How long a check-in waits before doing what is set below. A waiting run gives its place in the queue back, so waiting longer holds up nobody else."
-            value={prefs.checkinTimeoutMs}
-            serverDefaultMs={prefs.serverDefaults?.checkinTimeoutMs}
-            onChoose={(v) => { save({ checkinTimeoutMs: v }); }}
-            disabled={locked}
-            testIDPrefix="settings.checkinTimeout"
-          />
-        )}
-
-        {prefs.checkinAutoContinues !== undefined && (
-          <UnattendedCheckins
-            value={prefs.checkinAutoContinues}
-            stepsPerWindow={prefs.maxIterations}
-            onChoose={(v) => { save({ checkinAutoContinues: v }); }}
-            disabled={locked}
-          />
-        )}
 
         {prefs.approvalTimeoutMs !== undefined && (
           <WaitTimeout
@@ -114,13 +82,7 @@ export default function CheckinsScreen() {
           />
         )}
 
-        {prefs.loopSensitivity !== undefined && (
-          <LoopSensitivity
-            value={prefs.loopSensitivity}
-            onChoose={(v) => { save({ loopSensitivity: v }); }}
-            disabled={locked}
-          />
-        )}
+        <ProgressReviewSettings prefs={prefs} save={save} disabled={locked} />
 
         {/* Hidden against a server that predates sub-agents, like every row
             above against one that predates its field. */}
@@ -150,8 +112,8 @@ export default function CheckinsScreen() {
 
   return (
     <VStack className="h-full flex-1">
-      <MainHeader title="Check-ins & approvals" onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined} />
-      <ScrollView testID="checkins.scroll" className="flex-1">
+      <MainHeader title="Approvals & progress" onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined} />
+      <ScrollView testID="checkins.scroll" className="flex-1" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets>
         {body()}
       </ScrollView>
       <ModelModal

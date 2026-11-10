@@ -2,17 +2,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import {
   clearRunApproval,
-  clearRunCheckin,
   clearRunQueuePosition,
-  onRunLimitsChange,
   registerRun,
   runActivityOf,
   seedRunLimits,
   setRunApproval,
-  setRunCheckin,
   setRunLimits,
   setRunQueuePosition,
-  takeRunCheckin,
   unregisterRun,
   type RunHandle,
 } from "../registry.ts";
@@ -22,8 +18,7 @@ import { watchRunActivity } from "../watchers.ts";
  * The thread list badges every row whose conversation has a run going (#282),
  * and the run registry is what decides the word. Two rules matter:
  *
- * - **What is reported.** The ranking is `runLevelFromSnapshot`'s with
- *   check-in and approval swapped (a run holds at most one; see
+ * - **What is reported.** The ranking is `runLevelFromSnapshot`'s (see
  *   `runActivityOf`): a question a person can answer outranks a queue
  *   position the same run also holds, because the run parked on an approval
  *   has handed its slot back and may well be queuing to get it again.
@@ -46,43 +41,25 @@ function makeHandle(overrides: Partial<RunHandle> = {}): RunHandle {
   };
 }
 
-describe("a run's limits", () => {
-  const off = { stepLimitOff: true, loopCheckOff: false };
-  const on = { stepLimitOff: false, loopCheckOff: false };
+describe("a run's switches", () => {
+  const off = { progressReviewOff: true };
+  const on = { progressReviewOff: false };
 
-  it("takes what its conversation says only if nobody has switched them yet", () => {
+  it("takes what its conversation says only if nobody has switched it yet", () => {
     const handle = makeHandle();
     seedRunLimits(handle, on);
     expect(handle.limits).toEqual(on);
 
     const switched = makeHandle();
-    setRunLimits(switched, off, "me");
+    setRunLimits(switched, off);
     seedRunLimits(switched, on);
     expect(switched.limits).toEqual(off);
-  });
-
-  it("tells what is waiting who switched them, until it stops listening", () => {
-    const handle = makeHandle();
-    const heard: string[] = [];
-    const stop = onRunLimitsChange(handle, (by) => { heard.push(by); });
-    setRunLimits(handle, off, "me");
-    stop();
-    setRunLimits(handle, on, "me again");
-    expect(heard).toEqual(["me"]);
-    expect(handle.limits).toEqual(on);
   });
 });
 
 describe("runActivityOf", () => {
   it("reads a plain run as running", () => {
     expect(runActivityOf(makeHandle())).toBe("running");
-  });
-
-  it("ranks a parked check-in over everything", () => {
-    const handle = makeHandle({ queuePosition: 1 });
-    setRunApproval(handle, "call_0", () => undefined);
-    setRunCheckin(handle, () => undefined);
-    expect(runActivityOf(handle)).toBe("awaiting_checkin");
   });
 
   it("ranks an approval over a queue position", () => {
@@ -152,24 +129,6 @@ describe("activity announcements", () => {
     setRunApproval(handle, "call_0", () => undefined);
     clearRunApproval(handle, "call_0");
     expect(seen).toHaveLength(3); // register, parked, answered
-    unregisterRun(handle.streamId);
-  });
-
-  it("announces a check-in parked and taken, and a clear that finds nothing is silent", () => {
-    const handle = makeHandle();
-    const seen = tap(handle.conversationId);
-    registerRun(handle);
-    setRunCheckin(handle, () => undefined);
-    expect(seen).toHaveLength(2);
-    const resolver = takeRunCheckin(handle);
-    expect(resolver).not.toBeNull();
-    expect(seen).toHaveLength(3);
-    // The engine's settle also clears, after the socket already took it:
-    // the second clear must not announce a state that never changed.
-    clearRunCheckin(handle);
-    expect(seen).toHaveLength(3);
-    expect(takeRunCheckin(handle)).toBeNull();
-    expect(seen).toHaveLength(3);
     unregisterRun(handle.streamId);
   });
 

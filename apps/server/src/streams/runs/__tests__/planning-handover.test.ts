@@ -1,8 +1,11 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import { CHECKIN_ANSWER_NUDGE, PLAN_REJECTED_MESSAGE, PLAN_REQUIRED_NUDGE, type ContentBlock } from "@loxaic/types";
+import { PLAN_REJECTED_MESSAGE, PLAN_REQUIRED_NUDGE, parseProgressNote, type ContentBlock } from "@loxaic/types";
 import { PLAN_TOOL_NAME, QUESTIONS_TOOL_NAME } from "@loxaic/agent";
 import type { ChatMessage, StreamOptions } from "../../../inference/provider.ts";
 
@@ -39,7 +42,9 @@ vi.mock("../../../inference/provider.ts", async (importOriginal) => {
   return {
     ...actual,
     streamCompletion: (model: string, msgs: ChatMessage[], options?: StreamOptions) => {
-      requests.push({ toolChoice: options?.toolChoice });
+      // The run's own requests only: a progress review is a request too, with
+      // no tools, and says nothing about how the run itself was asked.
+      if (options?.tools) requests.push({ toolChoice: options.toolChoice });
       if (mentions(msgs, stubborn)) return actual.streamCompletion(model, msgs, { ...options, toolChoice: "none" });
       if (options?.toolChoice === "required" && mentions(msgs, detours)) {
         // The mock plans from the last user message; show it one that asks
@@ -58,6 +63,7 @@ const { getRunByConversation } = await import("../../registry.ts");
 const { initStreamBroker } = await import("../../index.ts");
 const { buildToolset } = await import("../../../mcp/registry.ts");
 const { QUESTIONS_SUBMITTED, questionsProblem } = await import("../../../agent/executor.ts");
+const { __resetMockScenariosForTest } = await import("../../../inference/mock-scenarios.ts");
 
 const MODEL = "llama-3.1-8b-instruct";
 const userId = `test-handover-${uuid()}`;
@@ -214,24 +220,31 @@ describe("a planning turn always ends in a plan or questions", () => {
     expect(callsOf(await rowsOf(convId))).toEqual([PLAN_TOOL_NAME, QUESTIONS_TOOL_NAME]);
   }, 30_000);
 
-  it("never asks after 'answer now', which is the user asking for prose", async () => {
+  it("never asks for a plan after a progress review said to answer, which asks for prose", async () => {
+    // Reviewed after every step; the mock's reviewer says it is finished. The
+    // first such review only tells the run so; the second has it answer.
     await db
       .insert(userPrefs)
-      .values({ userId, maxIterations: 1 })
-      .onConflictDoUpdate({ target: userPrefs.userId, set: { maxIterations: 1 } });
+      .values({ userId, progressCheckSteps: null })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { progressCheckSteps: null } });
+    process.env.PROGRESS_CHECK_STEPS = "1";
+    const dir = mkdtempSync(path.join(tmpdir(), "planning-handover-"));
+    writeFileSync(path.join(dir, "scenarios.json"), JSON.stringify([{ match: "review-finished", steps: [1, 2].map((n) => ({ tool: "todo_write", args: { todos: [{ id: "1", text: `Step ${String(n)}`, status: "in_progress" }] } })) }]));
+    process.env.MOCK_SCENARIOS_FILE = path.join(dir, "scenarios.json");
+    __resetMockScenariosForTest();
     try {
       const convId = await newConversation();
-      // "todo" makes the mock call todo_write — offered in planning, no
-      // sandbox — so the one-step window ends on a tool and asks.
-      await startAgentRun({ userId, content: "make a todo list first", model: MODEL, mode: "planning", conversationId: convId });
-      await waitFor("the check-in", () => !!getRunByConversation(convId)?.stepsDecision);
-      getRunByConversation(convId)?.stepsDecision?.("answer", userId);
+      await startAgentRun({ userId, content: "review-finished: two steps", model: MODEL, mode: "planning", conversationId: convId });
       await waitFor("the run to end", () => getRunByConversation(convId) === undefined);
       const rows = await rowsOf(convId);
-      expect(rows.some((r) => textOf(r) === CHECKIN_ANSWER_NUDGE)).toBe(true);
+      expect(rows.map((r) => parseProgressNote(textOf(r) ?? "")?.action).filter(Boolean)).toEqual(["steer", "answer"]);
       expect(rows.some((r) => textOf(r) === PLAN_REQUIRED_NUDGE)).toBe(false);
-      expect(requests.map((r) => r.toolChoice)).toEqual([undefined, "none"]);
+      expect(requests.map((r) => r.toolChoice)).toEqual([undefined, undefined, "none"]);
     } finally {
+      delete process.env.PROGRESS_CHECK_STEPS;
+      delete process.env.MOCK_SCENARIOS_FILE;
+      __resetMockScenariosForTest();
+      rmSync(dir, { recursive: true, force: true });
       await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
     }
   }, 30_000);

@@ -20,7 +20,7 @@ export type SmartRoutingProfile = 'cloud' | 'server' | 'hybrid'
 
 export type { ModelInfo } from '@loxaic/api-client'
 export type { ContextBreakdown, ContextCategory, ContextPart, CompactionStats, PaletteSkill, AttachmentRef } from '@loxaic/api-client'
-import type { ContextBreakdown, CompactionStats, AttachmentRef, CheckinDecisionNote } from '@loxaic/api-client'
+import type { ContextBreakdown, CompactionStats, AttachmentRef } from '@loxaic/api-client'
 
 export { THINKING_LEVELS } from '@loxaic/types'
 
@@ -186,16 +186,13 @@ export interface Message {
    * rendering during that gap. */
   attachments?: (Partial<AttachmentRef> & { localUri?: string; mime: string })[]
   /**
-   * Who a server-inserted message is attributed to — today only the check-in
-   * "answer now" instruction. A user id when a person pressed the button,
-   * **null when nobody did** (the check-in timed out), and absent when we were
-   * not told. The three are rendered differently; see lib/checkinNotice.ts.
+   * Who a server-inserted message is attributed to: an old check-in's
+   * "answer now" instruction, or a progress note (always null). A user id when
+   * a person pressed the button, **null when nobody did** (it timed out, or the
+   * server wrote it), and absent when we were not told. The three are rendered
+   * differently; see lib/checkinNotice.ts.
    */
   authorUserId?: string | null
-  /** Assistant messages only: a step check-in raised after this turn that
-   * nobody answered, and what the run did about it. Live or from a snapshot —
-   * never from REST, so it is absent after the stream log has expired. */
-  checkinDecision?: CheckinDecisionNote
   /** User messages only: the project's instructions file changed before this
    * run, and the agent was given the change ahead of this message. From the
    * stored block, or live from `instructions.update`. */

@@ -71,90 +71,6 @@
     "finalText": "[Mock] counted.\n"
   },
   {
-    "match": "check in after each step",
-    "steps": [
-      {
-        "tool": "todo_write",
-        "args": {
-          "todos": [
-            {
-              "id": "1",
-              "text": "Sketch the shape",
-              "status": "in_progress"
-            }
-          ]
-        }
-      },
-      {
-        "tool": "todo_write",
-        "args": {
-          "todos": [
-            {
-              "id": "1",
-              "text": "Sketch the shape",
-              "status": "completed"
-            }
-          ]
-        }
-      }
-    ],
-    "finalText": "[Mock] Planned it in two steps and checked in on the way.\n"
-  },
-  {
-    "match": "repeat yourself until someone stops you",
-    "steps": [
-      {
-        "tool": "todo_write",
-        "args": {
-          "todos": [
-            {
-              "id": "1",
-              "text": "Investigate",
-              "status": "in_progress"
-            }
-          ]
-        }
-      },
-      {
-        "tool": "todo_write",
-        "args": {
-          "todos": [
-            {
-              "id": "1",
-              "text": "Investigate",
-              "status": "in_progress"
-            }
-          ]
-        }
-      },
-      {
-        "tool": "todo_write",
-        "args": {
-          "todos": [
-            {
-              "id": "1",
-              "text": "Investigate",
-              "status": "in_progress"
-            }
-          ]
-        }
-      },
-      {
-        "tool": "todo_write",
-        "args": {
-          "todos": [
-            {
-              "id": "1",
-              "text": "Investigate",
-              "status": "in_progress"
-            }
-          ]
-        }
-      }
-    ],
-    "finalText": "[Mock] Stopped repeating.\n"
-  },
-  {
     "match": "write two files, asking each time",
     "steps": [
       {
@@ -1194,5 +1110,660 @@
       }
     ],
     "finalText": "[Mock] Tried it.\n"
+  },
+  {
+    "match": "work steadily through the review drill",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Steady step 1",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Steady step 2",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Steady step 3",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Steady step 4",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Steady step 5",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Steady step 6",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Steady step 7",
+              "status": "in_progress"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] Worked through it steadily.\n"
+  },
+  {
+    "match": "review-stuck: circle the review drill",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 1",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 2",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 3",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 4",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 5",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 6",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 7",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 8",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 9",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 10",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 11",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Circling step 12",
+              "status": "in_progress"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] The stuck drill ran out of steps.\n"
+  },
+  {
+    "match": "review-finished: recheck the review drill",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 1",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 2",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 3",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 4",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 5",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 6",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 7",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 8",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 9",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 10",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 11",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 12",
+              "status": "in_progress"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] The recheck drill ran out of steps.\n"
+  },
+  {
+    "match": "review-linger: take the slow review drill",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Lingering step 1",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Lingering step 2",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Lingering step 3",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Lingering step 4",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Lingering step 5",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Lingering step 6",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Lingering step 7",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Lingering step 8",
+              "status": "in_progress"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] The slow review drill finished.\n"
+  },
+  {
+    "match": "delegate a stuck investigation",
+    "steps": [
+      {
+        "tool": "subagent",
+        "args": {
+          "description": "Stuck digger",
+          "prompt": "review-stuck: dig through the drill logs"
+        }
+      }
+    ],
+    "finalText": "[Mock] Parent finished after the report.\n"
+  },
+  {
+    "match": "review-stuck: dig through the drill logs",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 1",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 2",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 3",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 4",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 5",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 6",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 7",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 8",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 9",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 10",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 11",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Digging step 12",
+              "status": "in_progress"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] The digger ran out of steps.\n"
   }
 ]

@@ -19,7 +19,8 @@ import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
 import { promptReuse } from '@/lib/usage';
 import { describeMtpAcceptance } from '@/lib/mtp';
-import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
+import { answerNowNotice } from '@/lib/checkinNotice';
+import { progressNoteView } from '@/lib/progressReview';
 import { instructionsUpdateLine } from '@/lib/projectInstructions';
 import { COMPACTION_CONTINUE_NUDGE, PLAN_REQUIRED_NUDGE } from '@loxaic/types';
 import { CONTEXT_OVERFLOW_HINT } from '@/lib/rewind';
@@ -74,7 +75,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
   const reuse = msg.usage ? promptReuse(msg.usage) : null;
   const mtp = msg.usage ? describeMtpAcceptance(msg.usage.draftTokens, msg.usage.draftAcceptedTokens) : null;
   const omitted = msg.usage?.omittedAttachments ?? [];
-  const keptGoing = msg.role === 'assistant' ? autoContinueNotice(msg.checkinDecision) : null;
+  const progressNote = msg.role === 'user' ? progressNoteView(msg) : null;
 
   // A compaction summary isn't a conversational turn from either party — it
   // renders as a divider card, not a bubble, and skips everything below
@@ -91,9 +92,26 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
     );
   }
 
-  // The instruction the server writes when a check-in is answered with
-  // "answer now". It is stored as a user message because that is what replays
-  // identically into the next prompt (see engine.ts) — but nobody typed it, so
+  // What a progress review wrote into the run: the reviewer's reason, and
+  // whether the run was told to change approach or to answer. Persisted as a
+  // user row so the next turn replays it, but nobody typed it.
+  if (progressNote) {
+    return (
+      <VStack testID="progress.note" className="items-center px-4 py-2">
+        <Text testID="progress.note.reason" size="xs" className="text-center italic text-muted-foreground">
+          {progressNote.reason}
+        </Text>
+        <Text testID="progress.note.outcome" size="2xs" className="text-center text-muted-foreground">
+          {progressNote.outcome}
+        </Text>
+      </VStack>
+    );
+  }
+
+  // The instruction the server wrote when an old step check-in was answered
+  // with "answer now" (check-ins are gone; their rows stay). It is stored as
+  // a user message because that is what replays identically into the next
+  // prompt (see engine.ts) — but nobody typed it, so
   // rendering it as the user's own words would be a small lie in the
   // transcript, and a confusing one: it reads as the user interrupting.
   //
@@ -280,12 +298,6 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
                   Stopped
                 </Text>
               </HStack>
-            )}
-
-            {keptGoing && (
-              <Text testID="chat.message.autoContinued" size="xs" className="pt-1 italic text-muted-foreground">
-                {keptGoing}
-              </Text>
             )}
 
             {/* While reasoning is live, ThinkingBlock already shows this same

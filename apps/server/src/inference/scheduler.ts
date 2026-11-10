@@ -82,6 +82,10 @@ export interface RunSlot {
    * run does not resume into a slot nobody wants any more.
    */
   yieldWhile<T>(work: () => Promise<T>): Promise<T>;
+  /** Milliseconds spent out of the slot so far: inside every `yieldWhile`,
+   * including the wait to get back in. What the progress review subtracts to
+   * count only a run's working time (streams/runs/progress-review.ts). */
+  parkedMs(): number;
 }
 
 interface Waiter {
@@ -157,6 +161,7 @@ function makeSlot(
   onAdmitted?: () => void,
 ): RunSlot {
   let held = true;
+  let parked = 0;
   const give = () => {
     if (!held) return;
     held = false;
@@ -165,7 +170,9 @@ function makeSlot(
   };
   return {
     release: give,
+    parkedMs: () => parked,
     async yieldWhile<T>(work: () => Promise<T>): Promise<T> {
+      const leftAt = Date.now();
       give();
       let result: T;
       try {
@@ -176,9 +183,11 @@ function makeSlot(
         // always the more informative of the two. Deliberately not a `finally`
         // with a throw in it: that would swallow this error entirely.
         held = await enter(providerId, signal, onQueued, true, false, onAdmitted);
+        parked += Date.now() - leftAt;
         throw err;
       }
       held = await enter(providerId, signal, onQueued, true, false, onAdmitted);
+      parked += Date.now() - leftAt;
       if (!held) throw new RunSlotAbortedError();
       return result;
     },
@@ -214,6 +223,30 @@ export async function acquireExclusiveSlot(opts: {
       const q = queueFor(providerId);
       q.running--;
       q.exclusive = false;
+      pump(providerId);
+    },
+  };
+}
+
+/**
+ * A slot only if one is free right now and nobody is waiting for it; null
+ * otherwise, never a place in line.
+ *
+ * For a progress review beside its run: worth doing on a slot the backend has
+ * spare, never worth making someone's queued chat wait behind it. Without one
+ * the run lends the review its own slot instead.
+ */
+export async function tryAcquireRunSlot(providerId: string = DEFAULT_PROVIDER_ID): Promise<{ release(): void } | null> {
+  const max = await resolveMaxConcurrent(providerId);
+  const q = queueFor(providerId);
+  if (q.exclusive || q.waiting.length > 0 || q.running >= max) return null;
+  q.running++;
+  let held = true;
+  return {
+    release() {
+      if (!held) return;
+      held = false;
+      q.running--;
       pump(providerId);
     },
   };

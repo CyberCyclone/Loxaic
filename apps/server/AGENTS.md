@@ -90,7 +90,7 @@ The Fastify API, WebSockets, run engine, sandboxes and llama.cpp runtime. These 
 
 ### Running a routine
 
-- A routine run uses its owner's prefs and wait settings (approval window, check-in ladder); that is what keeps an unattended run bounded.
+- A routine run uses its owner's prefs (approval window, progress review); the review is what keeps an unattended run bounded.
 - **A routine's chats use only `routines.model`.** A null or unresolvable model records the run `failed` with an error assistant row; never fall back to the built-in default or `recent_models[0]` (that spends a provider key on a model nobody picked).
 
 ### Deleting a routine

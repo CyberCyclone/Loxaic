@@ -104,7 +104,7 @@ export default function AgentScreen() {
     promptCache,
     responseStartedAt,
     pendingApproval,
-    pendingCheckin,
+    reviewing,
     iteration,
     queuePosition,
     pendingWorkspace,
@@ -123,7 +123,6 @@ export default function AgentScreen() {
     handleApprove,
     handleAllowAlways,
     handleDeny,
-    handleSteps,
     handleFork,
     handleDelete,
     handleRename,
@@ -603,7 +602,7 @@ export default function AgentScreen() {
                     pendingApproval={shownApproval}
                     // Who is asking, when it is a sub-agent rather than the run.
                     approvalSource={childApproval?.description}
-                    pendingCheckin={pendingCheckin}
+                    reviewing={reviewing}
                     history={history}
                     stageCard={stageCard}
                     promptCache={promptCache}
@@ -620,9 +619,6 @@ export default function AgentScreen() {
                       if (pendingApproval) handleDeny(pendingApproval.callId);
                       else if (childApproval) subAgents.answer(childApproval.conversation_id, false);
                     }}
-                    onCheckinContinue={() => { handleSteps('continue'); }}
-                    onCheckinAnswer={() => { handleSteps('answer'); }}
-                    onCheckinStop={handleStop}
                   />
                 </SubAgentContext.Provider>
               </PlanReviewContext.Provider>
@@ -650,7 +646,7 @@ export default function AgentScreen() {
                   onPress={() => { setChooserOpen(true); }}
                 />
               </HStack>
-              {cacheNotice.banner && !pendingCheckin && !pendingApproval && (
+              {cacheNotice.banner && !pendingApproval && (
                 <PromptCacheBanner banner={cacheNotice.banner} onDismiss={() => { if (cacheNotice.banner) cacheNotice.dismiss(cacheNotice.banner.key); }} />
               )}
               <Composer

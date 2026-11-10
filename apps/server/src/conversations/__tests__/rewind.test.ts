@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { and, asc, db, eq, inArray } from "@loxaic/db";
 import { attachments, conversationShares, conversations, messages, usageRecords, user } from "@loxaic/db/schema";
-import { CHECKIN_ANSWER_NUDGE, type ContentBlock } from "@loxaic/types";
+import { CHECKIN_ANSWER_NUDGE, progressNoteText, type ContentBlock } from "@loxaic/types";
 import { getStreamBroker, initStreamBroker } from "../../streams/index.ts";
 import { claimConversation, ConversationBusyError, getRunByConversation, unregisterRun } from "../../streams/registry.ts";
 import { watchConversationEvents, type ConversationEvent } from "../../streams/watchers.ts";
@@ -325,6 +325,13 @@ describe("rewinding a conversation", () => {
     await expect(rewindConversation({ userId, conversationId: convId, messageId: reply })).rejects.toBeInstanceOf(RewindError);
     await expect(rewindConversation({ userId, conversationId: convId, messageId: nudge })).rejects.toBeInstanceOf(RewindError);
     await expect(rewindConversation({ userId, conversationId: convId, messageId: uuid() })).rejects.toBeInstanceOf(NotFoundError);
+    // A progress note is the server's only on a row nobody wrote. Its exact
+    // words under a person's name are a message that person typed.
+    const noteText = progressNoteText("steer", "It keeps rereading engine.ts.");
+    const note = await row(convId, "user", text(noteText), { authorUserId: null });
+    const typedNote = await row(convId, "user", text(noteText), { authorUserId: userId });
+    await expect(rewindConversation({ userId, conversationId: convId, messageId: note })).rejects.toBeInstanceOf(RewindError);
+    await expect(previewRewind({ userId, conversationId: convId, messageId: typedNote })).resolves.toMatchObject({ turns: 1 });
 
     await db.insert(conversationShares).values({ conversationId: convId, userId: otherId, role: "viewer", createdBy: userId });
     const real = (await rowsOf(convId))[0].id;
@@ -336,7 +343,7 @@ describe("rewinding a conversation", () => {
       .returning();
     const childMsg = await row(child.id, "user", text("task"));
     await expect(rewindConversation({ userId, conversationId: child.id, messageId: childMsg })).rejects.toBeInstanceOf(NotFoundError);
-    expect(await rowsOf(convId)).toHaveLength(3);
+    expect(await rowsOf(convId)).toHaveLength(5);
   });
 
   it("is refused while a run holds the conversation, and holds it against a send while it works", async () => {

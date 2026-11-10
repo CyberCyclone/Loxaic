@@ -70,43 +70,38 @@ export const NEW_PROJECT_SCENARIO_PROMPT = 'Create a new project with three file
 export const NEW_PROJECT_SCENARIO_DONE = 'node --test passes';
 
 /**
- * Matches the `scenarios.json` fixture's check-in scenario: two `todo_write`
- * steps with *different* todos — ordinary progress, so nothing looks like a
- * loop and only the step budget can pause it. `todo_write` needs no sandbox
- * and no approval on either surface, which is what lets the same prompt drive
- * chat and agent alike.
+ * Prompts for the `scenarios.json` fixture's progress-review drills. The mock
+ * reviewer answers from keywords in the task it is shown
+ * (apps/server/src/inference/provider.ts): `review-stuck` is stuck,
+ * `review-linger` takes twelve seconds before saying progressing, anything
+ * else is progressing at once. Every drill is `todo_write` steps, which need no
+ * sandbox and no approval on either surface.
  */
-export const CHECKIN_SCENARIO_PROMPT = 'Plan the work, then check in after each step.';
-
-/** Substring of the check-in scenario's wrap-up text, once both steps ran.
- * Case matters — `waitForTextIn` compares with `String.includes`. */
-export const CHECKIN_SCENARIO_DONE = 'Planned it in two steps';
-
-/**
- * Matches the `scenarios.json` fixture's loop scenario: four `todo_write`
- * steps with byte-identical arguments. The detector speaks at the third, well
- * inside any sane step budget — which is how a spec tells a loop check-in from
- * a budget one.
- */
-export const LOOP_SCENARIO_PROMPT = 'Repeat yourself until someone stops you.';
+export const REVIEW_STEADY_PROMPT = 'Work steadily through the review drill.';
+export const REVIEW_STEADY_DONE = 'Worked through it steadily';
+export const REVIEW_STUCK_PROMPT = 'review-stuck: circle the review drill until told otherwise.';
+/** A drill the mock's reviewer calls finished at every review: a run that has
+ * its answer and keeps rechecking it. */
+export const REVIEW_FINISHED_PROMPT = 'review-finished: recheck the review drill until told otherwise.';
+/** The same drill at eight seconds a step ("take your time"), for a review
+ * that only the clock can make due. */
+export const REVIEW_STUCK_SLOW_PROMPT = 'review-stuck: circle the review drill until told otherwise, and take your time over each step.';
+export const REVIEW_LINGER_PROMPT = 'review-linger: take the slow review drill.';
+export const REVIEW_LINGER_DONE = 'The slow review drill finished';
+/** The same drill with every step slow too ("take your time": eight seconds a
+ * request), so a run reviewed beside it is still working while the review
+ * lingers — at full speed it would finish, and drop the review, in a second. */
+export const REVIEW_LINGER_SLOW_PROMPT = 'review-linger: take the slow review drill, and take your time over each step.';
+/** An agent run whose one sub-agent gets stuck; the parent's own wrap-up. */
+export const REVIEW_SUBAGENT_PROMPT = 'Delegate a stuck investigation.';
+export const REVIEW_SUBAGENT_DONE = 'Parent finished after the report';
 
 /** What the mock answers with once it is told to stop using tools — the
  * evidence that "answer now" really did send `tool_choice: "none"`. */
 export const ANSWER_NOW_TEXT = 'Answering now without tools';
 
-/**
- * The instruction the server persists when a check-in is answered with
- * "answer now", as `CHECKIN_ANSWER_NUDGE` in `packages/types`.
- *
- * Copied rather than imported: this package deliberately has no workspace
- * dependencies and talks to the server over HTTP alone, the same way every
- * other mirrored string here does (MOCK_TOOL_DONE, the scenario wrap-ups). If
- * it drifts, the spec that reads it back fails — which is the point, because
- * that text is part of the conversation's replay and changing it silently
- * would break the prompt prefix for every existing thread.
- */
-export const CHECKIN_ANSWER_NUDGE =
-  'Please stop using tools and give your best final answer now from what you have so far.';
+/** How a progress note starts in the thread (apps/mobile/lib/progressReview.ts). */
+export const PROGRESS_NOTE_TEXT = 'Progress check:';
 
 /** A prompt the mock provider answers with a `bash` tool call — the probe
  * used to check that a sandbox actually executes, in whichever mode is
@@ -159,8 +154,8 @@ export async function openSidebar(): Promise<void> {
       // 20s, which is the whole outer budget. One attempt therefore consumed
       // every retry, and the helper failed with "menuButton still not
       // displayed" whenever the first check ran a moment too early: right
-      // after a `browser.refresh()`, which is exactly where agent-checkin
-      // uses it. Letting the tap miss keeps re-checking for the pinned
+      // after a `browser.refresh()`, which is where a spec reading a thread
+      // back from history uses it. Letting the tap miss keeps re-checking for the pinned
       // sidebar instead of committing to a button that will never appear.
       const menu = byTestId('shell.menuButton');
       const tapped = await menu
@@ -757,9 +752,8 @@ export async function patchSandboxSettings(patch: Record<string, unknown>): Prom
 /**
  * Patches a user's own prefs straight through the API.
  *
- * The settings screen offers presets (20/50/100/200), and a spec that wants to
- * *see* a check-in cannot wait for twenty real tool calls — so the cadence it
- * needs is set here rather than clicked. Per-user, so it takes that user's own
+ * A spec that wants to *see* a progress review cannot wait for twenty real
+ * tool calls — so the cadence it needs is set here rather than clicked. Per-user, so it takes that user's own
  * session rather than the admin's, unlike patchSandboxSettings above.
  */
 export async function patchPrefs(

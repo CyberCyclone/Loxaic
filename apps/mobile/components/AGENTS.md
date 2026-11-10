@@ -25,11 +25,11 @@ UI components, including the vendored gluestack primitives in `ui/`. These rules
 - Any modal or sheet with number or URL fields uses `keyboardDismissMode="on-drag"` on its scroll body: iOS number pads and URL keyboards have no close key, and `closeKeyboard()` in e2e relies on the drag.
 - Lists inside a modal with a search field use `keyboardShouldPersistTaps="handled"`, or the first tap only closes the keyboard.
 - Long sheets with text fields near the bottom set `automaticallyAdjustKeyboardInsets`.
-- The permission bar and the step check-in banner dismiss the keyboard on mount, native only (on web it would steal focus from typing). Key them by the question (`approvalKey`/`checkinKey`) so they remount for a new one.
+- The permission bar dismisses the keyboard on mount, native only (on web it would steal focus from typing). Key it by the question (`approvalKey`) so it remounts for a new one.
 
 ## Chat thread and composer
 
-- Nudges and notices nobody typed (compaction nudge `chat.message.compactionNudge`, plan nudge, check-in nudge, a sub-agent's `fromAgent` turns) render as notices, not user bubbles.
+- Nudges and notices nobody typed (compaction nudge `chat.message.compactionNudge`, plan nudge, an old check-in nudge, a progress note `progress.note` via `progressNoteView` (only a row with a null author: its words typed by a person are a user bubble), a sub-agent's `fromAgent` turns) render as notices, not user bubbles.
 
 ## Plan review and sub-agents
 

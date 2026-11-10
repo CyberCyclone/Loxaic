@@ -10,7 +10,6 @@ describe('run state copy', () => {
       queued: 'Queued',
       running: 'Running',
       awaiting_approval: 'Awaiting approval',
-      awaiting_checkin: 'Waiting for you',
       stopping: 'Stopping…',
       done: 'Done',
       error: 'Error',

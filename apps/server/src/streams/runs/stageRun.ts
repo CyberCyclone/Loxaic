@@ -29,7 +29,7 @@ import { lastRequestShape } from "./request-shape.ts";
  * before its first request, reported on the same stream.
  *
  * Nothing here writes a message row: the card is client-only, folded from the
- * stream log like a check-in decision, because a row would enter the prompt.
+ * stream log, because a row would enter the prompt.
  *
  * A run that fills its window extends inside itself (`extendWithinRun`), on its
  * own stream, before the request that would not fit.

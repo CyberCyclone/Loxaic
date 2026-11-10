@@ -4,10 +4,10 @@ import { formatDuration, WAIT_PRESETS_MS } from '@/lib/waitSettings';
 import { PresetChips, type Chip } from './PresetChips';
 
 /**
- * How long one kind of wait — a step check-in or a tool approval — gives a
- * person before the run decides for itself. `value` null is "the server's
- * default", which is named with its actual length so choosing it is not a
- * guess.
+ * A length of time with presets: how long a tool approval waits for a person,
+ * or how much working time passes between progress reviews. `value` null is
+ * "the server's default", which is named with its actual length so choosing it
+ * is not a guess.
  */
 export function WaitTimeout({
   label,
@@ -17,6 +17,7 @@ export function WaitTimeout({
   onChoose,
   disabled,
   testIDPrefix,
+  presetsMs = WAIT_PRESETS_MS,
 }: {
   label: string;
   help: string;
@@ -25,8 +26,10 @@ export function WaitTimeout({
   onChoose: (value: number | null) => void;
   disabled?: boolean;
   testIDPrefix: string;
+  /** The choices beside "server default"; the approval wait's by default. */
+  presetsMs?: readonly number[];
 }) {
-  const presets: number[] = [...WAIT_PRESETS_MS];
+  const presets: number[] = [...presetsMs];
   // A value set some other way (the API, an older client) is shown as its own
   // chip, so the row never renders with nothing selected.
   if (value != null && !presets.includes(value)) presets.push(value);

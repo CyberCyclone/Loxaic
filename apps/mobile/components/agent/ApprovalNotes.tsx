@@ -86,7 +86,7 @@ export function ApprovalNotes({
           {view.note}
         </Text>
       ) : null}
-      <DeadlineCountdown kind="approval" deadline={deadline} testID={`${testIDBase}.deadline`} />
+      <DeadlineCountdown deadline={deadline} testID={`${testIDBase}.deadline`} />
       <DisconnectedNote testID={`${testIDBase}.reconnecting`} />
     </>
   );

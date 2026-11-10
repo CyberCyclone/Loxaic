@@ -372,6 +372,20 @@
       "when": 1793621560767,
       "tag": "0052_shared_image_pids",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1794227209200,
+      "tag": "0053_progress_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1794227209686,
+      "tag": "0054_drop_step_checkins",
+      "breakpoints": true
     }
   ]
 }

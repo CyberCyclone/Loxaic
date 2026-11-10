@@ -6,19 +6,16 @@ import type { ServerMessage } from "@loxaic/types";
 
 /**
  * A finished run must not hand a catching-up client a question it cannot
- * answer.
+ * answer, or a review it is no longer running.
  *
  * `foldSnapshot` is pure over the record log and cannot see that a stream has
  * ended — `producer.end` writes no record, it only finalizes the meta. So a
- * run stopped while parked at a step check-in leaves `steps.checkin` in the
- * log with nothing after it: the abort emits no `steps.decision`, because
- * nobody decided. The fold therefore keeps reporting the question forever.
- *
- * Found in the browser, not by a unit test: stopping a parked chat run cleared
- * the banner, and the next resync put it straight back — on a run that had
- * already ended, offering "Keep going" and "Answer now" on a stream nothing
- * was listening to. Approvals escape the same trap only by accident, because
- * their abort path records a `tool.result` that the fold clears on.
+ * run that ends with something outstanding leaves it in the log with nothing
+ * after it, and the fold keeps reporting it forever: a progress review still
+ * running beside a run that finished is dropped without an end event, and an
+ * approval survives its own abort only by accident, because that path records
+ * a `tool.result` the fold clears on. Only delivery sees both the snapshot and
+ * the status, so it is where these are stripped.
  */
 vi.mock("../../streams/authz.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../streams/authz.ts")>();
@@ -66,43 +63,27 @@ describe("a finished stream's snapshot", () => {
     );
   }
 
-  it("carries a pending check-in while the run is still parked, and not after it ends", async () => {
+  it("says a review is under way while the run is, and not after it ends", async () => {
     const broker = getStreamBroker();
     const streamId = uuid();
     const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface: "agent" });
-    producer.emit({ kind: "iteration", n: 100, max: 100 });
-    const expiresAt = Date.now() + 600_000;
-    producer.emit({
-      kind: "steps.checkin",
-      n: 100,
-      max: 100,
-      reason: "budget",
-      timeout_ms: 600_000,
-      expires_at: expiresAt,
-      timeout_basis: "setting",
-      on_timeout: "continue",
-    });
+    producer.emit({ kind: "iteration", n: 20 });
+    producer.emit({ kind: "run.review.start", mode: "alongside" });
 
-    // Parked: the question is real and a reconnecting client needs it —
-    // with its deadline, and the server's clock to count it down against.
-    const before = Date.now();
     const live = await syncFor(streamId);
     expect(live?.status).toBe("active");
-    expect(live?.snapshot.pending_checkin).toMatchObject({ n: 100, reason: "budget", expires_at: expiresAt, on_timeout: "continue" });
-    expect(live?.server_now).toBeGreaterThanOrEqual(before);
+    expect(live?.snapshot.reviewing).toEqual({ mode: "alongside" });
 
-    // Stopped while parked — the shape an abort leaves behind.
-    await producer.end("cancelled");
-
-    // The raw fold still says "parked", because nothing in the log ever said
-    // otherwise. That is the trap this guards.
-    expect(broker.foldSnapshot(await broker.readFrom(streamId, 0)).pending_checkin).toBeDefined();
+    // A run that ends with a review beside it leaves no `run.review.end`
+    // (progress-review.ts drops the review silently).
+    await producer.end("complete");
+    expect(broker.foldSnapshot(await broker.readFrom(streamId, 0)).reviewing).toBeDefined();
 
     const ended = await syncFor(streamId);
-    expect(ended?.status).toBe("cancelled");
-    expect(ended?.snapshot.pending_checkin).toBeUndefined();
-    // The transcript itself is untouched — only the question is dropped.
-    expect(ended?.snapshot.iteration).toEqual({ n: 100, max: 100 });
+    expect(ended?.status).toBe("complete");
+    expect(ended?.snapshot.reviewing).toBeUndefined();
+    // The transcript itself is untouched.
+    expect(ended?.snapshot.iteration).toEqual({ n: 20 });
   });
 
   it("drops a pending approval from a finished stream for the same reason", async () => {

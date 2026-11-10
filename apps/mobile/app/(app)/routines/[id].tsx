@@ -16,8 +16,8 @@ import { MainHeader } from '@/components/shell/MainHeader';
 import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
 import { CHAT_APPROVAL_IDS, ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
-import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
-import { approvalKey, checkinKey } from '@/lib/pendingWaits';
+import { ReviewStatus } from '@/components/chat/ReviewStatus';
+import { approvalKey } from '@/lib/pendingWaits';
 import { useOverlayGone } from '@/hooks/useOverlayGone';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
@@ -159,7 +159,7 @@ export default function RoutineChatScreen() {
     queuePosition,
     responseStartedAt,
     pendingApproval,
-    pendingCheckin,
+    reviewing,
     handleSend,
     handleRetry,
     applyLocalRewind,
@@ -167,7 +167,6 @@ export default function RoutineChatScreen() {
     handleCommand,
     handleApprove,
     handleDeny,
-    handleSteps,
     handleAllowAlways,
     handleDelete,
     history,
@@ -488,15 +487,7 @@ export default function RoutineChatScreen() {
               </Button>
             </Box>
           )}
-          {pendingCheckin && (
-            <StepCheckInBanner
-              key={checkinKey(pendingCheckin)}
-              {...pendingCheckin}
-              onContinue={() => { handleSteps('continue'); }}
-              onAnswer={() => { handleSteps('answer'); }}
-              onStop={handleStop}
-            />
-          )}
+          <ReviewStatus mode={reviewing} />
           {activeConv && (
             <Composer
               onSend={(text, attachments) => { handleSend(text, model, attachments); }}

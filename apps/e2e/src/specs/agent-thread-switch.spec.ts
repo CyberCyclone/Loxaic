@@ -1,8 +1,8 @@
 /**
  * A run's waiting prompt survives a switch to another thread and back.
  *
- * The agent screen kept one run's state — its status, a pending approval or
- * check-in, the step counter, the to-do list — as a single value for "the
+ * The agent screen kept one run's state — its status, a pending approval, the
+ * step counter, the to-do list — as a single value for "the
  * thread on screen". Opening another thread cleared it, events for a thread
  * in the background were dropped, and coming back asked for no snapshot (the
  * socket had subscribed to that conversation already). On the beta, a run
@@ -16,12 +16,13 @@ import { browser, expect } from '@wdio/globals';
 import { apiToken, uniqueCreds } from '../helpers/auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { isVisible, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
-  CHECKIN_SCENARIO_DONE,
-  CHECKIN_SCENARIO_PROMPT,
+  REVIEW_LINGER_DONE,
+  REVIEW_LINGER_PROMPT,
   MOCK_TOOL_DONE,
   TOOL_PROMPT,
+  getMessageTexts,
   goToSurface,
   listConversations,
   patchPrefs,
@@ -75,7 +76,7 @@ describe('switching agent threads while a run is waiting', () => {
   });
 
   after(async () => {
-    await patchPrefs(creds, { maxIterations: 100 });
+    await patchPrefs(creds, { progressCheckSteps: null });
   });
 
   it('brings an approval back to its thread, and keeps it off the other one', async function () {
@@ -126,26 +127,24 @@ describe('switching agent threads while a run is waiting', () => {
     await waitForRunDone(creds, asking, 60_000);
   });
 
-  it('brings a step check-in back to its thread', async function () {
+  it("brings a progress review's status back to its thread, and keeps it off the other one", async function () {
     this.timeout(4 * 60_000);
-    // Two steps, and a scenario with exactly two, so the run asks once.
-    await patchPrefs(creds, { maxIterations: 2 });
-    const asking = await startRun('auto', CHECKIN_SCENARIO_PROMPT);
-    await waitForVisible('checkin.banner', 90_000);
-    await waitForTextIn('agent.run.status', 'Waiting for you');
+    // Reviewed after three steps; the mock's reviewer takes twelve seconds.
+    await patchPrefs(creds, { progressCheckSteps: 3 });
+    const reviewing = await startRun('auto', REVIEW_LINGER_PROMPT);
+    await waitForFreshText('run.review.status', 'Paused to check progress', 90_000);
 
     await selectThread(other, 'agent');
-    await waitForAbsent('checkin.banner');
+    await waitForAbsent('run.review.status');
 
-    await selectThread(asking, 'agent');
-    await waitForVisible('checkin.banner');
-    // The step count is part of what was kept.
-    await waitForTextIn('agent.run.status', 'Waiting for you · 2/2');
-    await shot('agent-switch-checkin-back');
+    await selectThread(reviewing, 'agent');
+    await waitForFreshText('run.review.status', 'Paused to check progress');
+    await shot('agent-switch-review-back');
 
-    await tap('checkin.continue');
-    await waitForAbsent('checkin.banner');
-    await waitForTextIn('chat.messageList', CHECKIN_SCENARIO_DONE);
-    await waitForRunDone(creds, asking, 60_000);
+    await waitForRunDone(creds, reviewing, 90_000);
+    await waitForAbsent('run.review.status');
+    if (!(await getMessageTexts(creds, reviewing)).some((t) => t.includes(REVIEW_LINGER_DONE))) {
+      throw new Error('the run did not finish its drill after the review');
+    }
   });
 });

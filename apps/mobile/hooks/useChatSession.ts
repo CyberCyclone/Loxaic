@@ -9,7 +9,6 @@ import {
   stopStream,
   approveTool,
   denyTool,
-  sendStepsDecision,
   deleteConversation,
   getConversations,
   getMessages,
@@ -17,9 +16,9 @@ import {
   updateConversation,
   type ServerMessage,
   type AttachmentRef,
-  type StepsDecision,
   type PromptCacheStatus,
   type PromptStats,
+  type ReviewMode,
   type Conversation as ApiConversation,
 } from '@loxaic/api-client';
 import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
@@ -35,7 +34,8 @@ import { applyRewound, restoreReportLine } from '@/lib/rewind';
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
-import { approvalStreamId, toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { approvalStreamId, toPendingApproval, type PendingApproval } from '@/lib/pendingWaits';
+import { reviewingAfterEvent } from '@/lib/progressReview';
 import { followsTurnStarted, isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, retrySend, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { foldPromptCache } from '@/lib/promptCache';
@@ -48,10 +48,6 @@ import { isSubAgentEvent } from '@/lib/subAgents';
 import { useSubAgentState } from './useSubAgentState';
 
 export type { PendingApproval };
-
-/** Imported from the agent hook rather than redeclared: both surfaces render
- * the same banner, so a second definition is a second thing to keep in step. */
-export type { PendingCheckin };
 
 /** Per-conversation in-flight stream state — keyed by conversation id so
  * switching threads mid-response can never show one conversation's stop
@@ -242,9 +238,9 @@ export function useChatSession(
   // Read by Allow and Deny, which have to name the run that asked.
   const pendingApprovalByConvRef = useRef<Partial<Record<string, PendingApproval>>>({});
   pendingApprovalByConvRef.current = pendingApprovalByConv;
-  /** Keyed for the same reason as the approvals above: a check-in belongs to
-   * its conversation, not to whatever is on screen when it arrives. */
-  const [pendingCheckinByConv, setPendingCheckinByConv] = useState<Partial<Record<string, PendingCheckin>>>({});
+  /** A progress review under way, per conversation — keyed for the same
+   * reason as the approvals above. Nobody answers it; it is only said. */
+  const [reviewingByConv, setReviewingByConv] = useState<Partial<Record<string, ReviewMode>>>({});
   // The latest step of a context-stage switch, per conversation. Client-only:
   // the server writes no message for it (see lib/stageCard.ts), and it is kept
   // after the switch ends so "extended to 512K" stays readable.
@@ -747,13 +743,13 @@ export function useChatSession(
             }
             return { ...prev, [convId]: toPendingApproval(pa, Date.now(), event.server_now, event.stream_id) };
           });
-          setPendingCheckinByConv((prev) => {
-            const pc = event.snapshot.pending_checkin;
-            if (!pc) {
+          setReviewingByConv((prev) => {
+            const mode = event.status === 'active' ? event.snapshot.reviewing?.mode : undefined;
+            if (!mode) {
               if (!(convId in prev)) return prev;
               return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
             }
-            return { ...prev, [convId]: toPendingCheckin(pc, Date.now(), event.server_now, event.stream_id) };
+            return prev[convId] === mode ? prev : { ...prev, [convId]: mode };
           });
         }
         const stageSnapshot = event.snapshot.context_stage;
@@ -895,14 +891,12 @@ export function useChatSession(
             if (prev[convId]?.callId !== inner.call_id) return prev;
             return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
           });
-        } else if (inner.kind === 'steps.checkin') {
-          setPendingCheckinByConv((prev) => ({ ...prev, [convId]: toPendingCheckin(inner, Date.now(), undefined, event.stream_id) }));
-        } else if (inner.kind === 'steps.decision' || inner.kind === 'iteration') {
-          // Answered — here, on another device, or by the timeout. Reaching a
-          // new iteration means the same thing.
-          setPendingCheckinByConv((prev) => {
-            if (!(convId in prev)) return prev;
-            return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+        } else if (inner.kind === 'run.review.start' || inner.kind === 'run.review.end') {
+          setReviewingByConv((prev) => {
+            const next = reviewingAfterEvent(prev[convId] ?? null, inner);
+            if (next === (prev[convId] ?? null)) return prev;
+            if (next === null) return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+            return { ...prev, [convId]: next };
           });
         }
         if (inner.kind === 'message.end' && inner.status === 'error' && inner.error) {
@@ -940,7 +934,8 @@ export function useChatSession(
           if (!(convId in prev)) return prev;
           return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
         });
-        setPendingCheckinByConv((prev) => {
+        // A review cannot outlive its run.
+        setReviewingByConv((prev) => {
           const convId = event.conversation_id;
           if (!(convId in prev)) return prev;
           return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
@@ -963,8 +958,7 @@ export function useChatSession(
       } else if (event.type === 'conversation.limits') {
         // Its owner flipped a switch, maybe on another device.
         runLimits?.current?.onChange(event.conversation_id, {
-          stepLimitOff: event.step_limit_off,
-          loopCheckOff: event.loop_check_off,
+          progressReviewOff: event.progress_review_off,
         });
       } else if (event.type === 'conversation.rewound') {
         // Here or on another device: messages left the end of a thread.
@@ -976,7 +970,14 @@ export function useChatSession(
           lastMessageErrorRef.current.delete(streamId);
         }
         const tracked = streamingByConvRef.current[convId];
-        if (tracked && removedStreams.has(tracked.streamId)) clearStream(convId);
+        if (tracked && removedStreams.has(tracked.streamId)) {
+          clearStream(convId);
+          // Its review went with it.
+          setReviewingByConv((prev) => {
+            if (!(convId in prev)) return prev;
+            return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+          });
+        }
         setPendingApprovalByConv((prev) => {
           const pa = prev[convId];
           if (!pa?.streamId || !removedStreams.has(pa.streamId)) return prev;
@@ -1314,28 +1315,6 @@ export function useChatSession(
     [approvalStream, clearApproval, showToast],
   );
 
-  /** Answers a step check-in — see useAgentSession.handleSteps. Chat and agent
-   * share one tool loop, so chat runs park exactly the same way. */
-  const handleSteps = useCallback(
-    (decision: StepsDecision) => {
-      const id = activeIdRef.current;
-      const stream = id ? streamingByConvRef.current[id] : undefined;
-      if (!wsRef.current || !id || !stream) {
-        showToast('Not connected to this run — reload the page and try again', 4000);
-        return;
-      }
-      if (isOffline() || !sendStepsDecision(wsRef.current, stream.streamId, decision)) {
-        showToast(NOT_SENT_RECONNECTING, 4000);
-        return;
-      }
-      setPendingCheckinByConv((prev) => {
-        if (!(id in prev)) return prev;
-        return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== id));
-      });
-    },
-    [showToast],
-  );
-
   /** "Allow always": approves this call and asks the server to stop asking —
    * the tool's MCP policy, a builtin's place on the allowlist, or for `bash`
    * the command rules the approval proposed. The server records it, and only
@@ -1477,7 +1456,8 @@ export function useChatSession(
     queuePosition: activeStream?.queuePosition ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,
-    pendingCheckin: activeId ? (pendingCheckinByConv[activeId] ?? null) : null,
+    /** How a progress review of the open thread's run is going, or null. */
+    reviewing: activeId ? (reviewingByConv[activeId] ?? null) : null,
     /** The open thread's latest context-stage step, or null. */
     stageCard: activeId ? (stageCardByConv[activeId] ?? null) : null,
     handleSend,
@@ -1488,7 +1468,6 @@ export function useChatSession(
     handleNewChat,
     handleApprove,
     handleDeny,
-    handleSteps,
     handleAllowAlways,
     /** Every thread's sub-agents, and the open panel's transcript. */
     subAgents,

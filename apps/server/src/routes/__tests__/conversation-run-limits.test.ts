@@ -6,9 +6,9 @@ import { conversations, conversationShares, user } from "@loxaic/db/schema";
 import { LIMITS_ON } from "@loxaic/types";
 
 /**
- * A conversation's step limit and loop check: stored per conversation, its
- * owner's alone, and refused where they would unbound what must stay bounded.
- * Auth stubbed, everything else real.
+ * A conversation's progress-review switch: stored per conversation, its
+ * owner's alone, and refused where it would leave unwatched what must stay
+ * watched. Auth stubbed, everything else real.
  */
 const currentUser = { id: "" };
 vi.mock("../../auth/middleware", () => ({
@@ -47,33 +47,32 @@ afterAll(async () => {
   await app.close();
 });
 
-describe("PATCH /v1/conversations/:id, run limits", () => {
-  it("turns each off and back on, independently", async () => {
+describe("PATCH /v1/conversations/:id, progress review switch", () => {
+  it("turns it off and back on", async () => {
     const id = await conversation("chat");
-    expect((await patch(id, { step_limit_off: true })).json()).toMatchObject({ stepLimitOff: true, loopCheckOff: false });
-    expect((await patch(id, { loop_check_off: true })).json()).toMatchObject({ stepLimitOff: true, loopCheckOff: true });
-    expect((await patch(id, { step_limit_off: false })).json()).toMatchObject({ stepLimitOff: false, loopCheckOff: true });
+    expect((await patch(id, { progress_review_off: true })).json()).toMatchObject({ progressReviewOff: true });
+    expect((await patch(id, { progress_review_off: false })).json()).toMatchObject({ progressReviewOff: false });
   });
 
-  it("offers them on an agent thread, and refuses a routine's or a sub-agent's", async () => {
-    expect((await patch(await conversation("agent"), { loop_check_off: true })).statusCode).toBe(200);
+  it("offers it on an agent thread, and refuses a routine's or a sub-agent's", async () => {
+    expect((await patch(await conversation("agent"), { progress_review_off: true })).statusCode).toBe(200);
     const routine = await conversation("routine");
-    expect((await patch(routine, { step_limit_off: true })).statusCode).toBe(400);
+    expect((await patch(routine, { progress_review_off: true })).statusCode).toBe(400);
     // Nobody owns a sub-agent's conversation, so it is not found before that.
     const child = await conversation("subagent");
-    expect((await patch(child, { step_limit_off: true })).statusCode).toBe(404);
+    expect((await patch(child, { progress_review_off: true })).statusCode).toBe(404);
     for (const id of [routine, child]) {
       const row = await db.query.conversations.findFirst({ where: eq(conversations.id, id) });
-      expect(row?.stepLimitOff).toBe(false);
+      expect(row?.progressReviewOff).toBe(false);
     }
   });
 
-  it("refuses anything but true or false, even beside one that is", async () => {
+  it("refuses anything but true or false, even beside a valid change", async () => {
     const id = await conversation("chat");
-    expect((await patch(id, { step_limit_off: "yes" })).statusCode).toBe(400);
-    expect((await patch(id, { step_limit_off: "yes", loop_check_off: true })).statusCode).toBe(400);
+    expect((await patch(id, { progress_review_off: "yes" })).statusCode).toBe(400);
+    expect((await patch(id, { progress_review_off: "yes", model_pref: { model: "m" } })).statusCode).toBe(400);
     const row = await db.query.conversations.findFirst({ where: eq(conversations.id, id) });
-    expect(row).toMatchObject({ stepLimitOff: false, loopCheckOff: false });
+    expect(row).toMatchObject({ progressReviewOff: false, modelPref: null });
   });
 
   it("is the owner's: an editor gets the same 404 as a stranger", async () => {
@@ -81,20 +80,20 @@ describe("PATCH /v1/conversations/:id, run limits", () => {
     await db.insert(conversationShares).values({ conversationId: id, userId: editor, role: "editor", createdBy: owner });
     currentUser.id = editor;
     try {
-      expect((await patch(id, { step_limit_off: true })).statusCode).toBe(404);
+      expect((await patch(id, { progress_review_off: true })).statusCode).toBe(404);
     } finally {
       currentUser.id = owner;
     }
   });
 
-  it("leaves them alone on a patch about something else, and says nothing", async () => {
+  it("leaves it alone on a patch about something else, and says nothing", async () => {
     const id = await conversation("chat");
-    await patch(id, { step_limit_off: true });
+    await patch(id, { progress_review_off: true });
     const heard: unknown[] = [];
     const stop = watchConversationEvents(id, (event) => { heard.push(event); });
     const res = await patch(id, { model_pref: { model: "m" } });
     stop();
-    expect(res.json()).toMatchObject({ stepLimitOff: true });
+    expect(res.json()).toMatchObject({ progressReviewOff: true });
     expect(heard).toEqual([]);
   });
 
@@ -105,28 +104,28 @@ describe("PATCH /v1/conversations/:id, run limits", () => {
     const heard: unknown[] = [];
     const stop = watchConversationEvents(id, (event) => { heard.push(event); });
     try {
-      await patch(id, { loop_check_off: true });
-      expect(handle).toMatchObject({ limits: { stepLimitOff: false, loopCheckOff: true } });
-      expect(heard).toEqual([{ type: "conversation.limits", conversation_id: id, step_limit_off: false, loop_check_off: true }]);
+      await patch(id, { progress_review_off: true });
+      expect(handle).toMatchObject({ limits: { progressReviewOff: true } });
+      expect(heard).toEqual([{ type: "conversation.limits", conversation_id: id, progress_review_off: true }]);
     } finally {
       stop();
       unregisterRun(handle.streamId);
     }
   });
 
-  it("turns a limit back on in a run someone else sent, but never off", async () => {
+  it("turns the review back on in a run someone else sent, but never off", async () => {
     const id = await conversation("chat");
-    await patch(id, { step_limit_off: true });
     const handle = {
       streamId: uuid(), conversationId: id, userId: editor, abort: new AbortController(), approvals: new Map(),
-      limits: { stepLimitOff: true, loopCheckOff: false },
+      limits: { progressReviewOff: false },
     };
     registerRun(handle);
     try {
-      await patch(id, { loop_check_off: true });
-      expect(handle.limits).toEqual({ stepLimitOff: true, loopCheckOff: false });
-      await patch(id, { step_limit_off: false });
-      expect(handle.limits).toEqual({ stepLimitOff: false, loopCheckOff: false });
+      await patch(id, { progress_review_off: true });
+      expect(handle.limits).toEqual({ progressReviewOff: false });
+      handle.limits = { progressReviewOff: true };
+      await patch(id, { progress_review_off: false });
+      expect(handle.limits).toEqual({ progressReviewOff: false });
     } finally {
       unregisterRun(handle.streamId);
     }
@@ -134,30 +133,32 @@ describe("PATCH /v1/conversations/:id, run limits", () => {
 });
 
 describe("loadRunLimits", () => {
-  it("is every limit on for a routine or a sub-agent, whatever its columns say", async () => {
+  it("is the review on for a routine or a sub-agent, whatever its column says", async () => {
     for (const kind of ["routine", "subagent"] as const) {
       const id = await conversation(kind);
-      await db.update(conversations).set({ stepLimitOff: true, loopCheckOff: true }).where(eq(conversations.id, id));
+      await db.update(conversations).set({ progressReviewOff: true }).where(eq(conversations.id, id));
       expect(await loadRunLimits(id)).toEqual(LIMITS_ON);
     }
     const chat = await conversation("chat");
-    await db.update(conversations).set({ stepLimitOff: true }).where(eq(conversations.id, chat));
-    expect(await loadRunLimits(chat)).toEqual({ stepLimitOff: true, loopCheckOff: false });
+    await db.update(conversations).set({ progressReviewOff: true }).where(eq(conversations.id, chat));
+    expect(await loadRunLimits(chat)).toEqual({ progressReviewOff: true });
   });
 });
 
-describe("POST /v1/conversations, run limits", () => {
+describe("POST /v1/conversations, progress review switch", () => {
   it("stores what a client chose before the conversation existed", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/conversations",
-      payload: { kind: "agent", workspace: { kind: "scratch" }, run_limits: { step_limit_off: true, loop_check_off: "x" } },
+      payload: { kind: "agent", workspace: { kind: "scratch" }, run_limits: { progress_review_off: true } },
     });
-    expect(res.json()).toMatchObject({ stepLimitOff: true, loopCheckOff: false });
+    expect(res.json()).toMatchObject({ progressReviewOff: true });
   });
 
-  it("has every limit on otherwise", async () => {
+  it("ignores a value that is not true or false, and has the review on otherwise", async () => {
+    const odd = await app.inject({ method: "POST", url: "/v1/conversations", payload: { run_limits: { progress_review_off: "x" } } });
+    expect(odd.json()).toMatchObject({ progressReviewOff: false });
     const res = await app.inject({ method: "POST", url: "/v1/conversations", payload: {} });
-    expect(res.json()).toMatchObject({ stepLimitOff: false, loopCheckOff: false });
+    expect(res.json()).toMatchObject({ progressReviewOff: false });
   });
 });

@@ -6,8 +6,8 @@ import type { RunState } from './agentRunState';
  *
  * They used to live in the agent header alone. The thread list now says the
  * same thing about every row that has a run going (#282), and a row that
- * called `awaiting_checkin` "Waiting" while the header said "Waiting for you"
- * is the kind of drift nobody notices until a support thread quotes both.
+ * said one word while the header said another is the kind of drift nobody
+ * notices until a support thread quotes both.
  * `RunHeader` renders from here, so the row cannot disagree with the header
  * without someone editing this file and meaning to.
  */
@@ -15,9 +15,6 @@ export const STATE_LABEL: Record<RunState, string> = {
   queued: 'Queued',
   running: 'Running',
   awaiting_approval: 'Awaiting approval',
-  // Not "Awaiting answer": the run is asking a question, and the person it is
-  // asking is the one reading this.
-  awaiting_checkin: 'Waiting for you',
   stopping: 'Stopping…',
   done: 'Done',
   error: 'Error',
@@ -29,7 +26,6 @@ export const STATE_DOT: Record<RunState, string> = {
   queued: 'bg-warning',
   running: 'bg-primary',
   awaiting_approval: 'bg-warning',
-  awaiting_checkin: 'bg-warning',
   // Amber too: asked to stop, but not stopped — the run is still winding up.
   stopping: 'bg-warning',
   done: 'bg-success',

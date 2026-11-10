@@ -8,7 +8,7 @@
  * the body must stay on screen when it is. WebDriver calls such an element
  * "displayed", so this asserts reachability (a scrolling ancestor, then a
  * bounding-rect check), the same way mcp-servers.spec.ts and
- * checkin-settings.spec.ts do.
+ * progress-review-settings.spec.ts do.
  */
 import { browser } from '@wdio/globals';
 import { uniqueCreds } from '../helpers/auth.ts';

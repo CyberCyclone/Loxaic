@@ -117,7 +117,7 @@ async function waitForStatus(id: string, status: string, timeout = 60_000): Prom
 }
 
 /** Whether an element's nearest scrolling ancestor can bring it into view —
- * the same assertion checkin-settings.spec.ts makes. Visibility alone passes
+ * the same assertion progress-review-settings.spec.ts makes. Visibility alone passes
  * for a row below the fold. */
 async function reachable(id: string): Promise<boolean> {
   return browser.execute((selector: string) => {

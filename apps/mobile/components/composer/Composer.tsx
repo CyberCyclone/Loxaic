@@ -72,8 +72,8 @@ interface ComposerProps {
   } | null;
   /** The thinking level, in the `+` menu. Null leaves the row out. */
   thinking?: ComposerThinking | null;
-  /** This conversation's step limit and loop check, in the `+` menu. Null
-   * leaves them out. */
+  /** This conversation's progress review switch, in the `+` menu. Null
+   * leaves it out. */
   runLimits?: RunLimitSwitches | null;
   /** Told when the `+` menu opens and closes. */
   onMenuOpenChange?: (open: boolean) => void;

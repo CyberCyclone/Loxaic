@@ -96,4 +96,4 @@ The one frontend (Expo + expo-router + gluestack-ui v5 + UniWind) for iOS, Andro
 
 ### Screens
 
-- Wait settings live on `checkins.tsx` (`settings.nav.checkins`), not the settings modal; each control hides when the server omits its field.
+- Approval-wait and progress-review settings live on `checkins.tsx` ("Approvals & progress", `settings.nav.checkins`), not the settings modal; each control hides when the server omits its field.

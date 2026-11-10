@@ -1026,7 +1026,7 @@ async function cutoffBefore(convId: string, row: UnansweredRow): Promise<{ lampo
  *
  * **A message the run has not answered stays after the summary.** Before a
  * run's first request the replay ends on the person's own new message, and
- * after a check-in or plan nudge it ends on that. Summarised with the rest, it
+ * after a progress note or plan nudge it ends on that. Summarised with the rest, it
  * would be answered as a line in a summary, and the model would be told to
  * "continue the task" instead of being asked what the person just asked. So
  * the summary takes the lamport just below that row (`cutoffBefore`) and the

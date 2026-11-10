@@ -1,8 +1,9 @@
-import type { PromptStats, ServerMessage } from '@loxaic/api-client';
+import type { PromptStats, ReviewMode, ServerMessage } from '@loxaic/api-client';
 import type { Message } from '@/lib/types';
 import { withNewestPage } from '@/lib/historyPages';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { localRunStart } from '@/lib/runStart';
+import { reviewingAfterEvent } from '@/lib/progressReview';
 import { applyEventToMsgs, applySnapshotToMsgs } from '@/lib/streamMessages';
 
 /**
@@ -39,6 +40,8 @@ export interface ChildLive {
   /** The run's start, on this device's clock. */
   responseStartedAt: number;
   model: string;
+  /** A progress review of the child under way, and how; null when none is. */
+  reviewing: ReviewMode | null;
 }
 
 export const EMPTY_TRANSCRIPT: ChildTranscript = { msgs: [], historyLoaded: false, live: null };
@@ -73,13 +76,14 @@ export function applyChildSync(t: ChildTranscript, event: Sync, now = Date.now()
   const assistant = event.snapshot.messages.find((m) => m.author_type === 'assistant');
   const live: ChildLive =
     t.live?.streamId === event.stream_id
-      ? { ...t.live, promptStats: event.snapshot.prompt_stats ?? null }
+      ? { ...t.live, promptStats: event.snapshot.prompt_stats ?? null, reviewing: event.snapshot.reviewing?.mode ?? null }
       : {
           streamId: event.stream_id,
           loadingModel: false,
           promptStats: event.snapshot.prompt_stats ?? null,
           responseStartedAt: localRunStart(event.started_at, event.server_now, now),
           model: assistant?.model ?? '',
+          reviewing: event.snapshot.reviewing?.mode ?? null,
         };
   return { ...t, msgs, live };
 }
@@ -91,8 +95,14 @@ export function applyChildEvent(t: ChildTranscript, event: StreamEvent, now = Da
     const promptStats = foldPromptStats(live.promptStats, event.event);
     const loadingModel = loadingAfter(live.loadingModel, event.event);
     const model = event.event.kind === 'message.start' && event.event.model ? event.event.model : live.model;
-    if (promptStats !== live.promptStats || loadingModel !== live.loadingModel || model !== live.model) {
-      live = { ...live, promptStats, loadingModel, model };
+    const reviewing = reviewingAfterEvent(live.reviewing, event.event);
+    if (
+      promptStats !== live.promptStats ||
+      loadingModel !== live.loadingModel ||
+      model !== live.model ||
+      reviewing !== live.reviewing
+    ) {
+      live = { ...live, promptStats, loadingModel, model, reviewing };
     }
   }
   return msgs === t.msgs && live === t.live ? t : { ...t, msgs, live };

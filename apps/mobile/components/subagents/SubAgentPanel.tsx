@@ -3,6 +3,7 @@ import { Bot, Square } from 'lucide-react-native';
 import { PermissionBar } from '@/components/agent/PermissionBar';
 import { ReviewSheet } from '@/components/agent/ReviewSheet';
 import { MessageList } from '@/components/chat/MessageList';
+import { ReviewStatus } from '@/components/chat/ReviewStatus';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { Icon } from '@/components/ui/icon';
@@ -162,6 +163,8 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
           promptStats={live?.promptStats ?? null}
         />
       )}
+      {/* A progress review of the child, under its transcript. */}
+      {running ? <ReviewStatus mode={live?.reviewing} /> : null}
     </ReviewSheet>
   );
 }
