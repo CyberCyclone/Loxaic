@@ -224,11 +224,11 @@ Hardware virtualisation (KVM) for this image in Settings → Container Images, o
         (cd apps/mobile/android && rm -rf app/build/generated/assets &&
           EXPO_PUBLIC_API_URL="http://10.0.2.2:$E2E_PORT" ./gradlew assembleRelease) || return $?
       fi
-      if [ ! -d apps/e2e/.appium ]; then
-        # Pinned with setup:appium in apps/e2e/package.json: an unpinned
-        # install takes the newest driver, which can need a newer Appium.
-        (cd apps/e2e && APPIUM_HOME=./.appium npx appium driver install --source=npm appium-uiautomator2-driver@8.7.0) || return $?
-      fi
+      # Every run, not only without apps/e2e/.appium: an install that failed
+      # leaves that directory behind, and a pin that moved has to reach a
+      # machine that already has a driver. It does nothing, and needs no
+      # network, when the pinned driver is there (scripts/setup-appium.ts).
+      (cd apps/e2e && pnpm setup:appium:android) || return $?
       cd apps/e2e && without_egress npx wdio run ./wdio.android.ts "$@"
       ;;
     shell)

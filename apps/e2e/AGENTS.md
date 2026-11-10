@@ -45,7 +45,7 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 ## Stand-up and settings
 
 - Wrap every wdio `onPrepare` in `stopRunOnFailure`: wdio otherwise runs every spec after a failed stand-up.
-- Appium drivers install at exact versions (`setup:appium`, `infra/docker/dev/loxaic-test.sh`) whose `appium` peer range covers `appium` in `package.json`; bump a driver only together with Appium, in both places.
+- Appium driver versions are written only in `scripts/setup-appium.ts` (`DRIVER_PINS`), exact, and only ones whose `appium` peer range covers `appium` in `package.json`; install through `setup:appium`, never `appium driver install` directly.
 - `standup.ts` never reuses a running server; `E2E_NO_STANDUP=1` is the deliberate way to target an existing one (and `pauseServer` refuses it).
 - Never env-pin `SANDBOX_ALLOW_NETWORK` in `standup.ts`: it 409s every spec's `patchSandboxSettings`/`resetSandboxSettings`. Toggle `allowNetwork` through the admin API in `before` and reset in `after`. The same goes for `SANDBOX_CUSTOM_IMAGES` (`resetSandboxSettings` turns it off).
 - The custom-image specs pull from `scripts/mock-registry.ts`: a real `registry:2` on a fixed loopback port (Docker Desktop's engine cannot reach an ephemeral one), Docker only. Push over the Engine API with the login in its header; never run `docker login`, which leaves a credential every later pull can fall back on.
