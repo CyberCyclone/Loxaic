@@ -16,6 +16,7 @@ import { isVisible, platform, tap, testIdSelector, waitForFreshText, waitForGone
 import {
   ANSWER_NOW_TEXT,
   PROGRESS_NOTE_TEXT,
+  REVIEW_FINISHED_PROMPT,
   REVIEW_LINGER_DONE,
   REVIEW_LINGER_PROMPT,
   REVIEW_LINGER_SLOW_PROMPT,
@@ -156,6 +157,26 @@ describe('the progress review', () => {
       }
     });
   }
+
+  it('tells a run the reviewer calls finished so once, and has it answer the second time', async function () {
+    this.timeout(3 * 60_000);
+    const conversationId = await runIn(creds, 'agent', REVIEW_FINISHED_PROMPT);
+    await waitForRunDone(creds, conversationId);
+    await waitForTextInAny('progress.note.reason', 'says finished', 90_000);
+    await waitForTextInAny('progress.note.outcome', 'Told to answer now');
+    await shot('progress-review-finished');
+    // One "finished" alone never ends a run somebody started: told so after
+    // step 3, it went on to step 6, and was told to answer there.
+    expect((await getToolResults(creds, conversationId)).length).toBe(6);
+    const texts = await getMessageTexts(creds, conversationId);
+    const notes = notesIn(texts);
+    expect(notes).toHaveLength(2);
+    expect(notes[0]).toContain('says finished');
+    expect(notes[0]).toContain('If you already have what you need');
+    expect(notes[1]).toContain('give your best final answer now');
+    expect(texts.some((t) => t.includes(ANSWER_NOW_TEXT))).toBe(true);
+    await expectNobodyAsked();
+  });
 
   it('says a review is under way while the run waits for it, then carries on', async function () {
     this.timeout(3 * 60_000);

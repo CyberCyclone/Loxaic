@@ -462,9 +462,9 @@ describe("parseVerdict", () => {
 });
 
 describe("reviewOutcome", () => {
-  const clean = { stuck: false, missed: false };
-  const afterStuck = { stuck: true, missed: false };
-  const afterMiss = { stuck: false, missed: true };
+  const clean = { flagged: false, missed: false };
+  const afterStuck = { flagged: true, missed: false };
+  const afterMiss = { flagged: false, missed: true };
 
   it("leaves a progressing run alone, and clears both streaks", () => {
     for (const subagent of [false, true]) {
@@ -484,8 +484,24 @@ describe("reviewOutcome", () => {
     expect(reviewOutcome({ subagent: false, verdict: "stuck", streak: first.streak }).action).toBe("answer");
   });
 
-  it("has a person's run answer at once when it already has its answer", () => {
-    expect(reviewOutcome({ subagent: false, verdict: "finished", streak: clean }).action).toBe("answer");
+  it("steers a person's run the first time it is called finished too, and has it answer the second", () => {
+    const first = reviewOutcome({ subagent: false, verdict: "finished", streak: clean });
+    expect(first).toEqual({ action: "steer", streak: afterStuck });
+    expect(reviewOutcome({ subagent: false, verdict: "finished", streak: first.streak }).action).toBe("answer");
+  });
+
+  it("counts stuck and finished as the same warning, in either order", () => {
+    expect(reviewOutcome({ subagent: false, verdict: "finished", streak: afterStuck }).action).toBe("answer");
+    const first = reviewOutcome({ subagent: false, verdict: "finished", streak: clean });
+    expect(reviewOutcome({ subagent: false, verdict: "stuck", streak: first.streak }).action).toBe("answer");
+  });
+
+  it("does not count a finished verdict before a progressing one, or before a missing one", () => {
+    const back = reviewOutcome({ subagent: false, verdict: "progressing", streak: afterStuck });
+    expect(reviewOutcome({ subagent: false, verdict: "finished", streak: back.streak }).action).toBe("steer");
+    const missed = reviewOutcome({ subagent: false, verdict: null, streak: afterStuck });
+    expect(missed).toEqual({ action: "none", streak: afterMiss });
+    expect(reviewOutcome({ subagent: false, verdict: "finished", streak: missed.streak }).action).toBe("steer");
   });
 
   it("leaves a person's run alone on one missing verdict, and has it answer on two", () => {

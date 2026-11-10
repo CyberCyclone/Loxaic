@@ -1352,6 +1352,156 @@
     "finalText": "[Mock] The stuck drill ran out of steps.\n"
   },
   {
+    "match": "review-finished: recheck the review drill",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 1",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 2",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 3",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 4",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 5",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 6",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 7",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 8",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 9",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 10",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 11",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Rechecking step 12",
+              "status": "in_progress"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] The recheck drill ran out of steps.\n"
+  },
+  {
     "match": "review-linger: take the slow review drill",
     "steps": [
       {

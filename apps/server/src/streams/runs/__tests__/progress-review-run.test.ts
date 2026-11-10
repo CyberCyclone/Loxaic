@@ -227,13 +227,22 @@ describe("progress review", () => {
     expect(last?.lamport).toBeGreaterThan(notes[1].row.lamport);
   });
 
-  it("has a run that already has its answer stop at the first review", async () => {
+  it("tells a run called finished so once, and has it answer when the next review says it again", async () => {
     useScenarios([{ match: "review-finished", steps: steps(12), finalText: "[Mock] never reached.\n" }]);
     const convId = await newConversation();
     const streamId = await run("review-finished: verify it again", convId);
 
-    expect(reviewsIn(await eventsOf(streamId)).map((e) => [e.verdict, e.action])).toEqual([["finished", "answer"]]);
-    expect((await rowsOf(convId)).filter((r) => r.authorType === "tool")).toHaveLength(3);
+    // One verdict alone never ends a run a person started: a reviewer that is
+    // wrong once costs it a note, not its work.
+    expect(reviewsIn(await eventsOf(streamId)).map((e) => [e.verdict, e.action])).toEqual([
+      ["finished", "steer"],
+      ["finished", "answer"],
+    ]);
+    expect((await notesOf(convId)).map((n) => n.note?.action)).toEqual(["steer", "answer"]);
+    const rows = await rowsOf(convId);
+    expect(rows.filter((r) => r.authorType === "tool")).toHaveLength(6);
+    expect(rows.at(-1)?.authorType).toBe("assistant");
+    expect(rows.at(-1)?.status).toBe("complete");
   });
 
   it("leaves a run alone on one missing verdict, and has it answer on the second", async () => {

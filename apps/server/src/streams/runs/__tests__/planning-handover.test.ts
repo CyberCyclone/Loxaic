@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
@@ -60,6 +63,7 @@ const { getRunByConversation } = await import("../../registry.ts");
 const { initStreamBroker } = await import("../../index.ts");
 const { buildToolset } = await import("../../../mcp/registry.ts");
 const { QUESTIONS_SUBMITTED, questionsProblem } = await import("../../../agent/executor.ts");
+const { __resetMockScenariosForTest } = await import("../../../inference/mock-scenarios.ts");
 
 const MODEL = "llama-3.1-8b-instruct";
 const userId = `test-handover-${uuid()}`;
@@ -217,24 +221,30 @@ describe("a planning turn always ends in a plan or questions", () => {
   }, 30_000);
 
   it("never asks for a plan after a progress review said to answer, which asks for prose", async () => {
-    // Reviewed after every step; the mock's reviewer says it is finished.
+    // Reviewed after every step; the mock's reviewer says it is finished. The
+    // first such review only tells the run so; the second has it answer.
     await db
       .insert(userPrefs)
       .values({ userId, progressCheckSteps: null })
       .onConflictDoUpdate({ target: userPrefs.userId, set: { progressCheckSteps: null } });
     process.env.PROGRESS_CHECK_STEPS = "1";
+    const dir = mkdtempSync(path.join(tmpdir(), "planning-handover-"));
+    writeFileSync(path.join(dir, "scenarios.json"), JSON.stringify([{ match: "review-finished", steps: [1, 2].map((n) => ({ tool: "todo_write", args: { todos: [{ id: "1", text: `Step ${String(n)}`, status: "in_progress" }] } })) }]));
+    process.env.MOCK_SCENARIOS_FILE = path.join(dir, "scenarios.json");
+    __resetMockScenariosForTest();
     try {
       const convId = await newConversation();
-      // "todo" makes the mock call todo_write — offered in planning, no
-      // sandbox — so the first step ends on a tool and is reviewed.
-      await startAgentRun({ userId, content: "make a todo list first, review-finished", model: MODEL, mode: "planning", conversationId: convId });
+      await startAgentRun({ userId, content: "review-finished: two steps", model: MODEL, mode: "planning", conversationId: convId });
       await waitFor("the run to end", () => getRunByConversation(convId) === undefined);
       const rows = await rowsOf(convId);
-      expect(rows.some((r) => parseProgressNote(textOf(r) ?? "")?.action === "answer")).toBe(true);
+      expect(rows.map((r) => parseProgressNote(textOf(r) ?? "")?.action).filter(Boolean)).toEqual(["steer", "answer"]);
       expect(rows.some((r) => textOf(r) === PLAN_REQUIRED_NUDGE)).toBe(false);
-      expect(requests.map((r) => r.toolChoice)).toEqual([undefined, "none"]);
+      expect(requests.map((r) => r.toolChoice)).toEqual([undefined, undefined, "none"]);
     } finally {
       delete process.env.PROGRESS_CHECK_STEPS;
+      delete process.env.MOCK_SCENARIOS_FILE;
+      __resetMockScenariosForTest();
+      rmSync(dir, { recursive: true, force: true });
       await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
     }
   }, 30_000);

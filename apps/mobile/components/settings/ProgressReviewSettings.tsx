@@ -43,9 +43,9 @@ export function ProgressReviewSettings({ prefs, save, disabled }: { prefs: UserP
       </Text>
       <Text size="xs" className="text-muted-foreground">
         Every so often a second model call reads a summary of a long run and decides whether it is
-        still getting somewhere. A run that is stuck is told to change approach; one that stays stuck,
-        or keeps going after it already has its answer, is told to answer. Sub-agents are told to
-        report back. Nobody is asked to press anything.
+        still getting somewhere. A run that is stuck, or keeps going after it already has its answer,
+        is told so; if the next check says the same, it is told to answer. Sub-agents are told to
+        report back at the first. Nobody is asked to press anything.
       </Text>
 
       {prefs.progressReview !== undefined && (

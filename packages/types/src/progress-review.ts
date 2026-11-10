@@ -3,8 +3,8 @@
  * and decides whether it is still getting somewhere (apps/server/src/streams/
  * runs/progress-review.ts). It replaced both the mechanical loop detector and
  * the step-limit check-in, and it never asks a person anything: a run that is
- * stuck is told so, and one that keeps being stuck, or already has its answer,
- * is told to answer.
+ * stuck, or already has its answer, is told so, and one the next review says
+ * the same of is told to answer.
  *
  * Shared by the server (which enforces the ranges) and the settings screen
  * (which offers them), so the two cannot disagree.

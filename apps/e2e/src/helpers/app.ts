@@ -80,6 +80,9 @@ export const NEW_PROJECT_SCENARIO_DONE = 'node --test passes';
 export const REVIEW_STEADY_PROMPT = 'Work steadily through the review drill.';
 export const REVIEW_STEADY_DONE = 'Worked through it steadily';
 export const REVIEW_STUCK_PROMPT = 'review-stuck: circle the review drill until told otherwise.';
+/** A drill the mock's reviewer calls finished at every review: a run that has
+ * its answer and keeps rechecking it. */
+export const REVIEW_FINISHED_PROMPT = 'review-finished: recheck the review drill until told otherwise.';
 /** The same drill at eight seconds a step ("take your time"), for a review
  * that only the clock can make due. */
 export const REVIEW_STUCK_SLOW_PROMPT = 'review-stuck: circle the review drill until told otherwise, and take your time over each step.';

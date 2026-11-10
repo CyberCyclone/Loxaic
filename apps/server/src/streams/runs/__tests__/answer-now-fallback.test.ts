@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
@@ -69,6 +72,7 @@ const { __resetMockScenariosForTest } = await import("../../../inference/mock-sc
 describe("answer now, against a backend that calls a tool anyway", () => {
   const userId = `test-answer-now-${uuid()}`;
   const convIds: string[] = [];
+  const dir = mkdtempSync(path.join(tmpdir(), "answer-now-"));
 
   beforeAll(async () => {
     await initStreamBroker();
@@ -92,6 +96,7 @@ describe("answer now, against a backend that calls a tool anyway", () => {
     await db.delete(user).where(eq(user.id, userId));
     delete process.env.MOCK_SCENARIOS_FILE;
     __resetMockScenariosForTest();
+    rmSync(dir, { recursive: true, force: true });
   });
 
   async function waitFor(label: string, check: () => boolean, timeoutMs = 10_000): Promise<void> {
@@ -105,13 +110,17 @@ describe("answer now, against a backend that calls a tool anyway", () => {
 
   it("pairs the ignored call with a result and ends the turn complete", async () => {
     // Reviewed after every step, and the mock's reviewer says it is finished:
-    // the run is told to answer, without tools, after its first step.
+    // the run is told so after its first step and told to answer, without
+    // tools, after its second.
     await db
       .insert(userPrefs)
       .values({ userId, progressCheckSteps: null, updatedAt: new Date() })
       .onConflictDoUpdate({ target: userPrefs.userId, set: { progressCheckSteps: null } });
     process.env.PROGRESS_CHECK_STEPS = "1";
-    // Before the run starts: its first step and review take milliseconds.
+    writeFileSync(path.join(dir, "scenarios.json"), JSON.stringify([{ match: "review-finished", steps: [1, 2].map((n) => ({ tool: "todo_write", args: { todos: [{ id: "1", text: `Step ${String(n)}`, status: "in_progress" }] } })) }]));
+    process.env.MOCK_SCENARIOS_FILE = path.join(dir, "scenarios.json");
+    __resetMockScenariosForTest();
+    // Before the run starts: its steps and reviews take milliseconds.
     disobedient.on = true;
     const [conv] = await db
       .insert(conversations)
@@ -121,9 +130,8 @@ describe("answer now, against a backend that calls a tool anyway", () => {
 
     const { streamId } = await startAgentRun({
       userId,
-      // A prompt the mock's own triggers answer with a todo_write, so the run
-      // is reviewed after its first iteration.
-      content: "make a todo list, review-finished",
+      // Two scripted todo_write steps, so the run is reviewed twice.
+      content: "review-finished: two steps",
       model: "llama-3.1-8b-instruct",
       mode: "auto",
       conversationId: conv.id,

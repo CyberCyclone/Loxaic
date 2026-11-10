@@ -2,8 +2,8 @@
  * The progress review: every so often a second model call looks at a run and
  * decides whether it is still getting somewhere. It replaced the mechanical
  * loop detector and the step-limit check-in, and it asks nobody: a run that is
- * stuck is told so, and one that stays stuck, or already has its answer, is
- * told to answer.
+ * stuck, or already has its answer, is told so, and one the next review says
+ * the same of is told to answer.
  *
  * Why a model and not a rule: the run that prompted this went 91 steps over
  * eight hours without repeating a single tool call. It had its answer by step
@@ -494,8 +494,8 @@ export function parseVerdict(text: string): { verdict: ReviewVerdict; reason: st
 
 /** The streaks a run carries from one review to the next. */
 export interface ReviewStreak {
-  /** The last verdict was `stuck`. */
-  stuck: boolean;
+  /** The last verdict was `stuck` or `finished`: the run has been told once. */
+  flagged: boolean;
   /** The last review gave no verdict. */
   missed: boolean;
 }
@@ -508,10 +508,15 @@ export interface ReviewStreak {
  * including when the reviewer itself could not say (a backend too busy to
  * answer a review in time is exactly when an all-night run costs most).
  *
- * A run a person started is steered first, and told to answer only when it is
- * stuck at two reviews in a row, or has its answer already. A review that
- * gives no verdict leaves it alone, unless the one before gave none either:
- * then nothing is watching it, and it answers.
+ * A run a person started is steered first, on `stuck` and on `finished`
+ * alike, and told to answer only when the next review says either again.
+ * `finished` used to end it at the first review. Replayed on a real model,
+ * though, the same reply was called finished in one sample and progressing in
+ * another, and one wrong verdict must not end a healthy run somebody is
+ * waiting on; a run that really has its answer is told so, and costs one more
+ * interval if it carries on regardless. A review that gives no verdict leaves
+ * it alone, unless the one before gave none either: then nothing is watching
+ * it, and it answers.
  */
 export function reviewOutcome(input: {
   subagent: boolean;
@@ -519,10 +524,11 @@ export function reviewOutcome(input: {
   streak: ReviewStreak;
 }): { action: ReviewAction; streak: ReviewStreak } {
   const { verdict, streak } = input;
-  const next: ReviewStreak = { stuck: verdict === "stuck", missed: verdict === null };
+  const flagged = verdict === "stuck" || verdict === "finished";
+  const next: ReviewStreak = { flagged, missed: verdict === null };
   if (verdict === "progressing") return { action: "none", streak: next };
-  if (input.subagent || verdict === "finished") return { action: "answer", streak: next };
-  if (verdict === "stuck") return { action: streak.stuck ? "answer" : "steer", streak: next };
+  if (input.subagent) return { action: "answer", streak: next };
+  if (flagged) return { action: streak.flagged ? "answer" : "steer", streak: next };
   return { action: streak.missed ? "answer" : "none", streak: next };
 }
 
@@ -626,7 +632,7 @@ export class ProgressReviewer {
   private stepsDone = 0;
   private stepsAtLast = 0;
   private workedAtLast = 0;
-  private streak: ReviewStreak = { stuck: false, missed: false };
+  private streak: ReviewStreak = { flagged: false, missed: false };
   private readonly earlier: PastReview[] = [];
   private inFlight: Promise<void> | null = null;
   private ready: ReviewDecision | null = null;
