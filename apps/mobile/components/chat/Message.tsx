@@ -75,7 +75,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
   const reuse = msg.usage ? promptReuse(msg.usage) : null;
   const mtp = msg.usage ? describeMtpAcceptance(msg.usage.draftTokens, msg.usage.draftAcceptedTokens) : null;
   const omitted = msg.usage?.omittedAttachments ?? [];
-  const progressNote = msg.role === 'user' ? progressNoteView(msg.text) : null;
+  const progressNote = msg.role === 'user' ? progressNoteView(msg) : null;
 
   // A compaction summary isn't a conversational turn from either party — it
   // renders as a divider card, not a bubble, and skips everything below

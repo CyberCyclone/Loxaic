@@ -1,4 +1,4 @@
-import { parseProgressNote, type ReviewMode, type StreamEventKind } from '@loxaic/api-client';
+import { isServerNote, parseProgressNote, type ReviewMode, type StreamEventKind } from '@loxaic/api-client';
 
 /**
  * The progress review, as the client shows it: a second model call the server
@@ -23,9 +23,10 @@ export function reviewingAfterEvent(prev: ReviewMode | null, event: StreamEventK
 }
 
 /** A progress note, as the transcript shows it: the reviewer's reason, and
- * what the run was told. Null for any other text. */
-export function progressNoteView(text: string): { reason: string; outcome: string } | null {
-  const note = parseProgressNote(text);
+ * what the run was told. Null for anything else — including the same words
+ * typed by a person, which are that person's message and shown as one. */
+export function progressNoteView(msg: { text: string; authorUserId?: string | null }): { reason: string; outcome: string } | null {
+  const note = isServerNote(msg.text, msg.authorUserId) ? parseProgressNote(msg.text) : null;
   if (!note) return null;
   return {
     reason: `Progress check: ${note.reason}`,

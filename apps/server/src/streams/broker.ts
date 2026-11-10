@@ -227,6 +227,14 @@ export class StreamBroker {
         case "message.end": {
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
           if (promptCache?.message_id === event.message_id) promptCache = undefined;
+          if (event.discard) {
+            // Nothing was written and nobody stopped it: a client catching up
+            // is not shown it either.
+            const gone = messages.get(event.message_id);
+            messages.delete(event.message_id);
+            if (gone) orderedMessages.splice(orderedMessages.indexOf(gone), 1);
+            break;
+          }
           const m = ensure(event.message_id);
           m.status = event.status;
           if (event.usage) m.usage = event.usage;

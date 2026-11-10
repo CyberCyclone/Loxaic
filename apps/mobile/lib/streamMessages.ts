@@ -5,8 +5,8 @@ import type {
   ApiMessage,
 } from '@loxaic/api-client';
 import {
-  CHECKIN_ANSWER_NUDGE,
   SUBAGENT_TOOL_NAME,
+  isNudgeText,
   isStreamErrorCode,
   parseTodoList,
   stripTodoReminder,
@@ -194,9 +194,10 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
       if (skill) msg.skill = skill;
       const skillsUpdate = extractSkillsUpdate(blocks);
       if (skillsUpdate) msg.skillsUpdate = skillsUpdate;
-      // Only the check-in instruction carries provenance worth rendering; a
-      // row is authoritative, so null here really does mean "nobody".
-      if (msg.text === CHECKIN_ANSWER_NUDGE) msg.authorUserId = row.authorUserId;
+      // A note's text carries its provenance: who settled an old check-in,
+      // and whether a progress note is the server's or someone typing its
+      // words. A row is authoritative, so null here really does mean "nobody".
+      if (isNudgeText(msg.text)) msg.authorUserId = row.authorUserId;
       out.push(msg);
       byId.set(row.id, msg);
       continue;
@@ -453,6 +454,9 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
       // ring move during a long turn instead of only after it (#193).
       return msgs.map((m) => (m.id === event.message_id ? { ...m, usage: usageFromTurn(event.usage) } : m));
     case 'message.end':
+      // A reply a progress review cut short before a word of it: nothing to
+      // show, so it goes (see `discard` on the event).
+      if (event.discard) return msgs.filter((m) => m.id !== event.message_id);
       return msgs.map((m) =>
         m.id === event.message_id
           ? {

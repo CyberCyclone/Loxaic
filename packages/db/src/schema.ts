@@ -383,9 +383,10 @@ export const usageRecords = pgTable("usage_records", {
   /**
    * Null for a turn's own request. `permission_check` for the request the tool
    * loop makes to decide whether an auto-mode command may run
-   * (apps/server/src/permissions/check.ts): real tokens, so they count, but
-   * never "the last turn" — the context figures and compaction read that.
-   * Its `message_id` is null for the same reason.
+   * (apps/server/src/permissions/check.ts), `progress_review` for a review of
+   * the run (apps/server/src/streams/runs/progress-review.ts): real tokens, so
+   * they count, but never "the last turn" — the context figures and compaction
+   * read that. Their `message_id` is null for the same reason.
    */
   purpose: text("purpose"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHECKIN_ANSWER_NUDGE, type ApiMessage, type StreamSnapshot } from '@loxaic/api-client';
+import { CHECKIN_ANSWER_NUDGE, progressNoteText, type ApiMessage, type StreamSnapshot } from '@loxaic/api-client';
 import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages } from './streamMessages';
 import type { Message } from './types';
 import { compactionCardState } from '@/components/chat/compactionState';
@@ -59,6 +59,16 @@ describe('failed turns carry their reason', () => {
     expect(m.error).toBe(false);
     expect(m.errorText).toBeUndefined();
     expect(m.stopped).toBe(true);
+  });
+
+  it('drops a reply a progress review cut short before anything was written', () => {
+    const msgs: Message[] = [
+      { id: 'u1', role: 'user', text: 'go' },
+      { id: 'a1', role: 'assistant', text: '' },
+    ];
+    expect(applyEventToMsgs(msgs, { kind: 'message.end', message_id: 'a1', status: 'cancelled', discard: true })).toEqual([msgs[0]]);
+    // Without the mark it is a stop like any other, and stays.
+    expect(applyEventToMsgs(msgs, { kind: 'message.end', message_id: 'a1', status: 'cancelled' })).toHaveLength(2);
   });
 
   it('from a stream snapshot', () => {
@@ -160,6 +170,12 @@ describe('check-in provenance', () => {
   it('from history: an ordinary user message carries none', () => {
     const typed = row({ id: 'u2', authorType: 'user', authorUserId: 'u1', content: [{ kind: 'text', text: 'hello' }] });
     expect(reconstructMessages([typed])[0]).not.toHaveProperty('authorUserId');
+    // A progress note's words carry theirs too: null for the server's own,
+    // a name for someone who typed them.
+    const noteText = progressNoteText('answer', 'It has the cause.');
+    const note = (authorUserId: string | null) => row({ id: 'p1', authorType: 'user', authorUserId, model: null, content: [{ kind: 'text', text: noteText }] });
+    expect(reconstructMessages([note(null)])[0]).toHaveProperty('authorUserId', null);
+    expect(reconstructMessages([note('u1')])[0].authorUserId).toBe('u1');
   });
 
   it('from message.start, keeping silence distinct from null', () => {

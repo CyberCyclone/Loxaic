@@ -191,6 +191,14 @@ export interface StreamOptions {
    */
   maxTokens?: number;
   /**
+   * Hold the reply to a JSON schema (`response_format`). llama.cpp constrains
+   * generation to it, so the reply cannot be prose, wander, or stop short of
+   * its closing brace. Sent only to a generic OpenAI-compatible backend: a
+   * named hosted API never gets a field it might refuse. Only the progress
+   * review sets it.
+   */
+  jsonSchema?: { name: string; schema: Record<string, unknown> };
+  /**
    * The thinking level as request-body fields (`thinkingFields` in
    * thinking.ts): `reasoning_effort`, `chat_template_kwargs` or `reasoning`,
    * already chosen for this model's backend and level, or empty for a model
@@ -981,6 +989,9 @@ async function* liveStream(
   // never gets a field it would refuse, whatever the caller believed.
   if (options.reportProgress && provider.preset === null) body.return_progress = true;
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
+  if (options.jsonSchema && provider.preset === null) {
+    body.response_format = { type: "json_schema", json_schema: { name: options.jsonSchema.name, strict: true, schema: options.jsonSchema.schema } };
+  }
   if (options.slotId !== undefined && provider.preset === null) body.id_slot = options.slotId;
   // Merged last but never over the fields above: none of them is a thinking
   // field, and thinkingFields only ever produces those.

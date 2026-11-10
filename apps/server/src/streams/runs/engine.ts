@@ -107,7 +107,16 @@ import { loadRunLimits } from "../../conversations/run-limits.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
 import { markBackendErrors, shownTurnError, TOOL_FAILED, turnErrorText } from "../error-text.ts";
-import { ProgressReviewer, resolveReviewPrefs, type DigestStep, type ReviewDecision, type ReviewPrefs } from "./progress-review.ts";
+import {
+  ProgressReviewer,
+  resolveReviewPrefs,
+  reviewTask,
+  taskEntries,
+  unattendedRunLimitMs,
+  type DigestStep,
+  type ReviewDecision,
+  type ReviewPrefs,
+} from "./progress-review.ts";
 import { TodoStaleness } from "./todo-staleness.ts";
 import { clampWaitTimeoutMs, effectiveTimeoutMs, serverDefaultTimeoutMs } from "./timeouts.ts";
 
@@ -856,13 +865,18 @@ export async function runToolLoop(ctx: {
     // (approvals, sub-agents, the queue back in): what the review counts.
     const workStartedAt = Date.now();
     const heldSlot = slot;
-    // The task, as the reviewer is told it: the newest thing a person (or, for
-    // a sub-agent, its parent) asked.
-    const lastAsk = [...history.messages].reverse().find((m) => m.role === "user");
+    // Nobody is watching a sub-agent (its parent is parked on it) or a
+    // routine: each is reviewed whatever its user's settings say, and held to
+    // a ceiling on its working time besides.
+    const unattended = ctx.role !== undefined || ctx.subagents?.routine === true;
     reviewer = new ProgressReviewer({
       prefs: reviewPrefs,
       subagent: ctx.role !== undefined,
-      task: lastAsk ? textOfContent(lastAsk.content) : "",
+      unattended,
+      limitMs: unattended ? unattendedRunLimitMs() : null,
+      // The newest thing a person (or, for a sub-agent, its parent) asked,
+      // with what it leans on: see reviewTask.
+      task: reviewTask(taskEntries(history.messages)),
       model,
       providerId,
       // As little thinking as the model allows: a verdict, not a project.
@@ -870,6 +884,15 @@ export async function runToolLoop(ctx: {
       runSignal: abort.signal,
       workedMs: () => Date.now() - workStartedAt - heldSlot.parkedMs(),
       switchedOff: () => liveLimits().progressReviewOff,
+      // Real tokens, so recorded; never mistaken for the turn (`purpose`).
+      onUsage: (result) => {
+        void db
+          .insert(usageRecords)
+          .values(usageRecordValues({ userId, conversationId: convId, messageId: null, runId: streamId, model, result, purpose: "progress_review" }))
+          .catch((err: unknown) => {
+            console.warn(`could not record a progress review's usage: ${(err as Error).message}`);
+          });
+      },
       emit: (event) => {
         producer.emit(event);
       },
@@ -886,13 +909,12 @@ export async function runToolLoop(ctx: {
     // sent with `tool_choice: "required"`; prose a second time ends the turn.
     let planNudged = false;
     let requireTool = false;
-    // A progress review's verdict, written into the run as a user row: the
-    // next request reads it, and so does every replay (it is persisted for
-    // the reason the plan nudge is — the prefix has to replay byte for
-    // byte). Null author: nobody typed it. The caller sets `answerNow` for an
-    // "answer", which ends the run after one more request, made without tools.
-    const writeProgressNote = async (decision: ReviewDecision, after: string): Promise<void> => {
-      const text = progressNoteText(decision.action === "answer" ? "answer" : "steer", decision.reason);
+    // A row the server writes into the run as a user turn: a progress note,
+    // the planning nudge. Persisted, never only injected into this request:
+    // the next request reads it, and so does every replay, and the prefix has
+    // to replay byte for byte. Null author: nobody typed it. The one place
+    // that invariant is kept.
+    const persistServerNote = async (text: string, after: string): Promise<void> => {
       const id = uuid();
       const lamport = nextLamport();
       await db.insert(messages).values({
@@ -914,6 +936,12 @@ export async function runToolLoop(ctx: {
       chatMessages.push({ role: "user", content: text });
       parentId = id;
       unanswered = { id, lamport };
+    };
+    // A progress review's verdict, or an unattended run's ceiling, written
+    // into the run. The caller sets `answerNow` for an "answer", which ends
+    // the run after one more request, made without tools.
+    const writeProgressNote = async (decision: ReviewDecision, after: string): Promise<void> => {
+      await persistServerNote(progressNoteText(decision.action === "answer" ? "answer" : "steer", decision.reason), after);
       // Nothing left to review once it is told to answer: the run ends after it.
       if (decision.action === "answer") reviewer?.dispose();
     };
@@ -1224,6 +1252,9 @@ export async function runToolLoop(ctx: {
       };
       // A decision that landed since the last step boundary acts now.
       if (reviewer.hasDecision()) interrupt.abort();
+      // The review's time cadence, and an unattended run's ceiling, do not
+      // wait for this reply to end: it may take an hour, or never end.
+      const stopWatching = reviewer.watchRequest(() => ({ text, thinking, startedAt: requestStartedAt }));
       try {
         // markBackendErrors is what separates the backend's words from ours:
         // only what the stream itself throws is stored as the reason, since
@@ -1288,16 +1319,26 @@ export async function runToolLoop(ctx: {
         }
       } catch (err) {
         reviewer.interrupt = null;
-        // Ended by a progress review, not by anyone pressing Stop: what was
-        // streamed stays on screen as a cut-off reply (a cancelled row, which
-        // no replay sends), the review's note follows it, and the run goes on.
+        stopWatching();
+        // Ended by a progress review (or an unattended run's ceiling), not by
+        // anyone pressing Stop: what was streamed stays on screen as a cut-off
+        // reply (a cancelled row, which no replay sends), the note follows it,
+        // and the run goes on.
         const decision = interrupt.signal.aborted && !abort.signal.aborted ? reviewer.takeReady() : null;
         if (decision) {
+          const written = streamedBlocks();
           await db
             .update(messages)
-            .set({ content: jsonbSafe(streamedBlocks()), status: "cancelled" })
+            .set({ content: jsonbSafe(written), status: "cancelled" })
             .where(eq(messages.id, assistantMsgId));
-          producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "cancelled" });
+          // A reply cut before its first token (a slow prompt evaluation is
+          // the usual case) has nothing to show: clients drop it.
+          producer.emit({
+            kind: "message.end",
+            message_id: assistantMsgId,
+            status: "cancelled",
+            ...(written.length === 0 ? { discard: true as const } : {}),
+          });
           streamingMsgId = null;
           await writeProgressNote(decision, assistantMsgId);
           answerNow = decision.action === "answer";
@@ -1337,6 +1378,7 @@ export async function runToolLoop(ctx: {
       }
 
       reviewer.interrupt = null;
+      stopWatching();
 
       // A window read before a JIT load is the model's max, not what the
       // backend allocated. Re-read it as soon as the request that caused the
@@ -1473,36 +1515,7 @@ export async function runToolLoop(ctx: {
           // put it back — including skipping an empty one, which loadHistory
           // does — or the next turn's prefix breaks at this message.
           if (text.trim()) chatMessages.push(assistantMessageForPrompt(text, []));
-          // Persisted rather than injected, for the reason a progress note is
-          // (writeProgressNote above): the next turn has to replay the same
-          // bytes. Null author — nobody typed it.
-          const nudgeId = uuid();
-          const nudgeLamport = nextLamport();
-          await db.insert(messages).values({
-            id: nudgeId,
-            conversationId: convId,
-            parentId: assistantMsgId,
-            authorType: "user",
-            authorUserId: null,
-            origin: "server",
-            lamport: nudgeLamport,
-            content: [{ kind: "text", text: PLAN_REQUIRED_NUDGE }] as ContentBlock[],
-            status: "complete",
-            createdAt: new Date(),
-          });
-          producer.emit({
-            kind: "message.start",
-            message_id: nudgeId,
-            author_type: "user",
-            parent_id: assistantMsgId,
-            lamport: nudgeLamport,
-            text: PLAN_REQUIRED_NUDGE,
-            author_user_id: null,
-          });
-          producer.emit({ kind: "message.end", message_id: nudgeId, status: "complete" });
-          chatMessages.push({ role: "user", content: PLAN_REQUIRED_NUDGE });
-          parentId = nudgeId;
-          unanswered = { id: nudgeId, lamport: nudgeLamport };
+          await persistServerNote(PLAN_REQUIRED_NUDGE, assistantMsgId);
           continue;
         }
         await endTurnComplete(assistantMsgId);

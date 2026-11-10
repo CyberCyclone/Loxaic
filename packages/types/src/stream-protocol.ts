@@ -165,6 +165,20 @@ export function isNudgeText(text: string): boolean {
 }
 
 /**
+ * Whether a user row is a note the server wrote, given who the row says wrote
+ * it. Use this wherever the author is at hand; `isNudgeText` is for the places
+ * that have only the words.
+ *
+ * A progress note is only ever written with no author, so its text under
+ * anyone's name is that person's message: typed by them, shown as theirs,
+ * and theirs to rewind to. The older nudges are matched on their text alone,
+ * because an answered check-in's carries the id of whoever pressed the button.
+ */
+export function isServerNote(text: string, authorUserId: string | null | undefined): boolean {
+  return parseProgressNote(text) !== null ? authorUserId === null : isNudgeText(text);
+}
+
+/**
  * The first line of the message the questions panel sends (#199). The rest is
  * one numbered line per question with its answer; the client builds it
  * (formatAnswers in apps/mobile/lib/plan.ts) and reads it back to render a
@@ -586,6 +600,14 @@ export type StreamEventKind =
       error?: string;
       /** Why it failed, when the client offers a way out — see StreamErrorCode. */
       error_code?: StreamErrorCode;
+      /**
+       * Set on a `cancelled` reply that a progress review cut short before
+       * anything had been written: there is nothing to show, and nobody
+       * pressed Stop, so a client drops the bubble rather than leave a blank
+       * "Stopped" one above the review's note. A reload hides it anyway
+       * (cancelled rows are not loaded). A client that predates this keeps it.
+       */
+      discard?: true;
     }
   /**
    * The model request behind `message_id` has finished and this is what it

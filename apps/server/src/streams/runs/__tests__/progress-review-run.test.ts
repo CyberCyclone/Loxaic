@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
-import { db, eq, inArray } from "@loxaic/db";
+import { and, db, eq, inArray } from "@loxaic/db";
 import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
 import {
   SUBAGENT_TOOL_NAME,
@@ -15,6 +15,7 @@ import {
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
 import { getRunByConversation, setRunLimits } from "../../registry.ts";
 import { startAgentRun } from "../agentRun.ts";
+import { startChatRun } from "../chatRun.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 import { __resetSchedulerForTest, resetSlotProbe } from "../../../inference/scheduler.ts";
 
@@ -86,6 +87,8 @@ describe("progress review", () => {
     delete process.env.REVIEW_DEADLINE_MS;
     delete process.env.INFERENCE_MAX_CONCURRENT_RUNS;
     delete process.env.PROGRESS_CHECK_STEPS;
+    delete process.env.PROGRESS_CHECK_MS;
+    delete process.env.UNATTENDED_RUN_LIMIT_MS;
     resetSlotProbe();
     __resetSchedulerForTest();
   });
@@ -186,6 +189,16 @@ describe("progress review", () => {
     const rows = await rowsOf(convId);
     expect(rows.filter((r) => r.authorType === "tool")).toHaveLength(7);
     expect(textOf(rows.filter((r) => r.authorType === "assistant").at(-1)?.content)).toContain("all done");
+    // Each review is a request with real tokens: recorded, and never as the turn.
+    const reviewUsage = await db.query.usageRecords.findMany({
+      where: and(eq(usageRecords.conversationId, convId), eq(usageRecords.purpose, "progress_review")),
+    });
+    expect(reviewUsage).toHaveLength(2);
+    for (const row of reviewUsage) {
+      expect(row.messageId).toBeNull();
+      expect(row.runId).toBe(streamId);
+      expect(row.outputTokens).toBeGreaterThan(0);
+    }
     // The snapshot a client catching up would get says nothing is under way.
     expect(getStreamBroker().foldSnapshot(await getStreamBroker().readFrom(streamId, 0)).reviewing).toBeUndefined();
   });
@@ -354,6 +367,154 @@ describe("progress review", () => {
     },
     90_000,
   );
+
+  it(
+    "reviews on working time alone, however few the steps",
+    async () => {
+      // Five hundred steps between reviews, three seconds of work: only the
+      // clock can make this one due. One slow step is eight seconds.
+      await setPrefs({ progressCheckMs: null, progressCheckSteps: 500 });
+      process.env.PROGRESS_CHECK_MS = "3000";
+      useScenarios([{ match: "take your time", steps: steps(1), finalText: "[Mock] done slowly.\n" }]);
+      const convId = await newConversation();
+      const streamId = await run("take your time over one step", convId, 60_000);
+
+      const events = await eventsOf(streamId);
+      expect(events.filter((e) => e.kind === "run.review.start")).toEqual([{ kind: "run.review.start", mode: "paused" }]);
+      expect(reviewsIn(events).map((e) => [e.verdict, e.action])).toEqual([["progressing", "none"]]);
+      expect((await rowsOf(convId)).filter((r) => r.authorType === "tool")).toHaveLength(1);
+    },
+    90_000,
+  );
+
+  it(
+    "reviews a reply still being written once it outlasts the time cadence, and cuts it short",
+    async () => {
+      process.env.INFERENCE_MAX_CONCURRENT_RUNS = "2";
+      resetSlotProbe();
+      // Every reply takes eight seconds and a review is due after two of
+      // work, so each review starts and decides inside a reply: no step ever
+      // finishes for a review to wait for.
+      await setPrefs({ progressCheckMs: null, progressCheckSteps: 500 });
+      process.env.PROGRESS_CHECK_MS = "2000";
+      useScenarios([{ match: "take your time", steps: steps(6), finalText: "[Mock] never reached.\n" }]);
+      const convId = await newConversation();
+      const streamId = await run("take your time, review-stuck", convId, 75_000);
+
+      const events = await eventsOf(streamId);
+      expect(events.filter((e) => e.kind === "run.review.start")).toEqual([
+        { kind: "run.review.start", mode: "alongside" },
+        { kind: "run.review.start", mode: "alongside" },
+      ]);
+      expect(reviewsIn(events).map((e) => e.action)).toEqual(["steer", "answer"]);
+      // Not one tool ran: both replies were cut short before their call.
+      const rows = await rowsOf(convId);
+      expect(rows.filter((r) => r.authorType === "tool")).toEqual([]);
+      const notes = await notesOf(convId);
+      expect(notes.map((n) => n.note?.action)).toEqual(["steer", "answer"]);
+      for (const { row } of notes) {
+        const cut = rows.filter((r) => r.lamport < row.lamport).at(-1);
+        expect(cut).toMatchObject({ authorType: "assistant", status: "cancelled", content: [] });
+        // Nothing of it was written (the mock is slow to its first word), so
+        // a client is told to drop it, not to show a blank stopped reply
+        // above the note.
+        expect(events.filter((e) => e.kind === "message.end" && e.message_id === cut?.id)).toEqual([
+          { kind: "message.end", message_id: cut?.id, status: "cancelled", discard: true },
+        ]);
+      }
+      expect(rows.at(-1)).toMatchObject({ authorType: "assistant", status: "complete" });
+    },
+    90_000,
+  );
+
+  it("still reviews a sub-agent whose user has turned reviews off", async () => {
+    await setPrefs({ progressReview: false });
+    useScenarios([
+      {
+        match: "parent hands off",
+        steps: [{ tool: SUBAGENT_TOOL_NAME, args: { description: "Dig", prompt: "child review-stuck: dig in" } }],
+        finalText: "[Mock] parent finished.\n",
+      },
+      { match: "child review-stuck", steps: steps(9), finalText: "[Mock] child never reached this.\n" },
+    ]);
+    const convId = await newConversation();
+    await run("parent hands off", convId);
+
+    const [child] = await db.query.conversations.findMany({ where: eq(conversations.parentConversationId, convId) });
+    // The setting is for runs its user is in. Nobody is in this one.
+    expect((await notesOf(child.id)).map((n) => n.note?.action)).toEqual(["answer"]);
+    expect((await rowsOf(child.id)).filter((r) => r.authorType === "tool")).toHaveLength(3);
+  });
+
+  it("still reviews a routine's run whose user has turned reviews off", async () => {
+    await setPrefs({ progressReview: false });
+    useScenarios([{ match: "review-stuck", steps: steps(12), finalText: "[Mock] never reached.\n" }]);
+    const [conv] = await db.insert(conversations).values({ ownerId: userId, title: "Routine: nightly", kind: "routine" }).returning();
+    convIds.push(conv.id);
+    const { streamId } = await startChatRun({ userId, content: "review-stuck: the nightly job", model: MODEL, conversationId: conv.id, recordUse: false });
+    await waitFor("the run to register", () => getRunByConversation(conv.id) !== undefined);
+    await waitFor("the run to end", () => getRunByConversation(conv.id) === undefined);
+
+    expect(reviewsIn(await eventsOf(streamId)).map((e) => e.action)).toEqual(["steer", "answer"]);
+    expect((await rowsOf(conv.id)).filter((r) => r.authorType === "tool")).toHaveLength(6);
+  });
+
+  it(
+    "ends a sub-agent at its working-time ceiling, mid-reply, with reviews off and nothing found wrong",
+    async () => {
+      await setPrefs({ progressReview: false, progressCheckSteps: 500 });
+      process.env.UNATTENDED_RUN_LIMIT_MS = "2000";
+      useScenarios([
+        {
+          match: "parent hands off",
+          steps: [{ tool: SUBAGENT_TOOL_NAME, args: { description: "Dig", prompt: "child take your time: dig in" } }],
+          finalText: "[Mock] parent finished.\n",
+        },
+        { match: "child take your time", steps: steps(9), finalText: "[Mock] child never reached this.\n" },
+      ]);
+      const convId = await newConversation();
+      const streamId = await run("parent hands off", convId, 60_000);
+
+      const [child] = await db.query.conversations.findMany({ where: eq(conversations.parentConversationId, convId) });
+      const notes = await notesOf(child.id);
+      expect(notes.map((n) => n.note?.action)).toEqual(["answer"]);
+      expect(notes[0].note?.reason).toContain("the most a run nobody is watching gets");
+      // Two seconds into its first eight-second reply: that reply was cut
+      // short, and it ran nothing.
+      const childRows = await rowsOf(child.id);
+      expect(childRows.filter((r) => r.authorType === "tool")).toEqual([]);
+      expect(childRows.filter((r) => r.lamport < notes[0].row.lamport).at(-1)).toMatchObject({ authorType: "assistant", status: "cancelled" });
+      expect(childRows.at(-1)).toMatchObject({ authorType: "assistant", status: "complete" });
+
+      // Its parent, which a person started, has no ceiling and got the report.
+      expect(await notesOf(convId)).toEqual([]);
+      expect((await getStreamBroker().getMeta(streamId))?.status).toBe("complete");
+      expect(textOf((await rowsOf(convId)).filter((r) => r.authorType === "assistant").at(-1)?.content)).toContain("parent finished");
+    },
+    90_000,
+  );
+
+  it("has a sub-agent report when its review gives no verdict in time", async () => {
+    process.env.REVIEW_DEADLINE_MS = "300";
+    useScenarios([
+      {
+        match: "parent hands off",
+        steps: [{ tool: SUBAGENT_TOOL_NAME, args: { description: "Dig", prompt: "child review-slow: dig in" } }],
+        finalText: "[Mock] parent finished.\n",
+      },
+      { match: "child review-slow", steps: steps(9), finalText: "[Mock] child never reached this.\n" },
+    ]);
+    const convId = await newConversation();
+    const streamId = await run("parent hands off", convId);
+
+    const [child] = await db.query.conversations.findMany({ where: eq(conversations.parentConversationId, convId) });
+    const notes = await notesOf(child.id);
+    // No verdict and no reason: it is told to answer all the same.
+    expect(notes.map((n) => n.note?.action)).toEqual(["answer"]);
+    expect(notes[0].note?.reason).toMatch(/does not look like/);
+    expect((await rowsOf(child.id)).filter((r) => r.authorType === "tool")).toHaveLength(3);
+    expect((await getStreamBroker().getMeta(streamId))?.status).toBe("complete");
+  });
 
   it("tells a stuck sub-agent to report, and its parent carries on", async () => {
     useScenarios([

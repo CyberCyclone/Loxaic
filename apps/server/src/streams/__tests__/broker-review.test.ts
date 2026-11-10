@@ -42,6 +42,17 @@ describe("foldSnapshot and the progress review", () => {
     expect(broker.foldSnapshot([rec(1, { kind: "iteration", n: 7, max: 107, unlimited: true })]).iteration).toEqual({ n: 7 });
   });
 
+  it("leaves out a reply a review cut short before anything was written, and keeps one it cut mid-way", () => {
+    const snapshot = broker.foldSnapshot([
+      rec(1, { kind: "message.start", message_id: "a1", author_type: "assistant", parent_id: null }),
+      rec(2, { kind: "message.end", message_id: "a1", status: "cancelled", discard: true }),
+      rec(3, { kind: "message.start", message_id: "a2", author_type: "assistant", parent_id: null }),
+      rec(4, { kind: "text.delta", message_id: "a2", text: "Half a tho" }),
+      rec(5, { kind: "message.end", message_id: "a2", status: "cancelled" }),
+    ]);
+    expect(snapshot.messages.map((m) => [m.message_id, m.status])).toEqual([["a2", "cancelled"]]);
+  });
+
   it("folds who wrote a server-inserted message, keeping null distinct from absent", () => {
     const snapshot = broker.foldSnapshot([
       rec(1, { kind: "message.start", message_id: "n1", author_type: "user", parent_id: null, text: "x", author_user_id: null }),

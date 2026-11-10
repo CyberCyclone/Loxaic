@@ -29,7 +29,7 @@ UI components, including the vendored gluestack primitives in `ui/`. These rules
 
 ## Chat thread and composer
 
-- Nudges and notices nobody typed (compaction nudge `chat.message.compactionNudge`, plan nudge, an old check-in nudge, a progress note `progress.note` via `progressNoteView`, a sub-agent's `fromAgent` turns) render as notices, not user bubbles.
+- Nudges and notices nobody typed (compaction nudge `chat.message.compactionNudge`, plan nudge, an old check-in nudge, a progress note `progress.note` via `progressNoteView` (only a row with a null author: its words typed by a person are a user bubble), a sub-agent's `fromAgent` turns) render as notices, not user bubbles.
 
 ## Plan review and sub-agents
 

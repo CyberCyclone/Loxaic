@@ -72,12 +72,17 @@ The stream log, run registry and conversation authorization shared by every run 
 
 ### Progress review (`runs/progress-review.ts`)
 
-- Nothing but the review bounds a run: there is no step limit and no check-in, and a review never asks a person.
+- Nothing but the review bounds a run a person started: there is no step limit and no check-in, and a review never asks a person. A sub-agent and a routine are reviewed whatever `user_prefs.progress_review` says, and stop at `unattendedRunLimitMs()` of working time; never make either a user setting.
 - A review's verdict enters the run only as a persisted user row (`progressNoteText`, null author), pushed live and replayed byte for byte; never interpolate anything into it the replay cannot reproduce.
 - A review request never carries `conversationId` (it must not restore or overwrite the conversation's saved KV cache) and is shown a bounded digest, never the run's prompt.
 - Take a spare slot only through `tryAcquireRunSlot`, which never queues; without one, review in the run's own slot at a step boundary.
 - A review that interrupts a reply aborts only that request (its own controller beside `abort`): the partial row ends `cancelled`, which no replay sends.
 - Count working time as wall clock less `RunSlot.parkedMs()`.
+- Wrap every model request in `reviewer.watchRequest`: the time cadence and the ceiling must not wait for a reply to end.
+- Tell a progress note from a typed message with `isServerNote(text, authorUserId)` wherever the row is at hand; its text alone is anyone's to type.
+- Record a review's completion as `usage_records` with `purpose: "progress_review"` and a null `message_id`.
+- Ask for a verdict under `VERDICT_SCHEMA` (`jsonSchema`), falling back to words alone only when the backend refuses it; keep `parseVerdict` able to read a reply in prose or cut short.
+- Change `DEFAULT_REVIEW_PROMPT`, `REVIEW_OUTPUT_CONTRACT` or the digest only with a replay of real runs through a real model; the mock answers from keywords and proves nothing about a verdict.
 
 ### Waits: approvals
 

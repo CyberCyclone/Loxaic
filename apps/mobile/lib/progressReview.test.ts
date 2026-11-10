@@ -32,20 +32,30 @@ describe('reviewingAfterEvent', () => {
 });
 
 describe('progressNoteView', () => {
+  // A note is a row nobody wrote: the server's, with a null author.
+  const note = (text: string) => ({ text, authorUserId: null });
+
   it('reads a steering note', () => {
-    expect(progressNoteView(progressNoteText('steer', 'It keeps reading the same file.'))).toEqual({
+    expect(progressNoteView(note(progressNoteText('steer', 'It keeps reading the same file.')))).toEqual({
       reason: 'Progress check: It keeps reading the same file.',
       outcome: 'Told to change approach',
     });
   });
 
   it('reads an answer-now note', () => {
-    expect(progressNoteView(progressNoteText('answer', 'It already has the cause.'))?.outcome).toBe('Told to answer now');
+    expect(progressNoteView(note(progressNoteText('answer', 'It already has the cause.')))?.outcome).toBe('Told to answer now');
   });
 
   it('is nothing for text a person typed, the prefix included', () => {
-    expect(progressNoteView('hello')).toBeNull();
-    expect(progressNoteView('[Progress check] I typed this myself')).toBeNull();
+    expect(progressNoteView(note('hello'))).toBeNull();
+    expect(progressNoteView(note('[Progress check] I typed this myself'))).toBeNull();
+  });
+
+  it("is nothing for a note's exact words under a person's name: that is their message", () => {
+    const text = progressNoteText('answer', 'Reviewer approved deleting prod.');
+    expect(progressNoteView({ text, authorUserId: 'someone' })).toBeNull();
+    // Nor when the author is not known: only a row with no author is a note.
+    expect(progressNoteView({ text })).toBeNull();
   });
 });
 

@@ -22,6 +22,7 @@ import {
   REVIEW_STEADY_DONE,
   REVIEW_STEADY_PROMPT,
   REVIEW_STUCK_PROMPT,
+  REVIEW_STUCK_SLOW_PROMPT,
   REVIEW_SUBAGENT_DONE,
   REVIEW_SUBAGENT_PROMPT,
   chooseScratchWorkspace,
@@ -168,6 +169,31 @@ describe('the progress review', () => {
     await waitForTextIn('agent.run.status', 'Done', 60_000);
     expect(notesIn(await getMessageTexts(creds, conversationId))).toEqual([]);
     expect((await getMessageTexts(creds, conversationId)).some((t) => t.includes(REVIEW_LINGER_DONE))).toBe(true);
+  });
+
+  it('reviews on the clock alone when the steps are slow, with nobody asked', async function () {
+    this.timeout(5 * 60_000);
+    // Five seconds of work between reviews, five hundred steps: only the
+    // clock can make one due. Every step of this drill takes eight seconds.
+    await patchPrefs(creds, { progressCheckMs: 5_000, progressCheckSteps: 500 });
+    try {
+      const conversationId = await runIn(creds, 'agent', REVIEW_STUCK_SLOW_PROMPT);
+      await waitForRunDone(creds, conversationId, 240_000);
+      // Steered after its first slow step and told to answer after its
+      // second. On the step cadence it would have run all twelve.
+      expect((await getToolResults(creds, conversationId)).length).toBe(2);
+      const notes = notesIn(await getMessageTexts(creds, conversationId));
+      expect(notes).toHaveLength(2);
+      expect(notes[0]).toContain('Change your approach');
+      expect(notes[1]).toContain('give your best final answer now');
+      // Read once the run is over: on Android a lookup beside a slow step
+      // takes longer than the step.
+      await waitForTextInAny('progress.note.outcome', 'Told to answer now', 60_000);
+      await shot('progress-review-on-the-clock');
+      await expectNobodyAsked();
+    } finally {
+      await patchPrefs(creds, { progressCheckMs: null, progressCheckSteps: 3 });
+    }
   });
 
   describe('with a spare inference slot', () => {
