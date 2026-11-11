@@ -262,6 +262,70 @@ describe("ProgressReviewer", () => {
     expect(ended(events)).toMatchObject([{ verdict: "stuck", action: "steer" }]);
   });
 
+  it("does not review a reply that has started writing its answer, on the clock or by size", async () => {
+    // A slot to spare and both cadences due: only the words hold it back.
+    const { reviewer, state, events } = await track(make({ slots: 2, everyMs: 200, everySteps: 500 }));
+    state.realTime = Date.now();
+    const interrupt = vi.fn();
+    reviewer.interrupt = interrupt;
+    const reply = { text: "Section 1. The design", thinking: "y".repeat(REPLY_REVIEW_CHARS * 2), startedAt: Date.now() };
+    const stop = reviewer.watchRequest(() => reply);
+    await new Promise((r) => setTimeout(r, 1_000));
+    expect(events).toEqual([]);
+    expect(interrupt).not.toHaveBeenCalled();
+    // The same reply with nothing but blank space written is still only
+    // thinking, and is reviewed.
+    reply.text = " \n";
+    await waitFor("the reply to be cut short", () => interrupt.mock.calls.length > 0);
+    stop();
+    expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "alongside" });
+  });
+
+  it("does not cut a reply that began its answer while the review of its thinking ran", async () => {
+    // The mock's reviewer takes two seconds ("review-brief") to say stuck.
+    const { reviewer, events, step } = await track(make({ slots: 2, everySteps: 500, task: "review-stuck review-brief: go round" }));
+    const interrupt = vi.fn();
+    reviewer.interrupt = interrupt;
+    const reply = { text: "", thinking: "y".repeat(REPLY_REVIEW_CHARS), startedAt: Date.now() };
+    const stop = reviewer.watchRequest(() => reply);
+    await waitFor("the review to start", () => events.some((e) => e.kind === "run.review.start"));
+    reply.text = "Here is the document.";
+    await waitFor("the review to end", () => ended(events).length === 1);
+    await new Promise((r) => setTimeout(r, 100));
+    // The verdict stands and is said, but the reply is left to finish.
+    expect(ended(events)).toMatchObject([{ verdict: "stuck", action: "steer" }]);
+    expect(interrupt).not.toHaveBeenCalled();
+    // It waits for the step's end, like a decision that lands between requests.
+    expect(reviewer.hasDecision()).toBe(true);
+    stop();
+    step();
+    expect(await reviewer.atStepEnd()).toMatchObject({ verdict: "stuck", action: "steer" });
+  });
+
+  it("still cuts a reply that is only thinking when the verdict lands", async () => {
+    const { reviewer, events } = await track(make({ slots: 2, everySteps: 500, task: "review-stuck review-brief: go round" }));
+    const interrupt = vi.fn();
+    reviewer.interrupt = interrupt;
+    const reply = { text: "", thinking: "y".repeat(REPLY_REVIEW_CHARS), startedAt: Date.now() };
+    const stop = reviewer.watchRequest(() => reply);
+    await waitFor("the review to start", () => events.some((e) => e.kind === "run.review.start"));
+    reply.thinking += " and more of the same";
+    await waitFor("the reply to be cut short", () => interrupt.mock.calls.length > 0);
+    stop();
+    expect(reviewer.takeReady()).toMatchObject({ action: "steer" });
+  });
+
+  it("cuts a reply at the ceiling even when it is writing its answer", async () => {
+    const { reviewer, state } = await track(make({ slots: 2, unattended: true, subagent: true, limitMs: 300, everySteps: 500 }));
+    state.realTime = Date.now();
+    const interrupt = vi.fn();
+    reviewer.interrupt = interrupt;
+    const stop = reviewer.watchRequest(() => ({ text: "Half the report is written", thinking: "", startedAt: Date.now() }));
+    await waitFor("the ceiling to cut the reply", () => interrupt.mock.calls.length > 0);
+    stop();
+    expect(reviewer.takeReady()).toMatchObject({ action: "answer", forced: true });
+  });
+
   it("leaves a long reply alone when there is no slot to review it on", async () => {
     const { reviewer, state, events } = await track(make({ slots: 1, everyMs: 200, everySteps: 500 }));
     state.realTime = Date.now();

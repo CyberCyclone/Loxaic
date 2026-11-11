@@ -77,6 +77,7 @@ The stream log, run registry and conversation authorization shared by every run 
 - A review's verdict enters the run only as a persisted user row (`progressNoteText`, null author), pushed live and replayed byte for byte; never interpolate anything into it the replay cannot reproduce.
 - A review request never carries `conversationId` (it must not restore or overwrite the conversation's saved KV cache) and is shown a bounded digest, never the run's prompt.
 - Take a slot beside the run only through `slotBesideRun` (`tryAcquireRunSlot`, then `tryAcquireReviewLane`; neither queues); without one, review in the run's own slot at a step boundary.
+- A review never starts on, and never cuts, a reply that has written any of its answer (`answerStarted`); only a reply still thinking is reviewed mid-stream. The unattended ceiling cuts either.
 - A review that interrupts a reply aborts only that request (its own controller beside `abort`): the partial row ends `cancelled`, which no replay sends.
 - A note that cuts a reply short carries that reply's end (`carriedReply`, as `progressNoteText`'s `carried`): the cancelled row is all the work a run that only thinks has. Clients show a note through `parseProgressNote`, never its raw text.
 - Nothing reviews a run once it is told to answer; `answerUnwritten` in `engine.ts` is what ends it. Every exit from the answer phase is words, a stop, or its `ended` note, which is also a sub-agent's report (`finalText`).

@@ -552,6 +552,37 @@ describe("progress review", () => {
     90_000,
   );
 
+  it(
+    "never reviews or cuts a reply that is writing its answer, however long it takes",
+    async () => {
+      process.env.INFERENCE_MAX_CONCURRENT_RUNS = "2";
+      resetSlotProbe();
+      // A review is due after one second of work, a slot is spare, and the
+      // reviewer would say stuck: everything that cut a thinking reply short.
+      await setPrefs({ progressCheckMs: null, progressCheckSteps: 500 });
+      process.env.PROGRESS_CHECK_MS = "1000";
+      // The mock echoes its prompt at twenty milliseconds a word: about six
+      // seconds of answer, and never a thought.
+      const prompt = `review-stuck review-brief ${Array.from({ length: 300 }, (_, i) => `item${String(i)}`).join(" ")}`;
+      const convId = await newConversation();
+      const startedAt = Date.now();
+      const streamId = await run(prompt, convId, 60_000);
+      expect(Date.now() - startedAt).toBeGreaterThan(4_000);
+
+      const events = await eventsOf(streamId);
+      expect(events.filter((e) => e.kind === "run.review.start")).toEqual([]);
+      expect(await recordsOf(convId)).toEqual([]);
+      expect(await notesOf(convId)).toEqual([]);
+      // One reply, whole, and the run ended on it.
+      const rows = await rowsOf(convId);
+      expect(rows.filter((r) => r.authorType === "assistant")).toHaveLength(1);
+      expect(rows.at(-1)).toMatchObject({ authorType: "assistant", status: "complete" });
+      expect(textOf(rows.at(-1)?.content)).toContain("item299");
+      expect((await getStreamBroker().getMeta(streamId))?.status).toBe("complete");
+    },
+    90_000,
+  );
+
   it("still reviews a sub-agent whose user has turned reviews off", async () => {
     await setPrefs({ progressReview: false });
     useScenarios([

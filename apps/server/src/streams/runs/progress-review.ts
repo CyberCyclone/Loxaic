@@ -732,6 +732,20 @@ export interface LiveRequest {
   startedAt: number;
 }
 
+/**
+ * Whether a reply has started writing its answer: any words at all.
+ *
+ * A review never cuts such a reply. Words being written are the answer
+ * arriving, and cutting them throws it away: a reply 59,152 characters into a
+ * design document was called `finished` ("only re-checking") and steered, the
+ * cut left a cancelled row and a note with its last 6,000 characters, and the
+ * model began the whole document again. A reply that is still only thinking
+ * has delivered nothing, and is reviewed and cut as ever.
+ */
+export function answerStarted(reply: { text: string }): boolean {
+  return reply.text.trim() !== "";
+}
+
 /** How soon a look that could do nothing is tried again. */
 const RECHECK_MS = 30_000;
 /** How often a streaming reply's size is looked at. */
@@ -765,6 +779,8 @@ export class ProgressReviewer {
   /** Set by the engine while a model request streams: ends that request so a
    * decision lands now rather than after a long generation. */
   interrupt: (() => void) | null = null;
+  /** The request being watched, as it stands: see `watchRequest`. */
+  private watched: (() => LiveRequest) | null = null;
 
   constructor(
     private readonly opts: {
@@ -920,7 +936,13 @@ export class ProgressReviewer {
       .then((decision) => {
         if (this.isDisposed()) return;
         this.ready = decision;
-        if (this.hasDecision()) this.interrupt?.();
+        // Read here, in the same step as the interrupt, so no word can
+        // arrive between the two. A reply that began its answer while the
+        // review ran is left to finish: the decision waits in `ready` for
+        // the step's end, as one that lands between two requests does, and
+        // goes with the run if the reply was its last.
+        const watched = this.watched?.();
+        if (this.hasDecision() && !(watched && answerStarted(watched))) this.interrupt?.();
       })
       // `review` never throws by design; a fault there must still not
       // become an unhandled rejection, which would take the server down.
@@ -980,10 +1002,18 @@ export class ProgressReviewer {
    * beside the run when a slot is spare (there is no pausing a request
    * half-written), reading the reply so far; and the ceiling of an unattended
    * run cuts the reply short.
+   *
+   * Only while the reply is thinking. Once it has written a word of its
+   * answer (`answerStarted`) no review starts on it, and a verdict already on
+   * its way does not cut it: the ceiling alone still does.
    */
   watchRequest(live: () => LiveRequest): () => void {
+    this.watched = live;
+    const unwatch = (): void => {
+      if (this.watched === live) this.watched = null;
+    };
     // Nothing a look could do: no timer at all.
-    if (!this.on && this.opts.limitMs === null) return () => undefined;
+    if (!this.on && this.opts.limitMs === null) return unwatch;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let watching = true;
     // What this reply had written when a review last started on it.
@@ -1004,6 +1034,7 @@ export class ProgressReviewer {
     arm();
     return () => {
       watching = false;
+      unwatch();
       if (timer) clearTimeout(timer);
     };
   }
@@ -1032,6 +1063,8 @@ export class ProgressReviewer {
     }
     if (!this.on) return;
     const now = live();
+    // The answer is arriving: nothing reviews it, on either cadence.
+    if (answerStarted(now)) return;
     const written = now.thinking.length + now.text.length;
     const timeDue = workedMs - this.workedAtLast >= this.opts.prefs.everyMs;
     const due = timeDue || replyReviewDue(written, seen.chars);
@@ -1114,5 +1147,6 @@ export class ProgressReviewer {
     this.disposed = true;
     this.cancel.abort();
     this.interrupt = null;
+    this.watched = null;
   }
 }

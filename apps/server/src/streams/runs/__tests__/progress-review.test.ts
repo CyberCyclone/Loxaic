@@ -23,6 +23,7 @@ import {
   REPLY_REVIEW_CHARS,
   REVIEW_OUTPUT_CONTRACT,
   answerOverdue,
+  answerStarted,
   answerThinkingChars,
   carriedReply,
   clampProgressCheckMs,
@@ -72,6 +73,15 @@ describe("replyReviewDue", () => {
     // Looked at then: not again until as much again.
     expect(replyReviewDue(REPLY_REVIEW_CHARS * 2 - 1, REPLY_REVIEW_CHARS)).toBe(false);
     expect(replyReviewDue(REPLY_REVIEW_CHARS * 2, REPLY_REVIEW_CHARS)).toBe(true);
+  });
+});
+
+describe("answerStarted", () => {
+  it("is any word at all, and never blank space or thinking", () => {
+    expect(answerStarted({ text: "" })).toBe(false);
+    expect(answerStarted({ text: " \n\t" })).toBe(false);
+    expect(answerStarted({ text: "I" })).toBe(true);
+    expect(answerStarted({ text: "\n\nSection 1" })).toBe(true);
   });
 });
 
