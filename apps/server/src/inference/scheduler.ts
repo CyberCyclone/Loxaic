@@ -112,6 +112,9 @@ interface Queue {
   exclusive: boolean;
   waiting: Waiter[];
   probed: { value: number | null; at: number } | null;
+  /** The review lane is taken: see `tryAcquireReviewLane`. Beside `running`,
+   * never part of it. */
+  reviewLane: boolean;
 }
 
 const queues = new Map<string, Queue>();
@@ -119,7 +122,7 @@ const queues = new Map<string, Queue>();
 function queueFor(providerId: string): Queue {
   let q = queues.get(providerId);
   if (!q) {
-    q = { running: 0, exclusive: false, waiting: [], probed: null };
+    q = { running: 0, exclusive: false, waiting: [], probed: null, reviewLane: false };
     queues.set(providerId, q);
   }
   return q;
@@ -248,6 +251,54 @@ export async function tryAcquireRunSlot(providerId: string = DEFAULT_PROVIDER_ID
       held = false;
       q.running--;
       pump(providerId);
+    },
+  };
+}
+
+/**
+ * The review lane: one request beside the runs, on a backend slot the run
+ * limit leaves idle. Null when there is no such slot, or the lane is taken;
+ * never a place in line.
+ *
+ * **Only for a progress review** (streams/runs/progress-review.ts), after
+ * `tryAcquireRunSlot` said no: one short request with its own deadline and a
+ * digest of a few thousand tokens. Never for a run, a compaction or anything
+ * else that holds a conversation's prompt: what is taken here is outside the
+ * queue's accounting, so nothing the queue promises about cached prefixes
+ * covers it.
+ *
+ * Why it exists: the run limit can be set below what the backend holds
+ * (llama.cpp at `--parallel 4`, two runs allowed). With both runs going
+ * `tryAcquireRunSlot` never had a slot, so every review paused its run while
+ * two backend slots sat idle, and a reply that streamed for an hour was never
+ * looked at at all: a look mid-reply has no slot of its own to fall back on.
+ *
+ * - Open only when the backend itself says it has more slots than the limit
+ *   (the same probe `resolveMaxConcurrent` falls back on). A backend that will
+ *   not say, or has no more than the limit, has no lane: there the request
+ *   would land in a slot a run's prefix is cached in.
+ * - One holder per provider. The limit plus one never exceeds the backend's
+ *   slots, whatever the reviews on spare run slots are doing.
+ * - Takes nothing from `running` and is no waiter, so it cannot delay or
+ *   starve a run in line, and `release()` has nothing to pump.
+ * - Shut while the backend is held exclusively or a switch is waiting for it:
+ *   a model reload would cut the review off. A lane already taken does not
+ *   hold a switch back; the review it carries is lost, as no verdict.
+ */
+export async function tryAcquireReviewLane(providerId: string = DEFAULT_PROVIDER_ID): Promise<{ release(): void } | null> {
+  const max = await resolveMaxConcurrent(providerId);
+  const slots = await backendSlots(providerId);
+  // After both awaits, so the checks and the take are one synchronous step.
+  const q = queueFor(providerId);
+  if (slots === null || slots <= max) return null;
+  if (q.reviewLane || q.exclusive || q.waiting.some((w) => w.exclusive)) return null;
+  q.reviewLane = true;
+  let held = true;
+  return {
+    release() {
+      if (!held) return;
+      held = false;
+      q.reviewLane = false;
     },
   };
 }
@@ -441,6 +492,18 @@ export async function resolveMaxConcurrent(providerId: string = DEFAULT_PROVIDER
   return (await probeBackendSlots(providerId, provider)) ?? 1;
 }
 
+/**
+ * How many slots the backend itself reports, whatever limit is configured
+ * over it; null when it does not say or the provider cannot be resolved
+ * (which is never probed: see `resolveMaxConcurrent`).
+ */
+async function backendSlots(providerId: string): Promise<number | null> {
+  if (providerId === DEFAULT_PROVIDER_ID) return probeBackendSlots(providerId, undefined);
+  const { getProviderById } = await import("./providers.ts");
+  const provider = await getProviderById(providerId).catch(() => null);
+  return provider ? probeBackendSlots(providerId, provider) : null;
+}
+
 async function probeBackendSlots(providerId: string, provider: ResolvedProvider | undefined): Promise<number | null> {
   const q = queueFor(providerId);
   if (q.probed && Date.now() - q.probed.at < PROBE_TTL_MS) return q.probed.value;
@@ -466,7 +529,12 @@ export function __resetSchedulerForTest(): void {
 
 /** Diagnostics: what a queue looks like right now. Defaults to the built-in
  * backend's, which is the one every existing caller means. */
-export function schedulerState(providerId: string = DEFAULT_PROVIDER_ID): { running: number; waiting: number; exclusive: boolean } {
+export function schedulerState(providerId: string = DEFAULT_PROVIDER_ID): {
+  running: number;
+  waiting: number;
+  exclusive: boolean;
+  reviewLane: boolean;
+} {
   const q = queues.get(providerId);
-  return { running: q?.running ?? 0, waiting: q?.waiting.length ?? 0, exclusive: q?.exclusive ?? false };
+  return { running: q?.running ?? 0, waiting: q?.waiting.length ?? 0, exclusive: q?.exclusive ?? false, reviewLane: q?.reviewLane ?? false };
 }

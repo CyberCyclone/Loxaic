@@ -18,6 +18,7 @@ import { startAgentRun } from "../agentRun.ts";
 import { startChatRun } from "../chatRun.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 import { __resetSchedulerForTest, resetSlotProbe } from "../../../inference/scheduler.ts";
+import { reportBackendSlots } from "../../../inference/__tests__/fake-backend-slots.ts";
 
 /**
  * The progress review, driven through the real tool loop against the mock
@@ -513,6 +514,39 @@ describe("progress review", () => {
         ]);
       }
       expect(rows.at(-1)).toMatchObject({ authorType: "assistant", status: "complete" });
+    },
+    90_000,
+  );
+
+  it(
+    "reviews a reply still being written when its run has the only run slot and the backend has another",
+    async () => {
+      // One run allowed, and this is it: no run slot is ever spare. The
+      // backend holds two, so the review takes the lane instead of never
+      // happening (a reply cannot be paused half-written).
+      process.env.INFERENCE_MAX_CONCURRENT_RUNS = "1";
+      const undo = await reportBackendSlots(2);
+      try {
+        await setPrefs({ progressCheckMs: null, progressCheckSteps: 500 });
+        process.env.PROGRESS_CHECK_MS = "2000";
+        useScenarios([{ match: "take your time", steps: steps(6), finalText: "[Mock] never reached.\n" }]);
+        const convId = await newConversation();
+        const streamId = await run("take your time, review-stuck", convId, 75_000);
+
+        const taken = await recordsOf(convId);
+        expect(taken.map((r) => [r.trigger, r.mode, r.action])).toEqual([
+          ["time", "alongside", "steer"],
+          ["time", "alongside", "answer"],
+        ]);
+        // Both replies were cut short before their call, as with a spare run slot.
+        const rows = await rowsOf(convId);
+        expect(rows.filter((r) => r.authorType === "tool")).toEqual([]);
+        expect((await notesOf(convId)).map((n) => n.note?.action)).toEqual(["steer", "answer"]);
+        expect(rows.at(-1)).toMatchObject({ authorType: "assistant", status: "complete" });
+        expect((await getStreamBroker().getMeta(streamId))?.status).toBe("complete");
+      } finally {
+        await undo();
+      }
     },
     90_000,
   );

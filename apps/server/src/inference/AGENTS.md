@@ -32,6 +32,7 @@ Model requests, providers, the run scheduler, prompt-reuse and progress figures,
 - Anything that holds or waits in the queue and then leaves must `pump()` (`onAbort` does for waiters).
 - `onAdmitted` fires on the fast path, after a wait, and on `yieldWhile` re-entry; wire both `onQueued` and `onAdmitted` to the registry.
 - `run.queued` carries a 1-based place, re-emitted as the queue moves, cleared by `iteration`.
+- `tryAcquireReviewLane` is for a progress review alone: one short bounded request on a backend slot above the run limit. It stays outside `running` and the waiters, opens only when the probe reports more slots than the limit, and is shut while an exclusive holder has or waits for the backend.
 - Re-check a value an await can change through a function call (`const stopped = () => signal.aborted`), never by reading the property again: TypeScript narrows it after the first check and the re-check reads as dead code.
 
 ## Host-model requests (provider.ts)

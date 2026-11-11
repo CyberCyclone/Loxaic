@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_PROVIDER_ID, type ReviewAction, type ReviewVerdict, type RunReview } from "@loxaic/types";
 import type { CompletionResult } from "../../../inference/provider.ts";
-import { __resetSchedulerForTest, resetSlotProbe, tryAcquireRunSlot } from "../../../inference/scheduler.ts";
+import { __resetSchedulerForTest, resetSlotProbe, schedulerState, tryAcquireReviewLane, tryAcquireRunSlot } from "../../../inference/scheduler.ts";
+import { reportBackendSlots } from "../../../inference/__tests__/fake-backend-slots.ts";
 import {
   DEFAULT_REVIEW_PROMPT,
   PAUSED_STEP_REVIEW_MAX_CONTEXT,
@@ -33,6 +34,8 @@ type Emitted =
  * run does: with one slot a review has to borrow the run's own. */
 async function make(over: {
   slots?: number;
+  /** Other runs going on the same backend, each holding a run slot. */
+  otherRuns?: number;
   everyMs?: number;
   everySteps?: number;
   enabled?: boolean;
@@ -46,7 +49,9 @@ async function make(over: {
 }) {
   process.env.INFERENCE_MAX_CONCURRENT_RUNS = String(over.slots ?? 1);
   resetSlotProbe();
-  if (!(await tryAcquireRunSlot(DEFAULT_PROVIDER_ID))) throw new Error("the run's own slot was not free");
+  for (let i = 0; i <= (over.otherRuns ?? 0); i++) {
+    if (!(await tryAcquireRunSlot(DEFAULT_PROVIDER_ID))) throw new Error("a run's slot was not free");
+  }
   const state = { worked: 0, off: false, realTime: null as number | null };
   const events: Emitted[] = [];
   const usage: CompletionResult[] = [];
@@ -304,6 +309,84 @@ describe("ProgressReviewer", () => {
     expect(await reviewer.atStepEnd()).toBeNull();
     await waitFor("the review to end", () => ended(events).length === 1);
     expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "alongside" });
+  });
+
+  describe("with every run slot taken", () => {
+    // Two runs allowed and both going, as on the box this was found on.
+    let undo: (() => Promise<void>) | null = null;
+    afterEach(async () => {
+      await undo?.();
+      undo = null;
+    });
+
+    it("reviews beside the run at a step boundary when the backend has slots the limit leaves idle", async () => {
+      undo = await reportBackendSlots(4);
+      const lane: boolean[] = [];
+      const { reviewer, events, step } = await track(
+        make({ slots: 2, otherRuns: 1, everySteps: 1, onStart: () => lane.push(schedulerState().reviewLane) }),
+      );
+      step();
+      // Not paused: nothing is handed back to wait on.
+      expect(await reviewer.atStepEnd()).toBeNull();
+      await waitFor("the review to end", () => ended(events).length === 1);
+      expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "alongside" });
+      expect(reviewer.takeReady()).toMatchObject({ verdict: "stuck", action: "steer" });
+      // On the lane, beside both runs, and given back when it ended.
+      expect(lane).toEqual([true]);
+      await waitFor("the lane to be free", () => !schedulerState().reviewLane);
+      expect(schedulerState().running).toBe(2);
+    });
+
+    it("looks at a long reply while it is written, which nothing did before", async () => {
+      undo = await reportBackendSlots(4);
+      const { reviewer, events } = await track(make({ slots: 2, otherRuns: 1, everySteps: 500 }));
+      const interrupt = vi.fn();
+      reviewer.interrupt = interrupt;
+      const stop = reviewer.watchRequest(() => ({ text: "", thinking: "y".repeat(REPLY_REVIEW_CHARS), startedAt: Date.now() }));
+      await waitFor("the reply to be cut short", () => interrupt.mock.calls.length > 0);
+      stop();
+      expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "alongside" });
+      expect(ended(events)).toMatchObject([{ verdict: "stuck", action: "steer" }]);
+    });
+
+    it("takes a spare run slot before the lane when there is one", async () => {
+      undo = await reportBackendSlots(4);
+      const lane: boolean[] = [];
+      const { reviewer, events, step } = await track(make({ slots: 2, everySteps: 1, onStart: () => lane.push(schedulerState().reviewLane) }));
+      step();
+      expect(await reviewer.atStepEnd()).toBeNull();
+      await waitFor("the review to end", () => ended(events).length === 1);
+      expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "alongside" });
+      expect(lane).toEqual([false]);
+    });
+
+    it("pauses the run as before when the backend has no more slots than the limit", async () => {
+      undo = await reportBackendSlots(2);
+      const { reviewer, state, events, step } = await track(make({ slots: 2, otherRuns: 1, everyMs: 200, everySteps: 1 }));
+      step();
+      expect(await reviewer.atStepEnd()).toMatchObject({ verdict: "stuck", action: "steer" });
+      expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "paused" });
+      // And a reply being written has nowhere to be reviewed.
+      state.realTime = Date.now();
+      const interrupt = vi.fn();
+      reviewer.interrupt = interrupt;
+      const stop = reviewer.watchRequest(() => ({ text: "", thinking: "long but fine", startedAt: Date.now() }));
+      await new Promise((r) => setTimeout(r, 1_000));
+      stop();
+      expect(events.filter((e) => e.kind === "run.review.start")).toHaveLength(1);
+      expect(interrupt).not.toHaveBeenCalled();
+    });
+
+    it("pauses the run when another review already has the lane", async () => {
+      undo = await reportBackendSlots(4);
+      const { reviewer, events, step } = await track(make({ slots: 2, otherRuns: 1, everySteps: 1 }));
+      const taken = await tryAcquireReviewLane(DEFAULT_PROVIDER_ID);
+      expect(taken).not.toBeNull();
+      step();
+      expect(await reviewer.atStepEnd()).toMatchObject({ verdict: "stuck", action: "steer" });
+      expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "paused" });
+      taken?.release();
+    });
   });
 
   describe("a review's record", () => {

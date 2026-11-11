@@ -11,8 +11,10 @@ import {
   resolveMaxConcurrent,
   resetSlotProbe,
   schedulerState,
+  tryAcquireReviewLane,
   tryAcquireRunSlot,
 } from "../scheduler.ts";
+import { reportBackendSlots } from "./fake-backend-slots.ts";
 
 /**
  * The queue's job is to stop two conversations interleaving their requests to
@@ -562,6 +564,146 @@ describe("tryAcquireRunSlot (a progress review beside its run)", () => {
     const next = await queued;
     run?.release();
     next?.release();
+  });
+});
+
+describe("tryAcquireReviewLane (a review on a backend slot the run limit leaves idle)", () => {
+  let undo: (() => Promise<void>) | null = null;
+  /** A backend that reports `slots`, under a run limit of `limit`. */
+  async function backend(slots: number, limit: number): Promise<void> {
+    undo = await reportBackendSlots(slots);
+    pin(limit);
+  }
+  afterEach(async () => {
+    await undo?.();
+    undo = null;
+  });
+  const run = () => acquireRunSlot({ signal: live(), onQueued: noop });
+
+  it("is open when every run slot is taken and the backend has more", async () => {
+    await backend(4, 2);
+    const a = await run();
+    const b = await run();
+    // No run slot to spare: what a review found before, every time.
+    expect(await tryAcquireRunSlot()).toBeNull();
+    const lane = await tryAcquireReviewLane();
+    expect(lane).not.toBeNull();
+    // Beside the runs, not one of them.
+    expect(schedulerState()).toMatchObject({ running: 2, waiting: 0, reviewLane: true });
+    lane?.release();
+    a?.release();
+    b?.release();
+  });
+
+  it("is open below the limit too, and leaves the run slots as they were", async () => {
+    await backend(4, 2);
+    const a = await run();
+    const lane = await tryAcquireReviewLane();
+    expect(lane).not.toBeNull();
+    expect(schedulerState()).toMatchObject({ running: 1, reviewLane: true });
+    // The spare run slot is still there for a run or a review to take.
+    const spare = await tryAcquireRunSlot();
+    expect(spare).not.toBeNull();
+    spare?.release();
+    lane?.release();
+    a?.release();
+  });
+
+  it("is one review wide, and free again once released", async () => {
+    await backend(4, 2);
+    const first = await tryAcquireReviewLane();
+    expect(first).not.toBeNull();
+    expect(await tryAcquireReviewLane()).toBeNull();
+    first?.release();
+    expect(schedulerState().reviewLane).toBe(false);
+    const second = await tryAcquireReviewLane();
+    expect(second).not.toBeNull();
+    // Released twice, the first holder does not free the second's lane.
+    first?.release();
+    expect(schedulerState().reviewLane).toBe(true);
+    expect(await tryAcquireReviewLane()).toBeNull();
+    second?.release();
+  });
+
+  it("does not exist on a backend that will not say how many slots it has", async () => {
+    // A limit of two, set by hand, over a backend that answers nothing.
+    const restore = attachBuiltin("http://127.0.0.1:1");
+    pin(2);
+    try {
+      expect(await tryAcquireReviewLane()).toBeNull();
+      expect(schedulerState().reviewLane).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not exist when the backend has no more slots than the limit", async () => {
+    await backend(2, 2);
+    expect(await tryAcquireReviewLane()).toBeNull();
+    // Nor when the limit was set above what the backend holds.
+    pin(3);
+    expect(await tryAcquireReviewLane()).toBeNull();
+    // One more than the limit is enough.
+    pin(1);
+    const lane = await tryAcquireReviewLane();
+    expect(lane).not.toBeNull();
+    lane?.release();
+  });
+
+  it("does not exist when the limit follows the backend: every slot is a run's", async () => {
+    undo = await reportBackendSlots(4);
+    Reflect.deleteProperty(process.env, "INFERENCE_MAX_CONCURRENT_RUNS");
+    await expect(resolveMaxConcurrent()).resolves.toBe(4);
+    expect(await tryAcquireReviewLane()).toBeNull();
+  });
+
+  it("does not exist for a provider that cannot be resolved", async () => {
+    await backend(8, 1);
+    expect(await tryAcquireReviewLane("00000000-0000-4000-8000-000000000000")).toBeNull();
+  });
+
+  it("is shut while the backend is held exclusively, and while a switch waits for it", async () => {
+    await backend(4, 2);
+    const held = await acquireExclusiveSlot({ signal: live(), onQueued: noop });
+    expect(await tryAcquireReviewLane()).toBeNull();
+    held?.release();
+
+    const a = await run();
+    const switching = acquireExclusiveSlot({ signal: live(), onQueued: noop });
+    await waitForWaiters();
+    // The reload is coming as soon as the run ends: no review starts under it.
+    expect(await tryAcquireReviewLane()).toBeNull();
+    a?.release();
+    (await switching)?.release();
+    const lane = await tryAcquireReviewLane();
+    expect(lane).not.toBeNull();
+    lane?.release();
+  });
+
+  it("neither delays a run waiting in line nor is refused because of one", async () => {
+    await backend(4, 1);
+    const a = await run();
+    let admitted = false;
+    const queued = run().then((slot) => {
+      admitted = true;
+      return slot;
+    });
+    await waitForWaiters();
+    const lane = await tryAcquireReviewLane();
+    expect(lane).not.toBeNull();
+    // The waiter is where it was, and gets the slot the moment it frees,
+    // with the lane still taken.
+    expect(schedulerState()).toMatchObject({ running: 1, waiting: 1, reviewLane: true });
+    a?.release();
+    const b = await queued;
+    expect(admitted).toBe(true);
+    expect(schedulerState()).toMatchObject({ running: 1, waiting: 0, reviewLane: true });
+    // Nor does it hold back a switch: nothing is running once the run ends.
+    b?.release();
+    const switched = await acquireExclusiveSlot({ signal: live(), onQueued: noop });
+    expect(schedulerState()).toMatchObject({ exclusive: true, reviewLane: true });
+    switched?.release();
+    lane?.release();
   });
 });
 

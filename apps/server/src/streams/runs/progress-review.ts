@@ -13,8 +13,8 @@
  * The reviewer is shown a digest, never the run's own context: a few thousand
  * tokens it can read in a minute or two on a slow local backend, where the
  * run's context can be past 150K. It runs beside the run on a spare inference
- * slot when the backend has one, and otherwise the run pauses at a step
- * boundary and lends it its own (`tryAcquireRunSlot`).
+ * slot when the backend has one (`slotBesideRun`), and otherwise the run
+ * pauses at a step boundary and lends it its own.
  *
  * A run nobody is watching (a sub-agent, a routine) is reviewed whatever its
  * user's settings say, and has a ceiling on its working time besides: the one
@@ -42,7 +42,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { PLAN_TOOL_NAME } from "@loxaic/agent";
 import { streamCompletion, textOfContent, type ChatMessage, type CompletionResult } from "../../inference/provider.ts";
-import { tryAcquireRunSlot } from "../../inference/scheduler.ts";
+import { tryAcquireReviewLane, tryAcquireRunSlot } from "../../inference/scheduler.ts";
 import { REVIEW_OUTPUT_CONTRACT } from "./review-marker.ts";
 
 /** The reviewer's instructions when the user has not written their own. */
@@ -715,6 +715,16 @@ export function reviewCard(streamId: string | undefined, review: ReviewStart | R
   };
 }
 
+/**
+ * Somewhere for a review to run beside its run, right now or not at all: a
+ * run slot the backend has spare, else the review lane (a backend slot the
+ * run limit leaves idle). In that order: a spare run slot is the queue's own
+ * to give, and the lane is one review wide.
+ */
+async function slotBesideRun(providerId: string): Promise<{ release(): void } | null> {
+  return (await tryAcquireRunSlot(providerId)) ?? (await tryAcquireReviewLane(providerId));
+}
+
 /** What a request being written looks like to a review taken mid-reply. */
 export interface LiveRequest {
   text: string;
@@ -944,7 +954,7 @@ export class ProgressReviewer {
     });
     if (!trigger) return null;
     const messages = this.messagesFor(workedMs, null);
-    const spare = await tryAcquireRunSlot(this.opts.providerId);
+    const spare = await slotBesideRun(this.opts.providerId);
     // Through calls: the checks above narrowed the fields, and the await is
     // exactly when the run can end or a look mid-reply can start a review.
     if (this.isDisposed() || this.reviewing()) {
@@ -1032,7 +1042,7 @@ export class ProgressReviewer {
       return;
     }
     const messages = this.messagesFor(workedMs, now);
-    const spare = await tryAcquireRunSlot(this.opts.providerId);
+    const spare = await slotBesideRun(this.opts.providerId);
     if (!spare) {
       this.retryAt = Date.now() + RECHECK_MS;
       return;
