@@ -970,8 +970,9 @@ export async function chooseScratchWorkspace(): Promise<void> {
   // after confirm (the mode selector, in agent-new-project) could land on
   // the backdrop and be lost, which then presented as a four-minute scenario
   // timeout in manual mode. Its siblings wait on the pill; this waits on
-  // the dialog itself.
-  await waitForGone('agent.workspace.dialog');
+  // the dialog itself. Queried afresh on each poll: under UiAutomator2 the
+  // dialog found before it closed goes on reporting itself displayed.
+  await waitForAbsent('agent.workspace.dialog', 60_000);
 }
 
 /**

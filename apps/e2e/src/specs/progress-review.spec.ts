@@ -357,25 +357,33 @@ describe('the progress review', () => {
     }
     // ...and none of that is in a note on screen: a reader gets the reason.
     // Every note in the tree where the whole list is (web and Electron, by
-    // its text content); elsewhere the ones on screen, which is all a native
-    // lookup can read.
+    // the whole note's text content). A native lookup of the note's container
+    // has no text of its own, and only what is on screen is in the tree: there
+    // it is each note's two lines, which are all a note draws.
+    const wholeList = platform() === 'web' || platform() === 'electron';
     const onScreen = async (): Promise<string[]> => {
-      if (platform() === 'web' || platform() === 'electron') {
+      if (wholeList) {
         return browser.execute(
           (selector: string) => [...document.querySelectorAll(selector)].map((el) => el.textContent),
           testIdSelector('progress.note'),
         );
       }
       const shown: string[] = [];
-      for (const el of await $$(testIdSelector('progress.note')).getElements()) shown.push(await el.getText());
+      for (const id of ['progress.note.reason', 'progress.note.outcome']) {
+        for (const el of await $$(testIdSelector(id)).getElements()) shown.push(await el.getText());
+      }
       return shown.filter((t) => t !== '');
     };
     const live = await onScreen();
     expect(live.some((t) => t.includes('Ended without an answer'))).toBe(true);
+    expect(live.some((t) => t.includes(`${PROGRESS_NOTE_TEXT} `) && t.includes('says stuck'))).toBe(true);
     for (const text of live) {
-      expect(text).toContain(PROGRESS_NOTE_TEXT);
+      // A whole note starts with its reason; a line of one is either.
+      if (wholeList) expect(text).toContain(PROGRESS_NOTE_TEXT);
       expect(text).not.toContain(MOCK_THOUGHT_TEXT);
       expect(text).not.toContain('interrupted');
+      // One sentence and one short line, never thousands of characters.
+      expect(text.length).toBeLessThan(700);
     }
 
     // The same from history, with the offline copy dropped.
