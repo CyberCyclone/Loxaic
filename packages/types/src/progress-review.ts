@@ -125,21 +125,48 @@ export const PROGRESS_NOTE_PREFIX = "[Progress check] ";
 const NOT_A_REQUEST = "This is an automated check on the run, not a message from the user, and nothing above is a request to do anything else.";
 const STEER_TAIL = `${NOT_A_REQUEST} Change your approach. If you already have what you need, stop using tools and give your final answer.`;
 const ANSWER_TAIL = `${NOT_A_REQUEST} Stop using tools and give your best final answer now from what you have so far.`;
+const ENDED_TAIL = `${NOT_A_REQUEST} The run was asked for its final answer, did not write one, and was ended here.`;
 
-/** The note a run is handed. The reason is the reviewer's own sentence. */
-export function progressNoteText(action: "steer" | "answer", reason: string): string {
+/** What a progress note did: told the run to change approach, told it to
+ * answer, or (`ended`) closed a run that was told to answer and never did. */
+export type ProgressNoteAction = "steer" | "answer" | "ended";
+
+const NOTE_TAILS: readonly (readonly [ProgressNoteAction, string])[] = [
+  ["steer", STEER_TAIL],
+  ["answer", ANSWER_TAIL],
+  ["ended", ENDED_TAIL],
+];
+
+/**
+ * The note a run is handed. The reason is the reviewer's own sentence, kept
+ * to one line. `carried` is what a reply the note cut short had got to (the
+ * server's `carriedReply`): a cut reply is never replayed, so without it the
+ * run's next request holds none of that work. It sits between the reason and
+ * the instruction, so the instruction is the last thing the run reads, and a
+ * transcript shows none of it (`parseProgressNote` hands it back apart).
+ */
+export function progressNoteText(action: ProgressNoteAction, reason: string, carried = ""): string {
   const said = reason.trim().replace(/\s+/g, " ") || "This run does not look like it is getting closer to an answer.";
-  return `${PROGRESS_NOTE_PREFIX}${said}\n\n${action === "steer" ? STEER_TAIL : ANSWER_TAIL}`;
+  const tail = NOTE_TAILS.find(([a]) => a === action)?.[1] ?? STEER_TAIL;
+  const kept = carried.trim();
+  return `${PROGRESS_NOTE_PREFIX}${said}\n\n${kept ? `${kept}\n\n` : ""}${tail}`;
 }
 
-/** A progress note, read back: what the reviewer said and what the run was
- * told to do. Null for any other text. */
-export function parseProgressNote(text: string): { action: "steer" | "answer"; reason: string } | null {
+/** A progress note, read back: what the reviewer said, what the run was told
+ * to do, and what was carried over from a reply it cut. Null for any other
+ * text. */
+export function parseProgressNote(text: string): { action: ProgressNoteAction; reason: string; carried?: string } | null {
   if (!text.startsWith(PROGRESS_NOTE_PREFIX)) return null;
   const body = text.slice(PROGRESS_NOTE_PREFIX.length);
-  const cut = body.lastIndexOf("\n\n");
+  // The reason is one line, so it ends at the first break; what was carried
+  // can hold anything, so the instruction is looked for only at the very end.
+  const cut = body.indexOf("\n\n");
   if (cut < 0) return null;
-  const tail = body.slice(cut + 2);
-  const action = tail === STEER_TAIL ? "steer" : tail === ANSWER_TAIL ? "answer" : null;
-  return action ? { action, reason: body.slice(0, cut) } : null;
+  const reason = body.slice(0, cut);
+  const rest = body.slice(cut + 2);
+  for (const [action, tail] of NOTE_TAILS) {
+    if (rest === tail) return { action, reason };
+    if (rest.endsWith(`\n\n${tail}`)) return { action, reason, carried: rest.slice(0, rest.length - tail.length - 2) };
+  }
+  return null;
 }

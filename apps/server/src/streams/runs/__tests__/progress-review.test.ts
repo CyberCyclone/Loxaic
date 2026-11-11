@@ -13,6 +13,8 @@ import {
   progressNoteText,
 } from "@loxaic/types";
 import {
+  ANSWER_UNWRITTEN_REASON,
+  CARRIED_REPLY_CHARS,
   DEFAULT_REVIEW_PROMPT,
   DEFAULT_UNATTENDED_RUN_LIMIT_MS,
   DIGEST_PAST_REVIEWS,
@@ -20,6 +22,9 @@ import {
   PAUSED_STEP_REVIEW_MAX_CONTEXT,
   REPLY_REVIEW_CHARS,
   REVIEW_OUTPUT_CONTRACT,
+  answerOverdue,
+  answerThinkingChars,
+  carriedReply,
   clampProgressCheckMs,
   clampProgressCheckSteps,
   clip,
@@ -43,6 +48,7 @@ import {
 } from "../progress-review.ts";
 
 afterEach(() => {
+  delete process.env.ANSWER_THINKING_CHARS;
   delete process.env.PROGRESS_CHECK_MS;
   delete process.env.PROGRESS_CHECK_STEPS;
   delete process.env.REVIEW_DEADLINE_MS;
@@ -66,6 +72,64 @@ describe("replyReviewDue", () => {
     // Looked at then: not again until as much again.
     expect(replyReviewDue(REPLY_REVIEW_CHARS * 2 - 1, REPLY_REVIEW_CHARS)).toBe(false);
     expect(replyReviewDue(REPLY_REVIEW_CHARS * 2, REPLY_REVIEW_CHARS)).toBe(true);
+  });
+});
+
+describe("carriedReply", () => {
+  const LEAD = "Your reply was interrupted. Its thinking ended with:";
+
+  it("is nothing for a reply cut before it wrote anything", () => {
+    expect(carriedReply({ text: "", thinking: "" })).toBe("");
+    expect(carriedReply({ text: " \n", thinking: "\n\n " })).toBe("");
+  });
+  it("hands on short thinking whole, trimmed, under its lead-in", () => {
+    expect(carriedReply({ text: "", thinking: "\nThe cap is 80%.\n\nSo the footer fits. \n" })).toBe(`${LEAD}\nThe cap is 80%.\n\nSo the footer fits.`);
+  });
+  it("keeps only the end of long thinking, and marks the cut", () => {
+    const thinking = `${"a".repeat(50_000)} and so the answer is 42.`;
+    const carried = carriedReply({ text: "", thinking });
+    expect(carried.startsWith(`${LEAD}\n[…] aaa`)).toBe(true);
+    expect(carried.endsWith("and so the answer is 42.")).toBe(true);
+    expect(carried.length).toBe(LEAD.length + 1 + "[…] ".length + CARRIED_REPLY_CHARS);
+    // Exactly at the bound nothing is cut.
+    expect(carriedReply({ text: "", thinking: "b".repeat(CARRIED_REPLY_CHARS) })).toBe(`${LEAD}\n${"b".repeat(CARRIED_REPLY_CHARS)}`);
+  });
+  it("hands on the words it had written too, after the thinking", () => {
+    expect(carriedReply({ text: " The fix is in engine.ts. ", thinking: "Found it." })).toBe(
+      `${LEAD}\nFound it.\n\nIt had written:\nThe fix is in engine.ts.`,
+    );
+  });
+  it("says a reply of words alone was interrupted, and bounds them the same way", () => {
+    expect(carriedReply({ text: "Half an ans", thinking: "" })).toBe("Your reply was interrupted. It had written:\nHalf an ans");
+    const long = carriedReply({ text: `${"w".repeat(20_000)} end.`, thinking: "" });
+    expect(long.startsWith("Your reply was interrupted. It had written:\n[…] www")).toBe(true);
+    expect(long.length).toBeLessThan(CARRIED_REPLY_CHARS + 100);
+  });
+  it("is the same for the same reply: it goes into a row that is replayed", () => {
+    const reply = { text: "x", thinking: "y".repeat(9_000) };
+    expect(carriedReply(reply)).toBe(carriedReply({ ...reply }));
+  });
+});
+
+describe("the answer turn's thinking budget", () => {
+  it("is the size any reply is looked at, unless the operator says otherwise", () => {
+    expect(answerThinkingChars()).toBe(REPLY_REVIEW_CHARS);
+    process.env.ANSWER_THINKING_CHARS = "1500";
+    expect(answerThinkingChars()).toBe(1500);
+    for (const bad of ["0", "-5", "lots", ""]) {
+      process.env.ANSWER_THINKING_CHARS = bad;
+      expect(answerThinkingChars()).toBe(REPLY_REVIEW_CHARS);
+    }
+  });
+  it("is overdue only past the budget, with not a word written", () => {
+    const thinking = (n: number) => "t".repeat(n);
+    expect(answerOverdue({ text: "", thinking: thinking(100) }, 100)).toBe(false);
+    expect(answerOverdue({ text: "", thinking: thinking(101) }, 100)).toBe(true);
+    // Whitespace is not an answer.
+    expect(answerOverdue({ text: "\n\n ", thinking: thinking(101) }, 100)).toBe(true);
+  });
+  it("never calls a reply that has started its answer overdue, however much it thought", () => {
+    expect(answerOverdue({ text: "The", thinking: "t".repeat(1_000_000) }, 100)).toBe(false);
   });
 });
 
@@ -521,6 +585,39 @@ describe("progress notes", () => {
     const steer = progressNoteText("steer", "  It keeps\nrereading engine.ts. ");
     expect(parseProgressNote(steer)).toEqual({ action: "steer", reason: "It keeps rereading engine.ts." });
     expect(parseProgressNote(progressNoteText("answer", "It has the fix."))).toEqual({ action: "answer", reason: "It has the fix." });
+  });
+  it("carry what a cut reply had got to between the reason and the instruction, and hand it back apart", () => {
+    const carried = "Your reply was interrupted. Its thinking ended with:\nFirst.\n\nSecond, with a blank line before it.";
+    for (const action of ["steer", "answer", "ended"] as const) {
+      const text = progressNoteText(action, "It keeps weighing the same two options.", `\n${carried}\n\n`);
+      expect(parseProgressNote(text)).toEqual({ action, reason: "It keeps weighing the same two options.", carried });
+      // The instruction is still the last thing read, and the reason the first.
+      expect(text.startsWith("[Progress check] It keeps weighing the same two options.\n\nYour reply was interrupted.")).toBe(true);
+      expect(text.indexOf("Second, with a blank line")).toBeLessThan(text.indexOf("This is an automated check"));
+      // Nothing to trim at either end: a replay reads the row's text trimmed.
+      expect(text).toBe(text.trim());
+      expect(isServerNote(text, null)).toBe(true);
+    }
+  });
+  it("are the same text as ever when nothing is carried", () => {
+    expect(progressNoteText("steer", "Why.", "")).toBe(progressNoteText("steer", "Why."));
+    expect(progressNoteText("steer", "Why.", "  \n ")).toBe(progressNoteText("steer", "Why."));
+    expect(parseProgressNote(progressNoteText("steer", "Why."))).not.toHaveProperty("carried");
+  });
+  it("read back a carried part that quotes an instruction, taking only the last as the note's own", () => {
+    const steer = progressNoteText("steer", "Why.");
+    // A cut reply whose thinking quoted an earlier note in full.
+    const text = progressNoteText("answer", "Still going round.", `It was told:\n\n${steer}`);
+    expect(parseProgressNote(text)).toEqual({ action: "answer", reason: "Still going round.", carried: `It was told:\n\n${steer}` });
+  });
+  it("close a run that never answered", () => {
+    const text = progressNoteText("ended", "It already has the cause.");
+    expect(parseProgressNote(text)).toEqual({ action: "ended", reason: "It already has the cause." });
+    expect(text).toContain("was asked for its final answer, did not write one, and was ended here");
+    expect(text).toContain("not a message from the user");
+  });
+  it("ask once more for an answer in a sentence of their own", () => {
+    expect(parseProgressNote(progressNoteText("answer", ANSWER_UNWRITTEN_REASON))?.reason).toBe(ANSWER_UNWRITTEN_REASON);
   });
   it("say something even when the reviewer gave no reason", () => {
     expect(parseProgressNote(progressNoteText("answer", ""))?.reason).toMatch(/does not look like/);

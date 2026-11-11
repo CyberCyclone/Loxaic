@@ -185,6 +185,58 @@ export function replyReviewDue(writtenChars: number, charsAtLastLook: number): b
   return writtenChars - charsAtLastLook >= REPLY_REVIEW_CHARS;
 }
 
+/**
+ * How much of a cut reply's thinking, and of its words, the note that cut it
+ * carries to the run's next request.
+ *
+ * A reply a review cuts short is stored `cancelled`, and no replay sends a
+ * cancelled row. A run that only thinks therefore lost everything at each
+ * note: one had written 61,786 characters of thinking when it was steered,
+ * and its next request held the user's prompt and the note alone. It decided
+ * the note described work it had never done, and started again from nothing.
+ * The end of the thinking is where a model's conclusions are; the whole of it
+ * would put back the very context the review exists to stop growing.
+ */
+export const CARRIED_REPLY_CHARS = 6_000;
+
+/**
+ * What a reply had got to when it was cut, for the note that cut it
+ * (`progressNoteText`'s `carried`). Empty for a reply cut before its first
+ * token, which adds nothing. Goes into a persisted row, so everything here is
+ * a function of the reply alone.
+ */
+export function carriedReply(reply: { text: string; thinking: string }): string {
+  const end = (said: string): string => (said.length > CARRIED_REPLY_CHARS ? `[…] ${said.slice(said.length - CARRIED_REPLY_CHARS).trimStart()}` : said);
+  const thinking = reply.thinking.trim();
+  const text = reply.text.trim();
+  const parts: string[] = [];
+  if (thinking) parts.push(`Your reply was interrupted. Its thinking ended with:\n${end(thinking)}`);
+  if (text) parts.push(`${thinking ? "It" : "Your reply was interrupted. It"} had written:\n${end(text)}`);
+  return parts.join("\n\n");
+}
+
+/**
+ * How much a run told to answer may think before it has written a word: the
+ * operator's `ANSWER_THINKING_CHARS`, else `REPLY_REVIEW_CHARS`, the size at
+ * which any other reply is looked at. Nothing reviews the answering request
+ * (the reviewer is done once it says "answer"), and one ran for 43 minutes
+ * and 96,000 characters of thinking without a word of answer. Read at call
+ * time, so a test can make it small.
+ */
+export function answerThinkingChars(): number {
+  const raw = Number(process.env.ANSWER_THINKING_CHARS);
+  return Number.isFinite(raw) && raw > 0 ? raw : REPLY_REVIEW_CHARS;
+}
+
+/** Whether an answering reply has thought past its budget and still said
+ * nothing. Words being written are the answer, and are never overdue. */
+export function answerOverdue(reply: { text: string; thinking: string }, budget: number): boolean {
+  return reply.text.trim() === "" && reply.thinking.length > budget;
+}
+
+/** The reason on the note that asks, one last time, for an answer. */
+export const ANSWER_UNWRITTEN_REASON = "You were asked for your final answer and have not written one.";
+
 /** The context past which a review in the run's own slot waits for the time
  * cadence. */
 export const PAUSED_STEP_REVIEW_MAX_CONTEXT = 32_000;

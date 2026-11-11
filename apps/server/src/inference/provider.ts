@@ -417,6 +417,19 @@ const MOCK_SUMMARY = "[Mock] Summary of the conversation so far.\n";
  * compaction's instruction. */
 const MOCK_EMPTY_MATCH = /\bsay nothing\b/i;
 
+/**
+ * A prompt the mock only thinks about: every reply that calls no tool is
+ * thinking and not a word, about sixteen seconds and 57,000 characters of it
+ * unless it is cut short first. What a run that ruminates looks like to the
+ * engine, which nothing else here produced: the mock never thought at all.
+ * Told not to think (`reasoning_effort: "none"`) it answers like any other
+ * prompt, as a model that honours the field does; "whatever you are told"
+ * makes it one that does not.
+ */
+const MOCK_RUMINATE_MATCH = /\bthink it over\b/i;
+const MOCK_RUMINATE_ALWAYS_MATCH = /\bthink it over whatever you are told\b/i;
+const MOCK_RUMINATE_CHUNKS = 1_500;
+
 /** A prompt whose tool call the mock makes without a word first. Real models
  * do this all the time; the mock's preamble meant no spec ever saw a reply
  * that is only a tool call, which the thread renders differently. */
@@ -815,6 +828,17 @@ async function* mockStream(
         function: { name: t.name, arguments: JSON.stringify(t.args) },
       });
     }
+  } else if (
+    MOCK_RUMINATE_MATCH.test(prompt) &&
+    (options.thinking?.reasoning_effort !== "none" || MOCK_RUMINATE_ALWAYS_MATCH.test(prompt))
+  ) {
+    for (let i = 0; i < MOCK_RUMINATE_CHUNKS; i++) {
+      throwIfAborted(options.signal);
+      ttftMs ??= Date.now() - startTime;
+      yield { type: "thinking", content: `Thought ${String(i + 1)}: weighing it once more. ` };
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    fullText = "";
   } else if (MOCK_EMPTY_MATCH.test(prompt)) {
     fullText = "";
   } else if (MOCK_THINKING_MATCH.test(prompt) && !alreadyRanTools) {

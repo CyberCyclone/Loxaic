@@ -113,6 +113,10 @@ import {
   reviewTask,
   taskEntries,
   unattendedRunLimitMs,
+  ANSWER_UNWRITTEN_REASON,
+  answerOverdue,
+  answerThinkingChars,
+  carriedReply,
   type DigestStep,
   type ReviewDecision,
   type ReviewPrefs,
@@ -908,9 +912,12 @@ export async function runToolLoop(ctx: {
     // the replay, so a list written in an earlier turn counts, and seeded again
     // when the run compacts: a list now only in the summary is not reminded about.
     let todoStaleness = TodoStaleness.fromHistory(history.messages);
-    // Set once a progress review asks for a final answer: the next request
-    // goes out with `tool_choice: "none"` and the loop ends after it either way.
+    // Set once a progress review asks for a final answer: every request from
+    // then on goes out with `tool_choice: "none"`, and the loop ends after the
+    // next one, or after one more when that wrote nothing (`answerUnwritten`).
     let answerNow = false;
+    // Why it was: the reason on the note that ends a run which never answers.
+    let answerReason = "";
     // Planning mode ends every turn in a plan or questions (#199). A model that
     // answers in prose anyway is asked once, and that one follow-up request is
     // sent with `tool_choice: "required"`; prose a second time ends the turn.
@@ -921,7 +928,10 @@ export async function runToolLoop(ctx: {
     // the next request reads it, and so does every replay, and the prefix has
     // to replay byte for byte. Null author: nobody typed it. The one place
     // that invariant is kept.
-    const persistServerNote = async (text: string, after: string): Promise<void> => {
+    const persistServerNote = async (said: string, after: string): Promise<void> => {
+      // A note can carry the end of a reply's thinking, cut at a character
+      // count: the row and the prompt both get the storable form.
+      const text = jsonbSafe(said);
       const id = uuid();
       const lamport = nextLamport();
       await db.insert(messages).values({
@@ -946,11 +956,73 @@ export async function runToolLoop(ctx: {
     };
     // A progress review's verdict, or an unattended run's ceiling, written
     // into the run. The caller sets `answerNow` for an "answer", which ends
-    // the run after one more request, made without tools.
-    const writeProgressNote = async (decision: ReviewDecision, after: string): Promise<void> => {
-      await persistServerNote(progressNoteText(decision.action === "answer" ? "answer" : "steer", decision.reason), after);
+    // the run after one more request, made without tools (two, when the first
+    // comes to nothing: `answerUnwritten`).
+    // `carried` is what a reply the decision cut short had got to: that row
+    // is cancelled and never replayed, so the note is all the next request
+    // has of it (carriedReply).
+    const writeProgressNote = async (decision: ReviewDecision, after: string, carried = ""): Promise<void> => {
+      await persistServerNote(progressNoteText(decision.action === "answer" ? "answer" : "steer", decision.reason, carried), after);
       // Nothing left to review once it is told to answer: the run ends after it.
-      if (decision.action === "answer") reviewer?.dispose();
+      if (decision.action === "answer") {
+        reviewer?.dispose();
+        answerReason = decision.reason;
+      }
+    };
+    // ── The answer turn always ends ────────────────────────
+    //
+    // Nothing reviews a run once it is told to answer, so the answering
+    // request is bounded here: thinking past `answerThinkingChars()` with not
+    // a word written cuts it (in the request loop below), and a reply that
+    // ends with no words gets no further either. Then one last request, and
+    // after that a note that ends the run whatever the model did.
+    //
+    // The last request asks for as little thinking as the model allows, when
+    // that is less than the run's. The run's own level is tried first because
+    // an answer thought about is the better answer; thinking off is the
+    // fallback for a model that will not stop. What it costs depends on the
+    // model's chat template: with llama.cpp the level is rendered into the
+    // prompt (`thinkingFields`), and a template that puts it in the system
+    // prompt re-reads everything when it changes. On the Qwen templates
+    // measured, turning thinking off changes only the prompt's tail and the
+    // cached prefix is kept; a different effort word moves the system prompt.
+    const leastThinkingBody = thinkingFields(thinkingInfo?.thinking, "None");
+    const canThinkLess = JSON.stringify(leastThinkingBody) !== JSON.stringify(thinkingBody);
+    // Set once the last request has been asked for. In an object: it is set
+    // from the closure below, which the type checker cannot see into from
+    // the request loop.
+    const lastAnswer = { asked: false };
+    // The newest work an answering reply left behind, for the closing note
+    // when the last reply leaves none of its own.
+    let answerCarried = "";
+    /**
+     * An answering reply that came to nothing: `reply` cut short, or ended,
+     * without a word. True when the run goes on to its last request; false
+     * when it has ended here, and the caller leaves the loop.
+     */
+    const answerUnwritten = async (reply: { text: string; thinking: string }, after: string, usage?: TurnUsage): Promise<boolean> => {
+      const carried = carriedReply(reply);
+      if (carried) answerCarried = carried;
+      if (isAborted(abort)) {
+        await producer.end("cancelled");
+        return false;
+      }
+      if (!lastAnswer.asked && canThinkLess) {
+        lastAnswer.asked = true;
+        await persistServerNote(progressNoteText("answer", ANSWER_UNWRITTEN_REASON, carried), after);
+        return true;
+      }
+      // Asked to answer and did not: the thread says so, and so does the
+      // next turn's prompt. For a sub-agent this note is its report
+      // (`finalText` in subagentRun.ts).
+      await persistServerNote(progressNoteText("ended", answerReason, answerCarried), after);
+      await db
+        .update(conversations)
+        .set({ activeLeafId: parentId, updatedAt: new Date() })
+        .where(eq(conversations.id, convId));
+      // A stop that landed while the note was written still ends it stopped.
+      await producer.end(isAborted(abort) ? "cancelled" : "complete", usage ? { usage } : undefined);
+      return false;
     };
     // The longest a single model request has taken in this run, send to done.
     // The adaptive wait floor is built on it — see effectiveTimeoutMs.
@@ -1259,6 +1331,10 @@ export async function runToolLoop(ctx: {
       };
       // A decision that landed since the last step boundary acts now.
       if (reviewer.hasDecision()) interrupt.abort();
+      // An answering request that has only thought, past its budget, is cut
+      // the same way: see `answerUnwritten`.
+      const answerBudget = answerThinkingChars();
+      let answerCut = false;
       // The review's time cadence, and an unattended run's ceiling, do not
       // wait for this reply to end: it may take an hour, or never end.
       const stopWatching = reviewer.watchRequest(() => ({ text, thinking, startedAt: requestStartedAt }));
@@ -1278,7 +1354,7 @@ export async function runToolLoop(ctx: {
               : forceTool
                 ? { toolChoice: "required" as const }
                 : {}),
-            thinking: thinkingBody,
+            thinking: lastAnswer.asked ? leastThinkingBody : thinkingBody,
             reportProgress,
             conversationId: convId,
           }),
@@ -1301,6 +1377,10 @@ export async function runToolLoop(ctx: {
           } else if (event.type === "thinking") {
             thinking += event.content;
             producer.emit({ kind: "thinking.delta", message_id: assistantMsgId, text: event.content });
+            if (answerNow && !answerCut && answerOverdue({ text, thinking }, answerBudget)) {
+              answerCut = true;
+              interrupt.abort();
+            }
           } else if (event.type === "progress") {
             emitProgress(event.progress);
           } else {
@@ -1331,8 +1411,10 @@ export async function runToolLoop(ctx: {
         // anyone pressing Stop: what was streamed stays on screen as a cut-off
         // reply (a cancelled row, which no replay sends), the note follows it,
         // and the run goes on.
-        const decision = interrupt.signal.aborted && !abort.signal.aborted ? reviewer.takeReady() : null;
-        if (decision) {
+        // Or by the answer turn's own budget, which no review is behind.
+        const overdue = answerCut && !abort.signal.aborted;
+        const decision = !overdue && interrupt.signal.aborted && !abort.signal.aborted ? reviewer.takeReady() : null;
+        if (decision || overdue) {
           const written = streamedBlocks();
           await db
             .update(messages)
@@ -1347,7 +1429,11 @@ export async function runToolLoop(ctx: {
             ...(written.length === 0 ? { discard: true as const } : {}),
           });
           streamingMsgId = null;
-          await writeProgressNote(decision, assistantMsgId);
+          if (!decision) {
+            if (await answerUnwritten({ text, thinking }, assistantMsgId)) continue;
+            break;
+          }
+          await writeProgressNote(decision, assistantMsgId, carriedReply({ text, thinking }));
           answerNow = decision.action === "answer";
           continue;
         }
@@ -1524,6 +1610,15 @@ export async function runToolLoop(ctx: {
           if (text.trim()) chatMessages.push(assistantMessageForPrompt(text, []));
           await persistServerNote(PLAN_REQUIRED_NUDGE, assistantMsgId);
           continue;
+        }
+        // Told to answer, and the reply ended without a word of one: asked
+        // once more, or ended on a note saying so (`answerUnwritten`). Its
+        // row holds no text, so no replay sends it and nothing joins the
+        // prompt here either.
+        if (answerNow && !text.trim()) {
+          producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
+          if (await answerUnwritten({ text, thinking }, assistantMsgId, iterationUsage)) continue;
+          break;
         }
         await endTurnComplete(assistantMsgId);
         break;

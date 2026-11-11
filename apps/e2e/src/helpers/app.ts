@@ -83,6 +83,12 @@ export const REVIEW_STUCK_PROMPT = 'review-stuck: circle the review drill until 
 /** A drill the mock's reviewer calls finished at every review: a run that has
  * its answer and keeps rechecking it. */
 export const REVIEW_FINISHED_PROMPT = 'review-finished: recheck the review drill until told otherwise.';
+/** The stuck drill for a model that never answers: told to answer, the mock
+ * only thinks ("think it over"), with thinking switched off too ("whatever
+ * you are told"). */
+export const REVIEW_NEVER_ANSWERS_PROMPT = 'review-stuck: circle the review drill until told otherwise, then think it over whatever you are told.';
+/** What the mock's thinking is made of: never to be read in a note. */
+export const MOCK_THOUGHT_TEXT = 'weighing it once more';
 /** The same drill at eight seconds a step ("take your time"), for a review
  * that only the clock can make due. */
 export const REVIEW_STUCK_SLOW_PROMPT = 'review-stuck: circle the review drill until told otherwise, and take your time over each step.';

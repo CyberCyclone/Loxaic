@@ -78,6 +78,8 @@ The stream log, run registry and conversation authorization shared by every run 
 - A review request never carries `conversationId` (it must not restore or overwrite the conversation's saved KV cache) and is shown a bounded digest, never the run's prompt.
 - Take a spare slot only through `tryAcquireRunSlot`, which never queues; without one, review in the run's own slot at a step boundary.
 - A review that interrupts a reply aborts only that request (its own controller beside `abort`): the partial row ends `cancelled`, which no replay sends.
+- A note that cuts a reply short carries that reply's end (`carriedReply`, as `progressNoteText`'s `carried`): the cancelled row is all the work a run that only thinks has. Clients show a note through `parseProgressNote`, never its raw text.
+- Nothing reviews a run once it is told to answer; `answerUnwritten` in `engine.ts` is what ends it. Every exit from the answer phase is words, a stop, or its `ended` note, which is also a sub-agent's report (`finalText`).
 - Count working time as wall clock less `RunSlot.parkedMs()`.
 - Wrap every model request in `reviewer.watchRequest`: the time cadence and the ceiling must not wait for a reply to end.
 - Tell a progress note from a typed message with `isServerNote(text, authorUserId)` wherever the row is at hand; its text alone is anyone's to type.

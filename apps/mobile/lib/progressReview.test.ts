@@ -56,6 +56,23 @@ describe('progressNoteView', () => {
     expect(progressNoteView(note(progressNoteText('answer', 'It already has the cause.')))?.outcome).toBe('Told to answer now');
   });
 
+  it('shows only the reason of a note that carries a cut reply, never the thinking it carries', () => {
+    const carried = `Your reply was interrupted. Its thinking ended with:\n${'Weighing it once more. '.repeat(250)}\n\nAnd again.`;
+    for (const action of ['steer', 'answer', 'ended'] as const) {
+      const view = progressNoteView(note(progressNoteText(action, 'It keeps weighing the same two options.', carried)));
+      expect(view?.reason).toBe('Progress check: It keeps weighing the same two options.');
+      expect(JSON.stringify(view)).not.toContain('Weighing it once more');
+      expect(JSON.stringify(view)).not.toContain('interrupted');
+    }
+  });
+
+  it('reads the note that ended a run which never answered', () => {
+    expect(progressNoteView(note(progressNoteText('ended', 'It already has the cause.')))).toEqual({
+      reason: 'Progress check: It already has the cause.',
+      outcome: 'Ended without an answer',
+    });
+  });
+
   it('is nothing for text a person typed, the prefix included', () => {
     expect(progressNoteView(note('hello'))).toBeNull();
     expect(progressNoteView(note('[Progress check] I typed this myself'))).toBeNull();

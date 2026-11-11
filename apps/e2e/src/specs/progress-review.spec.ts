@@ -31,11 +31,13 @@ import {
 } from '../helpers/selectors.ts';
 import {
   ANSWER_NOW_TEXT,
+  MOCK_THOUGHT_TEXT,
   PROGRESS_NOTE_TEXT,
   REVIEW_FINISHED_PROMPT,
   REVIEW_LINGER_DONE,
   REVIEW_LINGER_PROMPT,
   REVIEW_LINGER_SLOW_PROMPT,
+  REVIEW_NEVER_ANSWERS_PROMPT,
   REVIEW_STEADY_DONE,
   REVIEW_STEADY_PROMPT,
   REVIEW_STUCK_PROMPT,
@@ -327,6 +329,77 @@ describe('the progress review', () => {
       }
     });
   }
+
+  it('ends a run that is told to answer and never does, on a note that gives only the reason', async function () {
+    this.timeout(3 * 60_000);
+    const conversationId = await runIn(creds, 'chat', REVIEW_NEVER_ANSWERS_PROMPT);
+    // Told to answer after step 6, the mock only thinks; asked once more
+    // with thinking off, it only thinks again. Nothing would ever end that
+    // reply, and nobody is here to press Stop: the run ends itself.
+    await waitForRunDone(creds, conversationId, 120_000);
+    await waitForTextInAny('progress.note.outcome', 'Ended without an answer', 60_000);
+    await waitForTextInAny('progress.note.reason', 'says stuck');
+    await shot('progress-review-never-answers');
+    await expectNobodyAsked();
+
+    const texts = await getMessageTexts(creds, conversationId);
+    expect(texts.some((t) => t.includes(ANSWER_NOW_TEXT))).toBe(false);
+    expect((await getToolResults(creds, conversationId)).length).toBe(6);
+    // Steered, told to answer, asked once more, ended. Each of the last two
+    // rows carries the end of the reply it cut, for the model to go on from...
+    const notes = notesIn(texts);
+    expect(notes).toHaveLength(4);
+    expect(notes[2]).toContain('have not written one');
+    expect(notes[3]).toContain('was ended here');
+    for (const note of notes.slice(2)) {
+      expect(note).toContain('Your reply was interrupted. Its thinking ended with:');
+      expect(note).toContain(MOCK_THOUGHT_TEXT);
+    }
+    // ...and none of that is in a note on screen: a reader gets the reason.
+    // Every note in the tree where the whole list is (web and Electron, by
+    // its text content); elsewhere the ones on screen, which is all a native
+    // lookup can read.
+    const onScreen = async (): Promise<string[]> => {
+      if (platform() === 'web' || platform() === 'electron') {
+        return browser.execute(
+          (selector: string) => [...document.querySelectorAll(selector)].map((el) => el.textContent),
+          testIdSelector('progress.note'),
+        );
+      }
+      const shown: string[] = [];
+      for (const el of await $$(testIdSelector('progress.note')).getElements()) shown.push(await el.getText());
+      return shown.filter((t) => t !== '');
+    };
+    const live = await onScreen();
+    expect(live.some((t) => t.includes('Ended without an answer'))).toBe(true);
+    for (const text of live) {
+      expect(text).toContain(PROGRESS_NOTE_TEXT);
+      expect(text).not.toContain(MOCK_THOUGHT_TEXT);
+      expect(text).not.toContain('interrupted');
+    }
+
+    // The same from history, with the offline copy dropped.
+    const p = platform();
+    if (p === 'web' || p === 'electron') {
+      await browser.execute(() => {
+        for (const key of Object.keys(window.localStorage)) {
+          if (key.startsWith('loxaic-cache:')) window.localStorage.removeItem(key);
+        }
+      });
+      await browser.refresh();
+      await waitForComposerReady();
+      await goToSurface('chat');
+      await selectThread(conversationId, 'chat');
+      await waitForTextInAny('progress.note.outcome', 'Ended without an answer', 60_000);
+      const reloaded = await onScreen();
+      expect(reloaded.length).toBeGreaterThan(0);
+      for (const text of reloaded) {
+        expect(text).not.toContain(MOCK_THOUGHT_TEXT);
+        expect(text).not.toContain('interrupted');
+      }
+      await shot('progress-review-never-answers-after-reload');
+    }
+  });
 
   it('tells a run the reviewer calls finished so once, and has it answer the second time', async function () {
     this.timeout(3 * 60_000);

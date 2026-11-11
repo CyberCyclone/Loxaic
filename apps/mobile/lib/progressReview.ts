@@ -36,15 +36,24 @@ export function reviewingAfterEvent(prev: ReviewMode | null, event: StreamEventK
   return prev;
 }
 
+const NOTE_OUTCOME: Record<NonNullable<ReturnType<typeof parseProgressNote>>['action'], string> = {
+  steer: 'Told to change approach',
+  answer: 'Told to answer now',
+  ended: 'Ended without an answer',
+};
+
 /** A progress note, as the transcript shows it: the reviewer's reason, and
- * what the run was told. Null for anything else — including the same words
- * typed by a person, which are that person's message and shown as one. */
+ * what the run was told. Never what the note carried over from a reply it cut
+ * short: that is thousands of characters of the run's own thinking, there for
+ * the model's next request and not for a reader. Null for anything else —
+ * including the same words typed by a person, which are that person's message
+ * and shown as one. */
 export function progressNoteView(msg: { text: string; authorUserId?: string | null }): { reason: string; outcome: string } | null {
   const note = isServerNote(msg.text, msg.authorUserId) ? parseProgressNote(msg.text) : null;
   if (!note) return null;
   return {
     reason: `Progress check: ${note.reason}`,
-    outcome: note.action === 'steer' ? 'Told to change approach' : 'Told to answer now',
+    outcome: NOTE_OUTCOME[note.action],
   };
 }
 
