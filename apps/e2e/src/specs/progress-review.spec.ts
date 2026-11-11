@@ -5,6 +5,11 @@
  * asks anyone anything — so every case here also asserts that nothing waits
  * for a person.
  *
+ * Every review is a card in the thread where it was taken, a review that
+ * found nothing wrong included, live and after a reload; pressing one opens
+ * a panel with everything it has to show. The note under a card is what the
+ * run was told, and only that is ever part of the model's prompt.
+ *
  * The mock reviewer answers from keywords in the task (REVIEW_* prompts in
  * helpers/app.ts). Reviews are set to every three steps through the API; the
  * settings screen has its own spec.
@@ -12,7 +17,18 @@
 import { $$, browser } from '@wdio/globals';
 import { provisionAdmin, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, platform, tap, testIdSelector, waitForFreshText, waitForGone, waitForTextIn } from '../helpers/selectors.ts';
+import {
+  expectTextAbsent,
+  isVisible,
+  platform,
+  scrollTo,
+  tap,
+  testIdSelector,
+  waitForAbsent,
+  waitForFreshText,
+  waitForTextIn,
+  waitForVisible,
+} from '../helpers/selectors.ts';
 import {
   ANSWER_NOW_TEXT,
   PROGRESS_NOTE_TEXT,
@@ -43,6 +59,8 @@ import {
   startNewThread,
   waitForComposerReady,
   waitForRunDone,
+  waitForRunReviews,
+  waitForSubAgents,
 } from '../helpers/app.ts';
 
 type Surface = 'chat' | 'agent';
@@ -90,6 +108,66 @@ async function waitForTextInAny(id: string, text: string, timeout = 30_000): Pro
   );
 }
 
+const cardTitle = (reviewId: string) => `review.card.${reviewId}.title`;
+
+/** Whether the thread's list really scrolls and `id` is inside what it shows:
+ * `isDisplayed()` is true below the fold. Web and Electron. */
+async function reachableInPanel(id: string): Promise<boolean> {
+  return browser.execute((selector: string) => {
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    let scroller: Element | null = el.parentElement;
+    while (scroller) {
+      const overflow = getComputedStyle(scroller).overflowY;
+      if ((overflow === 'auto' || overflow === 'scroll') && scroller.scrollHeight > scroller.clientHeight) break;
+      scroller = scroller.parentElement;
+    }
+    // Nothing scrolls around it: it is reachable only if it is on screen.
+    const view = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    const rect = el.getBoundingClientRect();
+    return rect.height > 0 && rect.bottom <= view.bottom + 1 && rect.bottom > view.top;
+  }, testIdSelector(id));
+}
+
+/**
+ * Opens the review's card and checks its panel: the verdict and why, what
+ * was done, how and when it ran, what the request cost, and the digest the
+ * reviewer read — which only the record carries, so it proves the detail read.
+ */
+async function expectPanel(
+  reviewId: string,
+  want: { verdict: string; action: string; reason?: string; mode: string; trigger: string; step: string; task: string },
+  shotName: string,
+): Promise<void> {
+  await scrollTo(`review.card.${reviewId}.open`);
+  await tap(`review.card.${reviewId}.open`);
+  await waitForFreshText('review.panel.verdict', want.verdict);
+  await waitForFreshText('review.panel.action', want.action);
+  if (want.reason) await waitForFreshText('review.panel.reason', want.reason);
+  await waitForFreshText('review.panel.mode', want.mode);
+  await waitForFreshText('review.panel.trigger', want.trigger);
+  await waitForFreshText('review.panel.step', want.step);
+  await waitForFreshText('review.panel.worked', 's');
+  // From the record: the mock model's name, its token counts and its timing.
+  await waitForFreshText('review.panel.model', 'llama', 20_000);
+  await waitForFreshText('review.panel.input', 'tokens in');
+  await waitForVisible('review.panel.total');
+  await shot(shotName);
+  const p = platform();
+  if (p === 'web' || p === 'electron') {
+    await waitForFreshText('review.panel.digest', want.task, 20_000);
+    await waitForFreshText('review.panel.digest', '## ');
+    expect(await reachableInPanel('review.panel.digest')).toBe(true);
+    await shot(`${shotName}-digest`);
+  } else {
+    await scrollTo('review.panel.digest');
+    await waitForFreshText('review.panel.digest', want.task, 20_000);
+  }
+  await tap('review.close');
+  await waitForAbsent('review.panel.verdict');
+}
+
 /** Nothing on screen asks a person anything while it runs. */
 async function expectNobodyAsked(): Promise<void> {
   for (const id of ['checkin.banner', 'agent.permission.bar']) {
@@ -112,11 +190,35 @@ describe('the progress review', () => {
       await waitForRunDone(creds, conversationId);
       if (surface === 'chat') await waitForTextIn('chat.messageList', REVIEW_STEADY_DONE, 90_000);
       else await waitForTextIn('agent.run.status', 'Done', 90_000);
-      // Reviewed twice (after steps 3 and 6), and nothing said about it.
+      // Reviewed twice (after steps 3 and 6), and the run was told nothing.
       expect(await isVisible('progress.note')).toBe(false);
       expect(notesIn(await getMessageTexts(creds, conversationId))).toEqual([]);
       expect((await getToolResults(creds, conversationId)).length).toBe(7);
       await expectNobodyAsked();
+
+      // Each review is a card in the thread all the same, saying what it found.
+      const reviews = await waitForRunReviews(creds, conversationId, 2);
+      expect(reviews.map((r) => [r.verdict, r.action, r.step])).toEqual([
+        ['progressing', 'none', 3],
+        ['progressing', 'none', 6],
+      ]);
+      await waitForFreshText(cardTitle(reviews[1].id), 'Progress check · progressing');
+      await waitForFreshText(`review.card.${reviews[1].id}.meta`, 'Step 6');
+      await shot(`progress-review-card-progressing-${surface}`);
+      // No quiet line left over under the thread once nothing is under way.
+      expect(await isVisible('run.review.status')).toBe(false);
+      await expectPanel(
+        reviews[1].id,
+        {
+          verdict: 'progressing',
+          action: 'Nothing: the run carried on',
+          mode: 'The run paused',
+          trigger: 'Enough steps',
+          step: '6',
+          task: REVIEW_STEADY_PROMPT,
+        },
+        `progress-review-panel-progressing-${surface}`,
+      );
     });
 
     it(`steers a stuck run, then has it answer, with nobody asked (${surface})`, async function () {
@@ -140,9 +242,40 @@ describe('the progress review', () => {
       expect(notes[1]).toContain('give your best final answer now');
       await expectNobodyAsked();
 
-      // From history, with the offline copy dropped, the notes read the same.
+      // The review that steered it and the one that had it answer are cards,
+      // each above the note it wrote. The older one is read where the whole
+      // list is in the tree and can be scrolled to by id: web and Electron.
+      const reviews = await waitForRunReviews(creds, conversationId, 2);
+      expect(reviews.map((r) => [r.verdict, r.action])).toEqual([
+        ['stuck', 'steer'],
+        ['stuck', 'answer'],
+      ]);
       const p = platform();
-      if (p === 'web' || p === 'electron') {
+      const wholeList = p === 'web' || p === 'electron';
+      await waitForFreshText(cardTitle(reviews[1].id), 'Progress check · stuck · told to answer');
+      if (wholeList) {
+        // Rendered text is read only from what is on screen: bring it there.
+        await scrollTo(cardTitle(reviews[0].id));
+        await waitForFreshText(cardTitle(reviews[0].id), 'Progress check · stuck · told to change approach');
+      }
+      await shot(`progress-review-card-stuck-${surface}`);
+      await expectPanel(
+        reviews[wholeList ? 0 : 1].id,
+        {
+          verdict: 'stuck',
+          action: wholeList ? 'Told to change approach' : 'Told to stop and answer',
+          reason: 'says stuck',
+          mode: 'The run paused',
+          trigger: 'Enough steps',
+          step: wholeList ? '3' : '6',
+          task: 'review-stuck',
+        },
+        `progress-review-panel-stuck-${surface}`,
+      );
+
+      // From history, with the offline copy dropped, the notes read the same
+      // and the cards are back where they were.
+      if (wholeList) {
         await browser.execute(() => {
           for (const key of Object.keys(window.localStorage)) {
             if (key.startsWith('loxaic-cache:')) window.localStorage.removeItem(key);
@@ -153,7 +286,43 @@ describe('the progress review', () => {
         await goToSurface(surface);
         await selectThread(conversationId, surface);
         await waitForTextInAny('progress.note.outcome', 'Told to answer now');
+        await waitForFreshText(cardTitle(reviews[1].id), 'Progress check · stuck · told to answer');
+        await scrollTo(cardTitle(reviews[0].id));
+        await waitForFreshText(cardTitle(reviews[0].id), 'Progress check · stuck · told to change approach');
+        // Each card sits above the note it wrote: steer card, its note, answer
+        // card, its note, top to bottom.
+        const tops = await browser.execute(
+          (first: string, second: string, outcome: string) => {
+            const top = (el: Element | null) => el?.getBoundingClientRect().top ?? Number.NaN;
+            const notes = [...document.querySelectorAll(outcome)];
+            return {
+              steerCard: top(document.querySelector(first)),
+              answerCard: top(document.querySelector(second)),
+              steerNote: top(notes.find((n) => n.textContent.includes('change approach')) ?? null),
+              answerNote: top(notes.find((n) => n.textContent.includes('answer now')) ?? null),
+            };
+          },
+          testIdSelector(`review.card.${reviews[0].id}`),
+          testIdSelector(`review.card.${reviews[1].id}`),
+          testIdSelector('progress.note.outcome'),
+        );
+        expect(tops.steerCard).toBeLessThan(tops.steerNote);
+        expect(tops.steerNote).toBeLessThan(tops.answerCard);
+        expect(tops.answerCard).toBeLessThan(tops.answerNote);
         await shot(`progress-review-stuck-${surface}-after-reload`);
+        await expectPanel(
+          reviews[1].id,
+          {
+            verdict: 'stuck',
+            action: 'Told to stop and answer',
+            reason: 'says stuck',
+            mode: 'The run paused',
+            trigger: 'Enough steps',
+            step: '6',
+            task: 'review-stuck',
+          },
+          `progress-review-panel-stuck-${surface}-after-reload`,
+        );
       }
     });
   }
@@ -182,10 +351,20 @@ describe('the progress review', () => {
     this.timeout(3 * 60_000);
     // The mock backend has one slot, so the run lends its own and pauses.
     const conversationId = await runIn(creds, 'agent', REVIEW_LINGER_PROMPT);
-    await waitForFreshText('run.review.status', 'Paused to check progress', 60_000);
+    // Its card says so, in the thread where the review is being taken; the
+    // quiet line under the thread is not shown beside it.
+    await waitForTextIn('chat.messageList', 'Paused to check progress', 60_000);
+    expect(await isVisible('run.review.status')).toBe(false);
     await shot('progress-review-paused');
     await expectNobodyAsked();
-    await waitForGone('run.review.status', 60_000);
+    // The same card, finished: what the review found.
+    const [review] = await waitForRunReviews(creds, conversationId, 1, 60_000);
+    await waitForFreshText(cardTitle(review.id), 'Progress check · progressing', 30_000);
+    await browser.waitUntil(async () => expectTextAbsent('Paused to check progress').then(() => true, () => false), {
+      timeout: 30_000,
+      timeoutMsg: 'the card still said the review was under way after it ended',
+    });
+    await shot('progress-review-paused-finished');
     await waitForRunDone(creds, conversationId, 180_000);
     await waitForTextIn('agent.run.status', 'Done', 60_000);
     expect(notesIn(await getMessageTexts(creds, conversationId))).toEqual([]);
@@ -236,7 +415,7 @@ describe('the progress review', () => {
       if (platform() === 'android') this.skip();
       this.timeout(5 * 60_000);
       const conversationId = await runIn(creds, 'agent', REVIEW_LINGER_SLOW_PROMPT);
-      await waitForFreshText('run.review.status', 'Checking progress', 60_000);
+      await waitForTextIn('chat.messageList', 'Checking progress', 60_000);
       await shot('progress-review-alongside');
       // The run kept going meanwhile: steps finished while the review ran.
       const during = (await getToolResults(creds, conversationId)).length;
@@ -261,5 +440,26 @@ describe('the progress review', () => {
     expect(report.output).toContain(ANSWER_NOW_TEXT);
     await shot('progress-review-subagent');
     await expectNobodyAsked();
+
+    // The child was reviewed, not its parent: the review's card is in the
+    // sub-agent's own transcript, and opens in the sub-agent's panel (no
+    // sheet goes over another).
+    expect(await waitForRunReviews(creds, conversationId, 0)).toEqual([]);
+    const [child] = await waitForSubAgents(creds, conversationId, 1);
+    const [review] = await waitForRunReviews(creds, child.conversation_id, 1);
+    expect([review.verdict, review.action]).toEqual(['stuck', 'answer']);
+    await tap(`subagent.card.${child.call_id}.open`);
+    await waitForFreshText(cardTitle(review.id), 'Progress check · stuck · told to answer', 30_000);
+    await shot('progress-review-subagent-card');
+    await tap(`review.card.${review.id}.open`);
+    await waitForFreshText('subagent.panel.review.title', 'Progress check · stuck · told to answer');
+    await waitForFreshText('review.panel.verdict', 'stuck');
+    await waitForFreshText('review.panel.action', 'Told to stop and answer');
+    await waitForFreshText('review.panel.model', 'llama', 20_000);
+    await shot('progress-review-subagent-panel');
+    await tap('subagent.panel.review.back');
+    await waitForAbsent('review.panel.verdict');
+    await waitForVisible(`review.card.${review.id}.open`);
+    await tap('subagent.close');
   });
 });

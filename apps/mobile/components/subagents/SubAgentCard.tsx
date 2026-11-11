@@ -1,4 +1,5 @@
-import { Bot, ChevronRight, Square } from 'lucide-react-native';
+import { Bot, Square } from 'lucide-react-native';
+import { ThreadCard } from '@/components/chat/ThreadCard';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { Icon } from '@/components/ui/icon';
@@ -22,8 +23,8 @@ import { SubAgentStats } from './SubAgentStats';
  * the parent's model reads and the panel shows. Repeating it here would put a
  * second agent's whole answer in the middle of the first one's thread.
  *
- * Three pressables side by side, not one wrapping the others: a Stop nested
- * inside the card's own press target would open the panel as it stopped.
+ * Drawn by `ThreadCard`, which a progress review's card shares: Stop is a
+ * sibling of the card's press target, never inside it.
  */
 export function SubAgentCard({ tool, ui }: { tool: ToolCall; ui: SubAgentsUi }) {
   const reachable = useServerReachable();
@@ -58,29 +59,15 @@ export function SubAgentCard({ tool, ui }: { tool: ToolCall; ui: SubAgentsUi }) 
   const running = view.status === 'running';
   const stopping = ui.isStopping(view.conversation_id);
   return (
-    <Box testID={base} className="my-1.5 rounded-md border border-primary/30 bg-primary/5">
-      <HStack className="min-w-0 items-stretch">
-        <Pressable
-          testID={`${base}.open`}
-          accessibilityLabel={`Open sub-agent: ${description}`}
-          onPress={() => { ui.open(view.conversation_id); }}
-          className="min-w-0 flex-1 px-3 py-2.5 web:hover:bg-primary/5"
-        >
-          <HStack space="sm" className="min-w-0 items-start">
-            <Box className="pt-0.5">
-              <Icon as={Bot} size="sm" className="text-primary" />
-            </Box>
-            <VStack space="xs" className="min-w-0 flex-1">
-              {/* The name's own testID: an assertion anchor on the Text, since
-                  XCUITest does not expose the card's container view. */}
-              <Text testID={`${base}.name`} size="sm" className="font-medium text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
-                {description}
-              </Text>
-              <SubAgentStats view={view} stopping={stopping} testIDBase={base} />
-            </VStack>
-          </HStack>
-        </Pressable>
-        {running && ui.canAct && (
+    <ThreadCard
+      testIDBase={base}
+      titleTestID={`${base}.name`}
+      icon={Bot}
+      title={description}
+      openLabel={`Open sub-agent: ${description}`}
+      onOpen={() => { ui.open(view.conversation_id); }}
+      action={
+        running && ui.canAct ? (
           <Pressable
             testID={`${base}.stop`}
             accessibilityLabel={`Stop sub-agent: ${description}`}
@@ -93,16 +80,10 @@ export function SubAgentCard({ tool, ui }: { tool: ToolCall; ui: SubAgentsUi }) 
           >
             <Icon as={Square} size="sm" className="text-destructive" />
           </Pressable>
-        )}
-        <Pressable
-          testID={`${base}.chevron`}
-          accessibilityLabel="Open"
-          onPress={() => { ui.open(view.conversation_id); }}
-          className="shrink-0 items-center justify-center pl-1 pr-3 web:hover:bg-primary/10"
-        >
-          <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
-        </Pressable>
-      </HStack>
-    </Box>
+        ) : null
+      }
+    >
+      <SubAgentStats view={view} stopping={stopping} testIDBase={base} />
+    </ThreadCard>
   );
 }

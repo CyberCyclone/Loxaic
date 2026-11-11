@@ -36,6 +36,7 @@ import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessa
 import { useToastHelper } from './useToastHelper';
 import { approvalStreamId, toPendingApproval, type PendingApproval } from '@/lib/pendingWaits';
 import { reviewingAfterEvent } from '@/lib/progressReview';
+import { useRunReviewState } from './useRunReviewState';
 import { followsTurnStarted, isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, retrySend, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { foldPromptCache } from '@/lib/promptCache';
@@ -241,6 +242,9 @@ export function useChatSession(
   /** A progress review under way, per conversation — keyed for the same
    * reason as the approvals above. Nobody answers it; it is only said. */
   const [reviewingByConv, setReviewingByConv] = useState<Partial<Record<string, ReviewMode>>>({});
+  // Every review's card, a thread's and a sub-agent's alike — see the hook.
+  const runReviews = useRunReviewState();
+  const { loadFor: loadRunReviews, onSync: onReviewSync, onEvent: onReviewEvent, onEnd: onReviewEnd } = runReviews;
   // The latest step of a context-stage switch, per conversation. Client-only:
   // the server writes no message for it (see lib/stageCard.ts), and it is kept
   // after the switch ends so "extended to 512K" stays readable.
@@ -399,6 +403,8 @@ export function useChatSession(
     // heard of them, and the id gets swapped for the real one as soon as
     // turn.started arrives, no fetch required.
     if (!id || !isServerConvId(id)) return;
+    // Its progress reviews so far: their cards, after a reload.
+    loadRunReviews(id);
     // What a routine's runs spawned before this session. Not asked for a
     // plain chat, which has none to list.
     if (scopeRef.current.kind === 'routine') loadSubAgents(id);
@@ -448,7 +454,7 @@ export function useChatSession(
         // request already reported what it learned (lib/connectionMonitor.ts).
         watchConversation(id);
       });
-  }, [recordPaging, watchConversation, loadSubAgents]);
+  }, [recordPaging, watchConversation, loadSubAgents, loadRunReviews]);
 
   /** Renames the pending optimistic user bubble (if any) to its real
    * server-assigned id, in place — call this before any id-based upsert of
@@ -715,6 +721,8 @@ export function useChatSession(
       } else if (event.type === 'stream.sync') {
         const convId = event.conversation_id;
         if (rewoundStreamsRef.current.has(event.stream_id)) return;
+        // A review's card belongs to whichever conversation its run is in.
+        onReviewSync(convId, event.stream_id, event.snapshot, event.status);
         // A sub-agent's own stream — see useAgentSession.
         if (isSubAgentConv(convId)) {
           onSubAgentStreamSync(event, arrivedAt);
@@ -828,6 +836,7 @@ export function useChatSession(
         }
         // Synchronously, before the next event in this same tick is handled.
         cursorsRef.current[event.stream_id] = event.seq;
+        onReviewEvent(convId, event.event);
         if (isSubAgentConv(convId)) {
           onSubAgentStreamEvent(event, arrivedAt);
           return;
@@ -905,6 +914,7 @@ export function useChatSession(
           lastMessageErrorRef.current.set(event.stream_id, inner.error);
         }
       } else if (event.type === 'stream.end') {
+        onReviewEnd(event.conversation_id, event.stream_id);
         // A sub-agent's stream ending is not this thread's — see
         // useAgentSession.
         if (isSubAgentConv(event.conversation_id)) {
@@ -990,6 +1000,9 @@ export function useChatSession(
           return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
         });
         forgetSpawnedBy(convId, event.removed_ids);
+        // The reviews that followed the removed rows went with them: the
+        // stored listing is asked again, and replaces what is held.
+        loadRunReviews(convId);
         setConversations((prev) =>
           prev.map((c) => {
             if (c.id !== convId) return c;
@@ -1097,7 +1110,7 @@ export function useChatSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, runLimits]);
+  }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, runLimits, loadRunReviews, onReviewSync, onReviewEvent, onReviewEnd]);
 
   const handleSend = useCallback(
     (text: string, model: string, attachments?: AttachmentRef[]) => {
@@ -1227,7 +1240,8 @@ export function useChatSession(
           : c,
       ),
     );
-  }, []);
+    loadRunReviews(convId);
+  }, [loadRunReviews]);
 
   /** Take back a send the server refused before writing anything: the bubble,
    * and the conversation it created locally, as the not-connected path does. */
@@ -1458,6 +1472,8 @@ export function useChatSession(
     pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,
     /** How a progress review of the open thread's run is going, or null. */
     reviewing: activeId ? (reviewingByConv[activeId] ?? null) : null,
+    /** Every conversation's progress-review cards — see useRunReviews. */
+    runReviews,
     /** The open thread's latest context-stage step, or null. */
     stageCard: activeId ? (stageCardByConv[activeId] ?? null) : null,
     handleSend,

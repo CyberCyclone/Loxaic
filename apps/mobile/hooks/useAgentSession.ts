@@ -58,6 +58,7 @@ import { localRunStart } from '@/lib/runStart';
 import { ConversationWatches } from '@/lib/conversationWatch';
 import { rowBadgesFor, useRunNotices } from './useRunNotices';
 import { isSubAgentEvent } from '@/lib/subAgents';
+import { useRunReviewState } from './useRunReviewState';
 import { useSubAgentState } from './useSubAgentState';
 import { followSelector, modeChangeNotice, ownStoredMode, type SelectorSource } from '@/lib/modeSelector';
 
@@ -238,6 +239,9 @@ export function useAgentSession(
   // open. A child's own stream arrives on this socket under a conversation id
   // that is not a run's, so the handler below asks this first — see the hook.
   const subAgents = useSubAgentState({ wsRef, cursorsRef, showToast });
+  // Every review's card, a thread's and a sub-agent's alike — see the hook.
+  const runReviews = useRunReviewState();
+  const { loadFor: loadRunReviews, onSync: onReviewSync, onEvent: onReviewEvent, onEnd: onReviewEnd } = runReviews;
 
   // Which of the listed runs have a run going (#282). Rides this surface's
   // own socket; the rules are in lib/runWatch.ts.
@@ -345,6 +349,8 @@ export function useAgentSession(
     refreshThreadMode(id);
     // What its runs spawned before this session — once per thread.
     loadSubAgents(id);
+    // Its progress reviews so far: their cards, after a reload.
+    loadRunReviews(id);
     // Watched only after the history fetch settles, as the chat hook does. A
     // snapshot can still land first (a socket opening now resubscribes the
     // active thread), and the page is then merged in by position
@@ -375,7 +381,7 @@ export function useAgentSession(
         setHistorySettledIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
         watchConversation(id);
       });
-  }, [recordPaging, watchConversation, loadSubAgents, refreshThreadMode]);
+  }, [recordPaging, watchConversation, loadSubAgents, refreshThreadMode, loadRunReviews]);
 
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: updater(r.msgs) } : r)));
@@ -553,6 +559,8 @@ export function useAgentSession(
       } else if (event.type === 'stream.sync') {
         const convId = event.conversation_id;
         if (rewoundStreamsRef.current.has(event.stream_id)) return;
+        // A review's card belongs to whichever conversation its run is in.
+        onReviewSync(convId, event.stream_id, event.snapshot, event.status);
         // A sub-agent's own stream: its transcript, not a run's. Before
         // anything below, all of which is about a thread.
         if (isSubAgentConv(convId)) {
@@ -617,6 +625,7 @@ export function useAgentSession(
         }
         // Synchronously, before the next event in this same tick is handled.
         cursorsRef.current[event.stream_id] = event.seq;
+        onReviewEvent(convId, event.event);
         if (isSubAgentConv(convId)) {
           onSubAgentStreamEvent(event, arrivedAt);
           return;
@@ -671,6 +680,7 @@ export function useAgentSession(
         // the person comes back to it.
         updateRunLevel(convId, (prev) => runLevelAfterEvent(prev, inner, event.stream_id, Date.now()));
       } else if (event.type === 'stream.end') {
+        onReviewEnd(event.conversation_id, event.stream_id);
         // A sub-agent's stream ending is not this thread's run ending: no
         // error toast here, no model refetch, and the run state stays put.
         if (isSubAgentConv(event.conversation_id)) {
@@ -740,6 +750,8 @@ export function useAgentSession(
           return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
         });
         forgetSpawnedBy(convId, event.removed_ids);
+        // See useChatSession: the removed rows' reviews went with them.
+        loadRunReviews(convId);
         updateRunMsgs(convId, (msgs) => applyRewound(msgs, event));
         setRewindsByConv((prev) => ({ ...prev, [convId]: (prev[convId] ?? 0) + 1 }));
         if (forgetRemovedCursor(convId, event.removed_ids)) {
@@ -825,7 +837,7 @@ export function useAgentSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, recordThreadMode, refreshThreadMode, runLimits]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen, recordThreadMode, refreshThreadMode, runLimits, loadRunReviews, onReviewSync, onReviewEvent, onReviewEnd]);
 
   // The selector follows the thread on screen (#311): its live run's mode,
   // else its last one, on opening it, on a load and on a reconnect; and the
@@ -1030,8 +1042,9 @@ export function useAgentSession(
           reason: 'rewind',
         }),
       );
+      loadRunReviews(convId);
     },
-    [updateRunMsgs],
+    [updateRunMsgs, loadRunReviews],
   );
 
   /** Take back a send the server refused before writing anything. */
@@ -1251,6 +1264,8 @@ export function useAgentSession(
     pendingApproval,
     /** How a progress review of the open run is going, or null. */
     reviewing,
+    /** Every conversation's progress-review cards — see useRunReviews. */
+    runReviews,
     /** The open run's latest context-stage step, or null. */
     stageCard: activeId ? (stageCardByConv[activeId] ?? null) : null,
     iteration,

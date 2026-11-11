@@ -43,6 +43,7 @@ function publicConversation<T extends { instructions: unknown }>(row: T): Omit<T
 import { applyRunLimits, runLimitColumns } from "../conversations/run-limits.ts";
 import { getRun, getRunByConversation } from "../streams/registry.ts";
 import { listSubagents } from "../streams/runs/subagentRun.ts";
+import { getRunReview, listRunReviews } from "../streams/runs/run-reviews.ts";
 import { latestTodos } from "../conversations/latest-todos.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
 
@@ -511,6 +512,35 @@ export function conversationRoutes(app: FastifyInstance) {
       subagents: await listSubagents(request.params.id, (streamId) => getRun(streamId) !== undefined),
       server_now: Date.now(),
     };
+  });
+
+  /**
+   * A conversation's progress reviews, in thread order: what its cards are
+   * drawn from after a reload. Without their digests, which one read of a
+   * review returns. A sub-agent's are its own conversation's, read by whoever
+   * can read its parent (`hasRole` resolves a child through it).
+   */
+  app.get<{ Params: { id: string } }>("/v1/conversations/:id/reviews", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    if (!(await hasRole(userId, request.params.id, "viewer"))) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    return { reviews: await listRunReviews(request.params.id) };
+  });
+
+  /** One review in full, digest included, for its panel. The same 404 for a
+   * review that is not this conversation's as for one that does not exist. */
+  app.get<{ Params: { id: string; reviewId: string } }>("/v1/conversations/:id/reviews/:reviewId", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const review = (await hasRole(userId, request.params.id, "viewer"))
+      ? await getRunReview(request.params.id, request.params.reviewId)
+      : null;
+    if (!review) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    return review;
   });
 
   // Get messages for conversation

@@ -1,4 +1,4 @@
-import { endStaleSubAgents, type ServerMessage, type StreamSnapshot, type StreamStatus } from "@loxaic/types";
+import { endStaleSubAgents, settledRunReviews, type ServerMessage, type StreamSnapshot, type StreamStatus } from "@loxaic/types";
 import { assertConversationAccess, filterAccessible } from "../streams/authz.ts";
 import { getStreamBroker } from "../streams/index.ts";
 import type { StreamRecord } from "../streams/types.ts";
@@ -136,8 +136,10 @@ export function createDelivery(
     const snapshot: StreamSnapshot =
       status === "active"
         ? folded
-        : (({ pending_approval: _a, reviewing: _r, subagents, ...rest }) => ({
+        : (({ pending_approval: _a, reviewing: _r, subagents, reviews, ...rest }) => ({
             ...rest,
+            // A review the run ended under never finished: no card for it.
+            ...(reviews && settledRunReviews(reviews).length ? { reviews: settledRunReviews(reviews) } : {}),
             ...(subagents ? { subagents: endStaleSubAgents(subagents, meta?.updatedAt ?? Date.now()) } : {}),
           }))(folded);
 

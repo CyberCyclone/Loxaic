@@ -254,6 +254,60 @@ export const messages = pgTable(
   ],
 );
 
+// ── Progress reviews (streams/runs/progress-review.ts) ──
+/**
+ * One progress review of a run: what the reviewer was shown, what it said and
+ * what the run was told. A record for people, shown as a card in the thread
+ * and never part of the model's prompt: it is not a `messages` row, and no
+ * history loader reads this table.
+ *
+ * No foreign keys, like `messages`: erasing a conversation erases these in
+ * `conversations/delete.ts`, and a rewind removes the ones that followed the
+ * removed rows (`conversations/rewind.ts`), stamping `deleted_at` instead
+ * where removed messages are kept for an audit.
+ */
+export const runReviews = pgTable(
+  "run_reviews",
+  {
+    id: uuid("id").primaryKey(),
+    conversationId: uuid("conversation_id").notNull(),
+    /** The stream id of the run it reviewed. */
+    runId: uuid("run_id").notNull(),
+    /** Its place in the thread: the lamport of the newest row the run had
+     * written when the review started. Ordered with messages by
+     * `(lamport, started_at)`. */
+    lamport: bigint("lamport", { mode: "number" }).notNull(),
+    /** The steps the run had finished, and its working time, at the start. */
+    step: integer("step").notNull(),
+    workedMs: bigint("worked_ms", { mode: "number" }).notNull(),
+    /** Null for the working-time ceiling, which is no review call. */
+    mode: text("mode", { enum: ["alongside", "paused"] }),
+    trigger: text("trigger", { enum: ["steps", "time", "in-reply", "limit"] }).notNull(),
+    /** Null when the reviewer gave none in time or could not be read. */
+    verdict: text("verdict", { enum: ["progressing", "stuck", "finished"] }),
+    reason: text("reason").notNull().default(""),
+    action: text("action", { enum: ["none", "steer", "answer"] }).notNull(),
+    /** The ceiling of an unattended run, not a verdict. */
+    forced: boolean("forced").notNull().default(false),
+    /** The digest the reviewer was shown; empty for the ceiling. */
+    digest: text("digest").notNull().default(""),
+    /** Null for the ceiling, which asked no model. */
+    model: text("model"),
+    /** Null when the request never finished (a deadline, a failure). */
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    promptMs: integer("prompt_ms"),
+    generationMs: integer("generation_ms"),
+    /** Start to end on the server's clock, whatever the backend reported. */
+    totalMs: integer("total_ms").notNull(),
+    /** The app's clock, like `messages.created_at`: a rewind compares them. */
+    startedAt: timestamp("started_at").notNull(),
+    endedAt: timestamp("ended_at").notNull(),
+    deletedAt: timestamp("deleted_at"),
+  },
+  (t) => [index("run_reviews_conversation_lamport_idx").on(t.conversationId, t.lamport)],
+);
+
 // ── File checkpoints (agent/checkpoints.ts) ──
 /**
  * What a file was before a turn's first `fs_write` or `fs_edit` of it, so a

@@ -35,8 +35,11 @@ import {
   isNudgeText,
   type ReviewAction,
   type ReviewMode,
+  type ReviewTrigger,
   type ReviewVerdict,
+  type RunReview,
 } from "@loxaic/types";
+import { randomUUID } from "node:crypto";
 import { PLAN_TOOL_NAME } from "@loxaic/agent";
 import { streamCompletion, textOfContent, type ChatMessage, type CompletionResult } from "../../inference/provider.ts";
 import { tryAcquireRunSlot } from "../../inference/scheduler.ts";
@@ -607,6 +610,59 @@ export interface ReviewDecision {
   forced?: boolean;
 }
 
+/**
+ * One review, whole, for its record (`run-reviews.ts`): what its card shows,
+ * the digest the reviewer read and the finished request. Handed to
+ * `onReview` when the review ends — never for one a stop or the run's end
+ * abandoned, which says nothing.
+ */
+export interface ReviewRecord {
+  id: string;
+  /** Null for the ceiling, which is no review call. */
+  mode: ReviewMode | null;
+  trigger: ReviewTrigger;
+  /** The run's steps, working time and newest row when it started. */
+  step: number;
+  workedMs: number;
+  lamport: number;
+  startedAt: number;
+  endedAt: number;
+  verdict: ReviewVerdict | null;
+  reason: string;
+  action: ReviewAction;
+  forced: boolean;
+  digest: string;
+  /** The finished request; null when it never finished, and for the ceiling. */
+  result: CompletionResult | null;
+}
+
+/** Where and when a review started, kept until it ends. */
+type ReviewStart = Pick<ReviewRecord, "id" | "mode" | "trigger" | "step" | "workedMs" | "lamport" | "startedAt">;
+
+/** A review as the wire carries it: under way from its start, finished from
+ * its record. */
+export function reviewCard(streamId: string | undefined, review: ReviewStart | ReviewRecord): RunReview {
+  return {
+    id: review.id,
+    ...(streamId ? { stream_id: streamId } : {}),
+    lamport: review.lamport,
+    step: review.step,
+    worked_ms: Math.round(review.workedMs),
+    mode: review.mode,
+    trigger: review.trigger,
+    started_at: review.startedAt,
+    ...("endedAt" in review
+      ? {
+          ended_at: review.endedAt,
+          verdict: review.verdict,
+          ...(review.reason ? { reason: review.reason } : {}),
+          action: review.action,
+          ...(review.forced ? { forced: true as const } : {}),
+        }
+      : {}),
+  };
+}
+
 /** What a request being written looks like to a review taken mid-reply. */
 export interface LiveRequest {
   text: string;
@@ -669,10 +725,23 @@ export class ProgressReviewer {
       switchedOff: () => boolean;
       /** A finished review request, for its usage record. */
       onUsage?: (result: CompletionResult) => void;
+      /** The run's stream, named on every review's card. */
+      streamId?: string;
+      /** The lamport of the newest row the run has written: where a review
+       * starting now sits in the thread. */
+      position?: () => number;
+      /** A review that ended, for its record. Awaited before its
+       * `run.review.end` when it returns a promise, so the record can be read
+       * by whoever hears the event; must never reject. */
+      onReview?: (record: ReviewRecord) => Promise<void> | void;
       /** How often a streaming reply's size is looked at; `REPLY_POLL_MS`
        * unless a test wants it sooner. */
       replyPollMs?: number;
-      emit: (event: { kind: "run.review.start"; mode: ReviewMode } | ({ kind: "run.review.end" } & Omit<ReviewDecision, "reason" | "forced"> & { reason?: string })) => void;
+      emit: (
+        event:
+          | { kind: "run.review.start"; mode: ReviewMode; review: RunReview }
+          | ({ kind: "run.review.end"; review: RunReview } & Omit<ReviewDecision, "reason" | "forced"> & { reason?: string }),
+      ) => void;
     },
   ) {
     this.on = reviewsOn(opts.prefs, opts.unattended);
@@ -722,12 +791,45 @@ export class ProgressReviewer {
     const { limitMs } = this.opts;
     if (limitMs === null || this.limitSaid || workedMs < limitMs) return null;
     this.limitSaid = true;
-    return {
+    const reason = `This ${this.opts.subagent ? "sub-agent" : "routine"} has been working for ${minutes(limitMs)}, the most a run nobody is watching gets.`;
+    // No model was asked, but the run is told to answer all the same: it gets
+    // a record and a card like any review, so the thread says why it ended.
+    const now = Date.now();
+    const record: ReviewRecord = {
+      ...this.startOf(null, "limit", workedMs),
+      startedAt: now,
+      endedAt: now,
       verdict: null,
-      reason: `This ${this.opts.subagent ? "sub-agent" : "routine"} has been working for ${minutes(limitMs)}, the most a run nobody is watching gets.`,
+      reason,
       action: "answer",
       forced: true,
+      digest: "",
+      result: null,
     };
+    // Not awaited: this is called where a decision must be handed over at once.
+    void this.opts.onReview?.(record);
+    this.opts.emit({ kind: "run.review.end", verdict: null, reason, action: "answer", review: reviewCard(this.opts.streamId, record) });
+    return { verdict: null, reason, action: "answer", forced: true };
+  }
+
+  /** A review starting now: its id, and where the run stands. */
+  private startOf(mode: ReviewMode | null, trigger: ReviewTrigger, workedMs: number): ReviewStart {
+    return {
+      id: randomUUID(),
+      mode,
+      trigger,
+      step: this.stepsDone,
+      workedMs,
+      lamport: this.opts.position?.() ?? 0,
+      startedAt: Date.now(),
+    };
+  }
+
+  /** Says a review has started, and returns what its record will need. */
+  private announce(mode: ReviewMode, trigger: ReviewTrigger, workedMs: number): ReviewStart {
+    const start = this.startOf(mode, trigger, workedMs);
+    this.opts.emit({ kind: "run.review.start", mode, review: reviewCard(this.opts.streamId, start) });
+    return start;
   }
 
   private messagesFor(workedMs: number, live: LiveRequest | null): ChatMessage[] {
@@ -750,9 +852,9 @@ export class ProgressReviewer {
 
   /** A review on a slot the backend had spare: the run carries on, and the
    * decision interrupts whatever it is writing by then. */
-  private startBeside(spare: { release(): void }, messages: ChatMessage[]): void {
-    this.opts.emit({ kind: "run.review.start", mode: "alongside" });
-    this.inFlight = this.review(messages)
+  private startBeside(spare: { release(): void }, messages: ChatMessage[], trigger: ReviewTrigger, workedMs: number): void {
+    const start = this.announce("alongside", trigger, workedMs);
+    this.inFlight = this.review(messages, start)
       .then((decision) => {
         if (this.isDisposed()) return;
         this.ready = decision;
@@ -798,12 +900,11 @@ export class ProgressReviewer {
       return null;
     }
     if (spare) {
-      this.startBeside(spare, messages);
+      this.startBeside(spare, messages, trigger, workedMs);
       return null;
     }
     if (!worthPausingFor(trigger, this.contextTokens)) return null;
-    this.opts.emit({ kind: "run.review.start", mode: "paused" });
-    const decision = await this.review(messages);
+    const decision = await this.review(messages, this.announce("paused", trigger, workedMs));
     return decision.action === "none" ? null : decision;
   }
 
@@ -870,7 +971,8 @@ export class ProgressReviewer {
     if (!this.on) return;
     const now = live();
     const written = now.thinking.length + now.text.length;
-    const due = workedMs - this.workedAtLast >= this.opts.prefs.everyMs || replyReviewDue(written, seen.chars);
+    const timeDue = workedMs - this.workedAtLast >= this.opts.prefs.everyMs;
+    const due = timeDue || replyReviewDue(written, seen.chars);
     if (!due) return;
     // Due. Where nothing can be done about it just now, look again in a while.
     if (this.inFlight || this.opts.switchedOff()) {
@@ -888,10 +990,10 @@ export class ProgressReviewer {
       return;
     }
     seen.chars = written;
-    this.startBeside(spare, messages);
+    this.startBeside(spare, messages, timeDue ? "time" : "in-reply", workedMs);
   }
 
-  private async review(messages: ChatMessage[]): Promise<ReviewDecision> {
+  private async review(messages: ChatMessage[], start: ReviewStart): Promise<ReviewDecision> {
     const signal = AbortSignal.any([this.opts.runSignal, this.cancel.signal]);
     const { read, result } = await reviewRun({ model: this.opts.model, messages, thinking: this.opts.thinking, signal });
     // Real tokens whatever became of the run meanwhile.
@@ -916,7 +1018,24 @@ export class ProgressReviewer {
     this.retryAt = 0;
     this.earlier.push({ step: this.stepsDone, workedMs: this.workedAtLast, verdict, ...(reason ? { reason } : {}) });
     if (this.earlier.length > DIGEST_PAST_REVIEWS) this.earlier.shift();
-    this.opts.emit({ kind: "run.review.end", verdict, ...(reason ? { reason } : {}), action });
+    const record: ReviewRecord = {
+      ...start,
+      endedAt: Date.now(),
+      verdict,
+      reason,
+      action,
+      forced: false,
+      // The second message is the digest: see `reviewMessages`.
+      digest: textOfContent(messages[1]?.content ?? ""),
+      result,
+    };
+    const saved = this.opts.onReview?.(record);
+    if (saved) {
+      await saved;
+      // The run ended while the record was written: no event follows its end.
+      if (this.isDisposed()) return { verdict: null, reason: "", action: "none" };
+    }
+    this.opts.emit({ kind: "run.review.end", verdict, ...(reason ? { reason } : {}), action, review: reviewCard(this.opts.streamId, record) });
     return { verdict, reason, action };
   }
 

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import {
   foldSubAgentEvent,
+  withRunReview,
   type StreamEventKind,
   type StreamSnapshot,
   type StreamSnapshotMessage,
@@ -133,6 +134,7 @@ export class StreamBroker {
     let todos: StreamSnapshot["todos"];
     let pendingApproval: StreamSnapshot["pending_approval"];
     let reviewing: StreamSnapshot["reviewing"];
+    let reviews: NonNullable<StreamSnapshot["reviews"]> = [];
     let promptStats: StreamSnapshot["prompt_stats"];
     let promptCache: StreamSnapshot["prompt_cache"];
     let subagents: SubAgentLive[] = [];
@@ -265,11 +267,16 @@ export class StreamBroker {
           break;
         // Only while one is under way. A run that ends mid-review leaves no
         // `run.review.end`; a client goes by the stream having ended.
+        // `reviews` keeps every one, finished or not: its card stays in the
+        // thread. Whether an unfinished one is still running is the stream's
+        // status to say, which only `ws/delivery.ts` has.
         case "run.review.start":
           reviewing = { mode: event.mode };
+          if (event.review) reviews = withRunReview(reviews, event.review);
           break;
         case "run.review.end":
           reviewing = undefined;
+          if (event.review) reviews = withRunReview(reviews, event.review);
           break;
         case "tool.call":
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
@@ -328,6 +335,7 @@ export class StreamBroker {
       ...(todos ? { todos } : {}),
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),
       ...(reviewing ? { reviewing } : {}),
+      ...(reviews.length ? { reviews } : {}),
       ...(promptStats ? { prompt_stats: promptStats } : {}),
       ...(promptCache ? { prompt_cache: promptCache } : {}),
       ...(subagents.length ? { subagents } : {}),

@@ -10,6 +10,7 @@ The stream log, run registry and conversation authorization shared by every run 
 ## Snapshot folds
 
 - Any event other than `run.queued` clears the queue position in `foldSnapshot` (and both client hooks); `subagent.*` and `run.mode` events never clear it.
+- `foldSnapshot` keeps every review card in `reviews`, one still under way included; `ws/delivery.ts` drops the unfinished ones from a run that has ended, beside `reviewing`.
 - `stream.end.error_code` rides only the live event and is deliberately never replayed from a snapshot.
 
 ## Run registry
@@ -80,6 +81,9 @@ The stream log, run registry and conversation authorization shared by every run 
 - Count working time as wall clock less `RunSlot.parkedMs()`.
 - Wrap every model request in `reviewer.watchRequest`: the time cadence and the ceiling must not wait for a reply to end.
 - Tell a progress note from a typed message with `isServerNote(text, authorUserId)` wherever the row is at hand; its text alone is anyone's to type.
+- Every review that ends is a `run_reviews` row (`run-reviews.ts`, through `onReview`), written before its `run.review.end` so the card's id can be read at once; the ceiling's is written too (`trigger: "limit"`, no model). A review a stop or the run's end abandoned leaves no row and no event.
+- A `run_reviews` row is for people: never a `messages` row, never read by `loadHistory` or anything else that builds a prompt.
+- A review's place in the thread is the lamport of the newest row the run had written (`position`), never a value taken from `nextLamport()`.
 - Record a review's completion as `usage_records` with `purpose: "progress_review"` and a null `message_id`.
 - Ask for a verdict under `VERDICT_SCHEMA` (`jsonSchema`), falling back to words alone only when the backend refuses it; keep `parseVerdict` able to read a reply in prose or cut short.
 - Change `DEFAULT_REVIEW_PROMPT`, `REVIEW_OUTPUT_CONTRACT` or the digest only with a replay of real runs through a real model; the mock answers from keywords and proves nothing about a verdict.

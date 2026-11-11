@@ -680,6 +680,46 @@ export async function listSubAgents(
   return ((await res.json()) as { subagents: E2ESubAgent[] }).subagents;
 }
 
+/** A progress review as the API lists it: what its card is drawn from. */
+export interface E2ERunReview {
+  id: string;
+  step: number;
+  verdict?: string | null;
+  action?: string;
+  mode: string | null;
+  trigger: string;
+}
+
+/**
+ * Waits until the conversation has `count` recorded progress reviews and
+ * returns them in thread order.
+ *
+ * A card's testID carries its review's id, which a spec cannot know in
+ * advance — so it is read from here, the record the app itself reads after a
+ * reload. A sub-agent's are listed under its own conversation id.
+ */
+export async function waitForRunReviews(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+  count: number,
+  timeoutMs = 30_000,
+): Promise<E2ERunReview[]> {
+  const token = await apiToken(creds);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/reviews`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`[e2e] listing progress reviews failed (${String(res.status)})`);
+    const list = ((await res.json()) as { reviews: E2ERunReview[] }).reviews;
+    if (list.length >= count) return list;
+    if (Date.now() > deadline) {
+      throw new Error(`[e2e] ${conversationId} had ${String(list.length)} progress review(s), wanted ${String(count)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
 /** Waits until the thread has `count` sub-agents and returns them, oldest
  * first — the order their calls were made in. */
 export async function waitForSubAgents(

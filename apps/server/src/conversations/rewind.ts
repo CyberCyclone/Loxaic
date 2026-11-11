@@ -26,6 +26,7 @@ import { announceConversationEvent } from "../streams/watchers.ts";
 import { checkpointsSince, dropTurns, hasCheckpointsSince, restoreCheckpoints, type RestoreReport } from "../agent/checkpoints.ts";
 import { attachActiveSandbox, attachRunningSandbox } from "../agent/sandbox-manager.ts";
 import type { SandboxHandle } from "../sandbox/provider.ts";
+import { eraseRunReviews, removeRunReviewsSince } from "../streams/runs/run-reviews.ts";
 
 /** What a rewind does: the conversation and the files the agent edited (the
  * default), the conversation alone, or the files alone. */
@@ -347,6 +348,13 @@ async function removeSuffix(
   if (removedIds.length > 0) {
     await db.transaction(async (tx) => {
       const now = new Date();
+      // The progress reviews that followed the removed rows go with them.
+      // First: the pivot's `created_at` is read from its row, which a rewind
+      // is about to remove. A removed child's are erased with its messages;
+      // a stamped child keeps its own, as it keeps its messages.
+      const pivotCreatedAt = sql`(SELECT m2.created_at FROM messages m2 WHERE m2.id = ${pivot.id})`;
+      await removeRunReviewsSince(tx, convId, pivotCreatedAt, { inclusive: opts.inclusive, keep, now });
+      if (!keep) await eraseRunReviews(tx, childIds);
       if (keep) {
         await tx.update(messages).set({ deletedAt: now }).where(inArray(messages.id, removedIds));
         // A child is reached only through its parent (`resolveAccess`), and a

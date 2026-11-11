@@ -1,9 +1,12 @@
-import { useMemo } from 'react';
-import { Bot, Square } from 'lucide-react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { ScrollView } from 'react-native';
+import { ArrowLeft, Bot, Square } from 'lucide-react-native';
 import { PermissionBar } from '@/components/agent/PermissionBar';
 import { ReviewSheet } from '@/components/agent/ReviewSheet';
 import { MessageList } from '@/components/chat/MessageList';
 import { ReviewStatus } from '@/components/chat/ReviewStatus';
+import { RunReviewContext, type RunReviewsUi } from '@/components/chat/RunReviewContext';
+import { RunReviewDetails } from '@/components/chat/RunReviewDetails';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { Icon } from '@/components/ui/icon';
@@ -15,7 +18,9 @@ import { useServerReachable } from '@/lib/connection';
 import type { SubAgentView } from '@/lib/subAgents';
 import type { ChildTranscript } from '@/lib/subAgentTranscript';
 import type { Conversation } from '@/lib/types';
-import type { PermissionMode } from '@loxaic/api-client';
+import type { PermissionMode, RunReview } from '@loxaic/api-client';
+import { useRunReviewDetail } from '@/hooks/useRunReviewDetail';
+import { reviewCardView, reviewLineMode } from '@/lib/progressReview';
 import { SubAgentStats } from './SubAgentStats';
 
 interface SubAgentPanelProps {
@@ -34,6 +39,8 @@ interface SubAgentPanelProps {
   /** The thread's mode selector, where there is one, so the bar can say
    * when the asking run is in another mode. */
   selectorMode?: PermissionMode;
+  /** The sub-agent's own progress reviews: cards in its transcript. */
+  reviews?: readonly RunReview[];
 }
 
 /**
@@ -53,8 +60,22 @@ interface SubAgentPanelProps {
  * There is no composer: nobody talks to a sub-agent but the agent that started
  * it. What a person can do here is watch, stop it, and answer what it asks.
  */
-export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAllow, onAllowAlways, onDeny, onClose, selectorMode }: SubAgentPanelProps) {
+export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAllow, onAllowAlways, onDeny, onClose, selectorMode, reviews }: SubAgentPanelProps) {
   const reachable = useServerReachable();
+  // One of its reviews, opened from its card. Shown in this panel in place of
+  // the transcript, with a way back: no sheet goes over another, so the
+  // review cannot have a panel of its own here.
+  const [openReviewId, setOpenReviewId] = useState<string | null>(null);
+  const childConvId = view?.conversation_id ?? null;
+  useEffect(() => {
+    setOpenReviewId(null);
+  }, [childConvId]);
+  const openReview = useMemo(
+    () => (openReviewId ? (reviews?.find((r) => r.id === openReviewId) ?? null) : null),
+    [reviews, openReviewId],
+  );
+  const { state: reviewDetail, retry: retryReviewDetail } = useRunReviewDetail(childConvId, openReview);
+  const reviewsUi = useMemo<RunReviewsUi>(() => ({ open: (review) => { setOpenReviewId(review.id); } }), []);
   // The message list takes a conversation; a child is one, with no title or
   // model of its own worth showing beyond what the header already says.
   const conversation = useMemo<Conversation | null>(
@@ -142,7 +163,25 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
           <DisconnectedNote testID="subagent.panel.reconnecting" />
         </Box>
       )}
-      {waiting ? (
+      {openReview ? (
+        <ScrollView testID="subagent.panel.review" style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 16 }}>
+          <Pressable
+            testID="subagent.panel.review.back"
+            accessibilityLabel="Back to the sub-agent's transcript"
+            onPress={() => { setOpenReviewId(null); }}
+            className="mb-3 flex-row items-center gap-1.5 self-start rounded-md border border-border px-2.5 py-1.5 web:hover:bg-muted/50"
+          >
+            <Icon as={ArrowLeft} size="xs" className="text-foreground" />
+            <Text size="xs" className="font-medium text-foreground">
+              Back to the transcript
+            </Text>
+          </Pressable>
+          <Text testID="subagent.panel.review.title" size="sm" className="mb-3 font-semibold text-foreground">
+            {reviewCardView(openReview).title}
+          </Text>
+          <RunReviewDetails review={openReview} detail={reviewDetail} onRetry={retryReviewDetail} />
+        </ScrollView>
+      ) : waiting ? (
         <HStack space="sm" className="flex-1 items-center justify-center">
           <Spinner size="small" className="text-muted-foreground" />
           <Text testID="subagent.panel.loading" size="sm" className="text-muted-foreground">
@@ -150,6 +189,7 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
           </Text>
         </HStack>
       ) : (
+        <RunReviewContext.Provider value={reviewsUi}>
         <MessageList
           // Its own testID: the parent's list is on screen behind this sheet,
           // and two lists under one id would be one selector.
@@ -161,10 +201,12 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
           queuePosition={view?.state === 'queued' ? (view.queue_position ?? null) : null}
           model={live?.model ?? view?.model}
           promptStats={live?.promptStats ?? null}
+          reviews={reviews}
         />
+        </RunReviewContext.Provider>
       )}
-      {/* A progress review of the child, under its transcript. */}
-      {running ? <ReviewStatus mode={live?.reviewing} /> : null}
+      {/* A progress review of the child an older server sent no card for. */}
+      {running ? <ReviewStatus mode={reviewLineMode(live?.reviewing, reviews)} /> : null}
     </ReviewSheet>
   );
 }

@@ -16,6 +16,7 @@ The Drizzle schema (`src/schema.ts`), the shared `db` instance and re-exported q
 ## Schema facts
 
 - The users table is `user` (singular), Drizzle-owned and passed explicitly to `drizzleAdapter` in `apps/server/src/auth/index.ts`; its columns go through normal migrations. `user.id` is `text`, not `uuid`.
-- Only `conversation_shares` has a foreign key to `conversations`. `messages`, `usage_records`, `sandboxes`, `checkpoint_files` and `conversations.parent_conversation_id` have none, so deleting a conversation must clean them explicitly (`apps/server/src/conversations/delete.ts`).
+- Only `conversation_shares` has a foreign key to `conversations`. `messages`, `usage_records`, `sandboxes`, `checkpoint_files`, `run_reviews` and `conversations.parent_conversation_id` have none, so deleting a conversation must clean them explicitly (`apps/server/src/conversations/delete.ts`).
 - `checkpoint_files` holds only the manifest; its `created_at` uses the app's clock, like messages, because rewinds compare the two.
 - Every last-turn or context reader of `usage_records` (`lastTurnTokens`, `conversationTokens`, `recentUses`) filters out `purpose = 'permission_check'` rows.
+- `run_reviews` is a record of each progress review for people to read; it is never a `messages` row, and no query that builds a prompt may read it. Its `started_at` uses the app's clock, like messages: a rewind compares the two.

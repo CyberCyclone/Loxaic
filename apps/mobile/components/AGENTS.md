@@ -33,6 +33,10 @@ UI components, including the vendored gluestack primitives in `ui/`. These rules
 
 ## Plan review and sub-agents
 
+- A sub-agent's card and a progress review's card (`review.card.<id>`, `RunReviewCard`) are both drawn by `chat/ThreadCard`; never copy it. The review's card is the review; the `progress.note` under it is what the run was told.
+- A review opens in `RunReviewPanel` on a thread. Inside a sub-agent's panel it replaces that panel's transcript (`subagent.panel.review`, with a way back), never a second sheet; both show `RunReviewDetails`.
+- `ReviewStatus` (`run.review.status`) renders only through `reviewLineMode`: a review with a card has no quiet line.
+
 - Plan and questions panels share `ReviewSheet`; never duplicate it. A panel's draft (and its chosen model) is keyed to its call id, never reset in an effect — panels stay mounted while closed.
 
 ## Markdown

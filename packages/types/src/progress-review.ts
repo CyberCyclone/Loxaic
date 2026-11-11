@@ -22,6 +22,76 @@ export type ReviewAction = "none" | "steer" | "answer";
  * paused at a step boundary to lend it its own. */
 export type ReviewMode = "alongside" | "paused";
 
+/** What made a review happen: either cadence at a step boundary, a reply that
+ * had written a lot without acting (`in-reply`), or the working-time ceiling
+ * of a run nobody is watching (`limit`, which asks no model). */
+export type ReviewTrigger = "steps" | "time" | "in-reply" | "limit";
+
+/**
+ * One review of a run, as its card in the thread shows it. The same shape
+ * live (`run.review.start`/`end`, a snapshot's `reviews`) and from history
+ * (`GET /v1/conversations/:id/reviews`). Never part of the model's prompt:
+ * a review is a record about a run, and the only thing the run reads is the
+ * note a `steer` or an `answer` leaves.
+ */
+export interface RunReview {
+  id: string;
+  /** The run it reviewed. */
+  stream_id?: string;
+  /** Where it sits in the thread: the lamport of the newest row the run had
+   * written when the review started. It follows that row. */
+  lamport: number;
+  /** The steps the run had finished when it started. */
+  step: number;
+  /** The run's working time when it started. */
+  worked_ms: number;
+  /** Null for the working-time ceiling, which is no review call. */
+  mode: ReviewMode | null;
+  trigger: ReviewTrigger;
+  /** Epoch ms, on the server's clock. */
+  started_at: number;
+  /** Absent while the review is under way, with everything below. */
+  ended_at?: number;
+  /** Null when the reviewer gave no verdict in time or could not be read. */
+  verdict?: ReviewVerdict | null;
+  reason?: string;
+  action?: ReviewAction;
+  /** The ceiling of an unattended run, not a verdict. */
+  forced?: true;
+}
+
+/** A review in full, for its panel: what the request cost, and the digest
+ * the reviewer was shown. Null figures were not reported by the backend. */
+export interface RunReviewDetail extends RunReview {
+  /** Null for the ceiling, which asked no model. */
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  prompt_ms: number | null;
+  generation_ms: number | null;
+  total_ms: number | null;
+  digest: string;
+}
+
+/** A list of reviews with `review` put in: replacing the one of the same id
+ * (a review ending), otherwise placed in thread order (`lamport`, then
+ * `started_at`); the ceiling's also removes one still under way. The one fold, for the server's snapshot and every client. */
+export function withRunReview(list: readonly RunReview[], review: RunReview): RunReview[] {
+  // The ceiling ends reviewing for its run: a review it found under way is
+  // abandoned without a word, so its card goes rather than say "checking"
+  // until the run's last reply is written.
+  const abandoned = (r: RunReview) => review.forced === true && r.stream_id === review.stream_id && r.ended_at === undefined;
+  const rest = list.filter((r) => r.id !== review.id && !abandoned(r));
+  const at = rest.findIndex((r) => r.lamport > review.lamport || (r.lamport === review.lamport && r.started_at > review.started_at));
+  return at < 0 ? [...rest, review] : [...rest.slice(0, at), review, ...rest.slice(at)];
+}
+
+/** The reviews of a run that has ended: one still under way never finished
+ * (a run that ends mid-review leaves no `run.review.end`) and is dropped. */
+export function settledRunReviews(list: readonly RunReview[]): RunReview[] {
+  return list.filter((r) => r.ended_at !== undefined);
+}
+
 /** Working time between reviews when the user has not chosen one. Waiting for
  * an approval or in the queue does not count. */
 export const DEFAULT_PROGRESS_CHECK_MS = 30 * 60 * 1000;

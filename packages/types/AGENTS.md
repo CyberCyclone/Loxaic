@@ -14,6 +14,7 @@ Types and pure helpers shared by the server and every client: the stream wire pr
 ## Shared logic
 
 - `parseTodoList` is the only parser of `todo_write` arguments, used by the executor and the client alike.
+- `withRunReview` is the one fold of a `RunReview` (the `review` on `run.review.start`/`end`) into `StreamSnapshot.reviews` and every client's list; one without `ended_at` is under way, and `settledRunReviews` drops those for a run that has ended.
 - `foldSubAgentEvent` is the one fold of `subagent.started`/`progress`/`ended` into `StreamSnapshot.subagents`, used by server and client; these events are emitted on change only, never on a timer.
 - `mcpServerActive` (`mcp-state.ts`) alone decides whether an MCP server is offered, for the registry and every switch. Order: globally `enabled` (filtered before it), then `mcpOverrides.disabledServerIds` (wins if in both lists), then `enabledServerIds`, then the per-kind default (`on_in_chat`/`on_in_agent`/`on_in_routines`, default true).
 

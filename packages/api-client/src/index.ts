@@ -1865,6 +1865,31 @@ export async function getSubAgents(conversationId: string): Promise<{ subagents:
   return { subagents: body.subagents, ...(typeof body.server_now === "number" ? { serverNow: body.server_now } : {}) };
 }
 
+/**
+ * A thread's progress reviews, in thread order: what its review cards are
+ * drawn from after a reload. A sub-agent's are read under its own
+ * conversation id. A server that predates them answers 404 (an `ApiError`
+ * with that status), which the caller reads as "none it can tell us of".
+ */
+export async function getRunReviews(conversationId: string): Promise<RunReview[]> {
+  const token = await getAuthToken();
+  const res = await serverFetch(`${BASE_URL}/v1/conversations/${conversationId}/reviews`, {
+    headers: { Authorization: `Bearer ${String(token)}` },
+  });
+  if (!res.ok) throw new ApiError(`Reviews failed: ${String(res.status)}`, res.status);
+  return ((await res.json()) as { reviews: RunReview[] }).reviews;
+}
+
+/** One progress review in full, with the digest the reviewer read. */
+export async function getRunReview(conversationId: string, reviewId: string): Promise<RunReviewDetail> {
+  const token = await getAuthToken();
+  const res = await serverFetch(`${BASE_URL}/v1/conversations/${conversationId}/reviews/${reviewId}`, {
+    headers: { Authorization: `Bearer ${String(token)}` },
+  });
+  if (!res.ok) throw new ApiError(`Review failed: ${String(res.status)}`, res.status);
+  return (await res.json()) as RunReviewDetail;
+}
+
 export async function getMessages(
   conversationId: string,
   opts: { before?: string } = {},
@@ -2839,6 +2864,9 @@ export type {
   ReviewVerdict,
   ReviewAction,
   ReviewMode,
+  ReviewTrigger,
+  RunReview,
+  RunReviewDetail,
   CompactionStats,
   PaletteSkill,
   SkillSource,
@@ -2857,7 +2885,7 @@ export type {
   PermissionCheckNote,
   ToolPermission,
 } from "@loxaic/types";
-import type { MySkills, PaletteSkill, PromptCacheView, ServerMessage, SkillInput, SubAgentLive, UserSkill } from "@loxaic/types";
+import type { MySkills, PaletteSkill, PromptCacheView, RunReview, RunReviewDetail, ServerMessage, SkillInput, SubAgentLive, UserSkill } from "@loxaic/types";
 export {
   commandQuery, parseCommand, isValidSkillName, SKILL_NAME_MAX,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,
@@ -2870,7 +2898,7 @@ export {
   DEFAULT_PROGRESS_CHECK_STEPS, MIN_PROGRESS_CHECK_STEPS, MAX_PROGRESS_CHECK_STEPS,
   MAX_PROGRESS_REVIEW_PROMPT_CHARS,
   SUBAGENT_TOOL_NAME, SUBAGENT_MODEL_MODES, DEFAULT_SUBAGENT_MODEL_MODE,
-  foldSubAgentEvent, endStaleSubAgents, sortSubAgents,
+  foldSubAgentEvent, endStaleSubAgents, sortSubAgents, withRunReview, settledRunReviews,
 } from "@loxaic/types";
 
 /** True if the send was actually written to the socket — false (never

@@ -86,6 +86,24 @@ describe("a finished stream's snapshot", () => {
     expect(ended?.snapshot.iteration).toEqual({ n: 20 });
   });
 
+  it("keeps a finished review's card in an ended run's snapshot, and drops one that never finished", async () => {
+    const broker = getStreamBroker();
+    const streamId = uuid();
+    const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface: "agent" });
+    const first = { id: uuid(), lamport: 10, step: 3, worked_ms: 100, mode: "paused" as const, trigger: "steps" as const, started_at: 1_000 };
+    const finished = { ...first, ended_at: 1_050, verdict: "progressing" as const, action: "none" as const };
+    const second = { ...first, id: uuid(), lamport: 20, mode: "alongside" as const };
+    producer.emit({ kind: "run.review.start", mode: "paused", review: first });
+    producer.emit({ kind: "run.review.end", verdict: "progressing", action: "none", review: finished });
+    producer.emit({ kind: "run.review.start", mode: "alongside", review: second });
+
+    // While the run is going, the one under way is a card too.
+    expect((await syncFor(streamId))?.snapshot.reviews).toEqual([finished, second]);
+
+    await producer.end("complete");
+    expect((await syncFor(streamId))?.snapshot.reviews).toEqual([finished]);
+  });
+
   it("drops a pending approval from a finished stream for the same reason", async () => {
     // Approvals survive their own abort path by accident today (a recorded
     // `tool.result` clears the fold). Asserted anyway, because that is an

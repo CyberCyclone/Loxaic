@@ -1,4 +1,18 @@
-import { isServerNote, parseProgressNote, type ReviewMode, type StreamEventKind } from '@loxaic/api-client';
+import {
+  isServerNote,
+  parseProgressNote,
+  settledRunReviews,
+  withRunReview,
+  type ReviewMode,
+  type RunReview,
+  type RunReviewDetail,
+  type StreamEventKind,
+  type StreamSnapshot,
+  type StreamStatus,
+} from '@loxaic/api-client';
+import { displayModelRef } from '@loxaic/types';
+import { formatTokens } from '@/lib/promptStats';
+import { formatDuration } from '@/lib/subAgents';
 
 /**
  * The progress review, as the client shows it: a second model call the server
@@ -32,6 +46,201 @@ export function progressNoteView(msg: { text: string; authorUserId?: string | nu
     reason: `Progress check: ${note.reason}`,
     outcome: note.action === 'steer' ? 'Told to change approach' : 'Told to answer now',
   };
+}
+
+// ── Review cards ───────────────────────────────────────────────────────────
+//
+// Every review is a card in the thread, where it happened, built from its
+// record: live from `run.review.*` and a snapshot's `reviews`, and after a
+// reload from `GET /v1/conversations/:id/reviews`. A list here is one
+// conversation's, in thread order.
+
+/** A review that has not ended. */
+export function isReviewRunning(review: RunReview): boolean {
+  return review.ended_at === undefined;
+}
+
+/** One conversation's cards after a live event. */
+export function reviewsAfterEvent(list: readonly RunReview[], event: StreamEventKind): readonly RunReview[] {
+  if ((event.kind === 'run.review.start' || event.kind === 'run.review.end') && event.review) {
+    return withRunReview(list, event.review);
+  }
+  return list;
+}
+
+/**
+ * One conversation's cards after a run's snapshot: the snapshot's own put in
+ * (each replaces the copy held). A run that has ended has no review under
+ * way, whatever was held: one of its cards still running was never finished
+ * and goes.
+ */
+export function reviewsAfterSnapshot(
+  list: readonly RunReview[],
+  streamId: string,
+  snapshot: Pick<StreamSnapshot, 'reviews'>,
+  status: StreamStatus,
+): readonly RunReview[] {
+  const active = status === 'active';
+  const theirs = active ? (snapshot.reviews ?? []) : settledRunReviews(snapshot.reviews ?? []);
+  const kept = active ? list : list.filter((r) => !(r.stream_id === streamId && isReviewRunning(r)));
+  if (theirs.length === 0) return kept.length === list.length ? list : kept;
+  return theirs.reduce<readonly RunReview[]>((acc, review) => withRunReview(acc, review), kept);
+}
+
+/** One conversation's cards after a run ended: what it had under way never
+ * finished (a run that ends mid-review says nothing more). */
+export function reviewsAfterEnd(list: readonly RunReview[], streamId: string): readonly RunReview[] {
+  const kept = list.filter((r) => !(r.stream_id === streamId && isReviewRunning(r)));
+  return kept.length === list.length ? list : kept;
+}
+
+/**
+ * One conversation's cards after its stored listing arrived. The listing is
+ * the truth about everything finished (a rewind removes records, so a card
+ * held and not listed is gone), with two exceptions it cannot know of: a
+ * review still under way, which is in no listing, and one the stream told of
+ * after the listing was asked for (`heardSince`), which may have ended after
+ * the server read its table.
+ */
+export function withListedReviews(
+  list: readonly RunReview[],
+  listed: readonly RunReview[],
+  heardSince: ReadonlySet<string> = new Set(),
+): readonly RunReview[] {
+  const ids = new Set(listed.map((r) => r.id));
+  return list
+    .filter((r) => !ids.has(r.id) && (isReviewRunning(r) || heardSince.has(r.id)))
+    .reduce<readonly RunReview[]>((acc, review) => withRunReview(acc, review), listed);
+}
+
+/**
+ * Which message each card sits under: the newest one at or before the
+ * review's place in the thread (`lamport`), by index into `msgs`. A message
+ * with no lamport (an optimistic bubble) anchors nothing. A review older than
+ * everything loaded has no message to sit under yet and is left out until
+ * its page is.
+ */
+export function reviewsByMessage(
+  msgs: readonly { lamport?: number }[],
+  reviews: readonly RunReview[],
+): Map<number, RunReview[]> {
+  const placed = new Map<number, RunReview[]>();
+  for (const review of reviews) {
+    let at = -1;
+    msgs.forEach((m, i) => {
+      if (m.lamport !== undefined && m.lamport <= review.lamport) at = i;
+    });
+    if (at < 0) continue;
+    const under = placed.get(at);
+    if (under) under.push(review);
+    else placed.set(at, [review]);
+  }
+  return placed;
+}
+
+/** The quiet line stays for a review an older server sent no card for. */
+export function reviewLineMode(
+  reviewing: ReviewMode | null | undefined,
+  reviews: readonly RunReview[] | null | undefined,
+): ReviewMode | null {
+  if (!reviewing) return null;
+  return (reviews ?? []).some(isReviewRunning) ? null : reviewing;
+}
+
+const DONE: Record<NonNullable<RunReview['action']>, string | null> = {
+  none: null,
+  steer: 'told to change approach',
+  answer: 'told to answer',
+};
+
+/** What was done about a review, as a sentence; for its panel. */
+export function reviewActionText(review: Pick<RunReview, 'action' | 'verdict'>): string {
+  if (review.action === 'steer') return 'Told to change approach';
+  if (review.action === 'answer') return 'Told to stop and answer';
+  // A verdict that called for something and did nothing: its owner turned
+  // reviews off for this conversation while it ran.
+  return review.verdict === 'stuck' || review.verdict === 'finished' ? 'Nothing: reviews were turned off' : 'Nothing: the run carried on';
+}
+
+/** What a review found, in a word or two. */
+export function reviewVerdictText(review: Pick<RunReview, 'verdict' | 'forced'>): string {
+  if (review.forced) return 'time limit reached';
+  return review.verdict ?? 'no verdict';
+}
+
+/**
+ * A review's card: under way ("Checking progress…"), or what it found and
+ * what was done ("Progress check · stuck · told to change approach"). The
+ * second line is where in the run it was taken.
+ */
+export function reviewCardView(review: RunReview): { running: boolean; title: string; meta: string } {
+  const meta = `Step ${String(review.step)} · ${formatDuration(review.worked_ms)} of work`;
+  if (isReviewRunning(review)) {
+    return { running: true, title: reviewStatusText(review.mode) ?? 'Checking progress…', meta };
+  }
+  const done = review.action ? DONE[review.action] : null;
+  return {
+    running: false,
+    title: ['Progress check', reviewVerdictText(review), ...(done ? [done] : [])].join(' · '),
+    meta,
+  };
+}
+
+const MODE_TEXT: Record<ReviewMode, string> = {
+  alongside: 'Beside the run, on a spare inference slot',
+  paused: 'The run paused and lent it its own inference slot',
+};
+
+const TRIGGER_TEXT: Record<RunReview['trigger'], string> = {
+  steps: 'Enough steps since the last check',
+  time: 'Enough working time since the last check',
+  'in-reply': 'One reply had written a lot without acting',
+  limit: 'The working-time limit of a run nobody is watching',
+};
+
+export interface ReviewPanelRow {
+  /** The row's testID suffix, `review.panel.<key>`. */
+  key: string;
+  label: string;
+  value: string;
+}
+
+/**
+ * The panel's rows, top to bottom. `detail` is the full record once it has
+ * loaded; until then the rows the card already knows are shown. A figure the
+ * backend did not report is left out, never shown as 0.
+ */
+export function reviewPanelRows(review: RunReview, detail: RunReviewDetail | null): ReviewPanelRow[] {
+  const rows: ReviewPanelRow[] = [];
+  const running = isReviewRunning(review);
+  if (running) {
+    rows.push({ key: 'verdict', label: 'Verdict', value: 'Still checking…' });
+  } else {
+    rows.push({ key: 'verdict', label: 'Verdict', value: reviewVerdictText(review) });
+    if (review.reason) rows.push({ key: 'reason', label: 'Reason', value: review.reason });
+    rows.push({ key: 'action', label: 'What was done', value: reviewActionText(review) });
+  }
+  if (review.mode) rows.push({ key: 'mode', label: 'How it ran', value: MODE_TEXT[review.mode] });
+  rows.push({ key: 'trigger', label: 'Why now', value: TRIGGER_TEXT[review.trigger] });
+  rows.push({ key: 'step', label: 'Step', value: String(review.step) });
+  rows.push({ key: 'worked', label: 'Working time', value: formatDuration(review.worked_ms) });
+  if (!detail) return rows;
+  if (detail.model) rows.push({ key: 'model', label: 'Model', value: displayModelRef(detail.model) });
+  if (detail.input_tokens !== null) {
+    rows.push({
+      key: 'input',
+      label: 'Input size',
+      value:
+        detail.output_tokens !== null
+          ? `${formatTokens(detail.input_tokens)} tokens in, ${formatTokens(detail.output_tokens)} out`
+          : `${formatTokens(detail.input_tokens)} tokens`,
+    });
+  }
+  if (detail.prompt_ms !== null) rows.push({ key: 'promptTime', label: 'Prompt processing', value: formatDuration(detail.prompt_ms) });
+  if (detail.generation_ms !== null) rows.push({ key: 'generationTime', label: 'Generation', value: formatDuration(detail.generation_ms) });
+  // The ceiling asked no model: there is no request to time.
+  if (detail.total_ms !== null && detail.model) rows.push({ key: 'total', label: 'Took', value: formatDuration(detail.total_ms) });
+  return rows;
 }
 
 /**

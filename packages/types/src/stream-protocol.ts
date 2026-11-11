@@ -3,7 +3,7 @@ import type { RunLimitChoices, TimeoutBasis } from "./waits";
 import type { McpOverrides } from "./mcp-state";
 import type { ThinkingLevel } from "./thinking";
 import type { SubAgentEvent, SubAgentLive } from "./subagents";
-import { parseProgressNote, type ReviewAction, type ReviewMode, type ReviewVerdict } from "./progress-review";
+import { parseProgressNote, type ReviewAction, type ReviewMode, type ReviewVerdict, type RunReview } from "./progress-review";
 
 /** Duplicated (structurally, not nominally) from @loxaic/agent so this
  * package stays dependency-free — packages/agent is the authority for
@@ -668,16 +668,20 @@ export type StreamEventKind =
   /**
    * A progress review started (progress-review.ts). `alongside`: on a free
    * inference slot, while the run carries on. `paused`: the run stopped at a
-   * step boundary to lend the review its own slot.
+   * step boundary to lend the review its own slot. `review` is its card, still
+   * under way; absent from an older server.
    */
-  | { kind: "run.review.start"; mode: ReviewMode }
+  | { kind: "run.review.start"; mode: ReviewMode; review?: RunReview }
   /**
    * A progress review ended. `verdict` is null when the reviewer gave none in
    * time or could not be read. `action` is what the run did: a `steer` or an
    * `answer` also leaves a persisted user row (a progress note) whose
-   * `message.start` follows this.
+   * `message.start` follows this. `review` is its card, finished, by which
+   * time its record can be read (`GET /v1/conversations/:id/reviews/:id`);
+   * absent from an older server. The working-time ceiling of an unattended
+   * run sends this with no start before it (`review.trigger: "limit"`).
    */
-  | { kind: "run.review.end"; verdict: ReviewVerdict | null; reason?: string; action: ReviewAction }
+  | { kind: "run.review.end"; verdict: ReviewVerdict | null; reason?: string; action: ReviewAction; review?: RunReview }
   | { kind: "tool.call"; message_id: string; call_id: string; tool: string; args: Record<string, unknown> }
   | ({ kind: "approval.request"; call_id: string; tool: string; args: Record<string, unknown> } & ApprovalContext &
       WaitDeadlineFields)
@@ -928,6 +932,10 @@ export interface StreamSnapshot {
   /** Present while a progress review of this run is under way, so a client
    * that reconnects mid-review still says so. */
   reviewing?: { mode: ReviewMode };
+  /** This run's progress reviews so far, in thread order, folded from
+   * `run.review.*` (`withRunReview`); one without `ended_at` is under way.
+   * Absent when it has had none, and from an older server. */
+  reviews?: RunReview[];
   /** The sub-agents this run spawned, folded from its `subagent.*` events.
    * Absent when it spawned none. */
   subagents?: SubAgentLive[];

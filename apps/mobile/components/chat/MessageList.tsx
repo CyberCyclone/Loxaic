@@ -1,4 +1,4 @@
-import type { PromptCacheStatus, PromptStats } from '@loxaic/api-client';
+import type { PromptCacheStatus, PromptStats, RunReview } from '@loxaic/api-client';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { FlatList, Platform, type ListRenderItemInfo, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Box } from '@/components/ui/box';
@@ -8,6 +8,7 @@ import { Text } from '@/components/ui/text';
 import { ContextStageCard } from './ContextStageCard';
 import { PromptCacheCard } from './PromptCacheCard';
 import { Message } from './Message';
+import { RunReviewCard } from './RunReviewCard';
 import { TypingIndicator } from './TypingIndicator';
 import type { Conversation, Message as MessageType } from '@/lib/types';
 import { useServerReachable } from '@/lib/connection';
@@ -15,6 +16,7 @@ import { isStageActive, type StageCard } from '@/lib/stageCard';
 import { promptCacheActive } from '@/lib/promptCache';
 import { canRewind, isContextFailure, retryIndex } from '@/lib/rewind';
 import { isEmptyGenerating, liveCounterStart, typingIndicatorFor } from '@/lib/liveTimer';
+import { reviewsByMessage } from '@/lib/progressReview';
 
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
@@ -47,7 +49,12 @@ interface MessageListProps {
    * both off — a viewer, a sub-agent's transcript. Both functions must be
    * stable: every message's memo compares them. */
   actions?: MessageActions | null;
+  /** The conversation's progress reviews, in thread order: each is a card
+   * under the message it followed (lib/progressReview.ts). */
+  reviews?: readonly RunReview[];
 }
+
+const NO_REVIEWS: readonly RunReview[] = [];
 
 export interface MessageActions {
   onRewind: (messageId: string) => void;
@@ -79,7 +86,7 @@ export interface MessageHistory {
  * there, and following a live response is a scroll to zero rather than a chase
  * after a moving, half-measured target.
  */
-export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history, stageCard, promptCache, testID = 'chat.messageList', actions = null }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history, stageCard, promptCache, testID = 'chat.messageList', actions = null, reviews = NO_REVIEWS }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
   const reachable = useServerReachable();
@@ -205,6 +212,8 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   // Newest first, to match the inverted axis.
   const data = useMemo(() => [...msgsToRender].reverse(), [msgsToRender]);
   const lastRenderIndex = msgsToRender.length - 1;
+  // Each review's card under the message it followed, by that message's index.
+  const reviewsAt = useMemo(() => reviewsByMessage(msgsToRender, reviews), [msgsToRender, reviews]);
   // Nothing to rewind or retry while a run is going: the server would refuse.
   const live = actions && !pending ? actions : null;
   const retryAt = live ? retryIndex(msgsToRender) : -1;
@@ -231,10 +240,15 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
             onRetry={live && originalIndex === retryAt ? live.onRetry : undefined}
             onEdit={originalIndex === retryAt && isContextFailure(item) ? onEdit : undefined}
           />
+          {reviewsAt.get(originalIndex)?.map((review) => (
+            <Box key={review.id} className="px-4">
+              <RunReviewCard review={review} />
+            </Box>
+          ))}
         </Box>
       );
     },
-    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, counterSince, liveCompactionIndex, liveCompaction, live, retryAt, onEdit],
+    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, counterSince, liveCompactionIndex, liveCompaction, live, retryAt, onEdit, reviewsAt],
   );
 
   if (!conversation) return null;

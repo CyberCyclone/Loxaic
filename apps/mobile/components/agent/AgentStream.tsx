@@ -1,4 +1,4 @@
-import type { PromptCacheStatus, PromptStats, ReviewMode } from '@loxaic/api-client';
+import type { PromptCacheStatus, PromptStats, ReviewMode, RunReview } from '@loxaic/api-client';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Box } from '@/components/ui/box';
@@ -12,6 +12,7 @@ import { ReviewStatus } from '@/components/chat/ReviewStatus';
 import type { Conversation, AgentMode } from '@/lib/types';
 import type { RunState, PendingApproval } from '@/hooks/useAgentSession';
 import { approvalKey } from '@/lib/pendingWaits';
+import { reviewLineMode } from '@/lib/progressReview';
 
 interface AgentStreamProps {
   run: Conversation | null;
@@ -31,6 +32,8 @@ interface AgentStreamProps {
   approvalSource?: string;
   /** A progress review of the run under way, and how; null when none is. */
   reviewing?: ReviewMode | null;
+  /** The run's progress reviews, as cards in the thread — see MessageList. */
+  reviews?: readonly RunReview[];
   /** Scroll-back through older history — see MessageList. */
   history?: MessageHistory | null;
   /** The latest step of a context-stage switch in this run. */
@@ -58,6 +61,7 @@ export function AgentStream({
   pendingApproval,
   approvalSource,
   reviewing = null,
+  reviews,
   history,
   stageCard,
   promptCache,
@@ -104,6 +108,7 @@ export function AgentStream({
           stageCard={stageCard}
           promptCache={promptCache}
           actions={actions}
+          reviews={reviews}
         />
       </Box>
       {mode === 'planning' && <PlanningBanner />}
@@ -124,7 +129,9 @@ export function AgentStream({
           onDeny={onDeny}
         />
       )}
-      <ReviewStatus mode={reviewing} />
+      {/* Only for a review an older server sent no card for: the card in the
+          thread says it otherwise. */}
+      <ReviewStatus mode={reviewLineMode(reviewing, reviews)} />
     </VStack>
   );
 }

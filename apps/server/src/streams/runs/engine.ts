@@ -117,6 +117,7 @@ import {
   type ReviewDecision,
   type ReviewPrefs,
 } from "./progress-review.ts";
+import { recordRunReview } from "./run-reviews.ts";
 import { TodoStaleness } from "./todo-staleness.ts";
 import { clampWaitTimeoutMs, effectiveTimeoutMs, serverDefaultTimeoutMs } from "./timeouts.ts";
 
@@ -893,6 +894,12 @@ export async function runToolLoop(ctx: {
             console.warn(`could not record a progress review's usage: ${(err as Error).message}`);
           });
       },
+      streamId,
+      // A review follows the newest row the run has written.
+      position: () => lastLamport,
+      // Its record, which its card is read back from after a reload. Never
+      // part of the prompt: see run-reviews.ts.
+      onReview: (record) => recordRunReview({ conversationId: convId, runId: streamId, model, record }),
       emit: (event) => {
         producer.emit(event);
       },

@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { and, db, eq, inArray } from "@loxaic/db";
-import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
+import { conversations, messages, runReviews, usageRecords, user, userPrefs } from "@loxaic/db/schema";
 import {
   SUBAGENT_TOOL_NAME,
   parseProgressNote,
@@ -63,6 +63,7 @@ describe("progress review", () => {
     for (const id of [...convIds, ...children.map((c) => c.id)]) {
       await db.delete(messages).where(eq(messages.conversationId, id));
       await db.delete(usageRecords).where(eq(usageRecords.conversationId, id));
+      await db.delete(runReviews).where(eq(runReviews.conversationId, id));
       await db.delete(conversations).where(eq(conversations.id, id));
     }
     await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
@@ -162,6 +163,14 @@ describe("progress review", () => {
       .filter((n) => n.note !== null);
   }
 
+  /** A conversation's review records, in thread order. */
+  async function recordsOf(convId: string) {
+    return db.query.runReviews.findMany({
+      where: eq(runReviews.conversationId, convId),
+      orderBy: (r, { asc }) => [asc(r.lamport), asc(r.startedAt)],
+    });
+  }
+
   const reviewsIn = (events: StreamEventKind[]) =>
     events.filter((e): e is Extract<StreamEventKind, { kind: "run.review.end" }> => e.kind === "run.review.end");
 
@@ -173,7 +182,7 @@ describe("progress review", () => {
     const events = await eventsOf(streamId);
     // Reviewed after step 3 and step 6, in the run's own slot: the mock
     // backend has one.
-    expect(events.filter((e) => e.kind === "run.review.start")).toEqual([
+    expect(events.filter((e) => e.kind === "run.review.start")).toMatchObject([
       { kind: "run.review.start", mode: "paused" },
       { kind: "run.review.start", mode: "paused" },
     ]);
@@ -200,7 +209,52 @@ describe("progress review", () => {
       expect(row.outputTokens).toBeGreaterThan(0);
     }
     // The snapshot a client catching up would get says nothing is under way.
-    expect(getStreamBroker().foldSnapshot(await getStreamBroker().readFrom(streamId, 0)).reviewing).toBeUndefined();
+    const snapshot = getStreamBroker().foldSnapshot(await getStreamBroker().readFrom(streamId, 0));
+    expect(snapshot.reviewing).toBeUndefined();
+
+    // Every review leaves a record, one that found nothing wrong included:
+    // where it sits in the thread, what the reviewer read and what it cost.
+    const records = await recordsOf(convId);
+    const tools = rows.filter((r) => r.authorType === "tool");
+    expect(records.map((r) => [r.verdict, r.action, r.mode, r.trigger, r.step, r.forced])).toEqual([
+      ["progressing", "none", "paused", "steps", 3, false],
+      ["progressing", "none", "paused", "steps", 6, false],
+    ]);
+    // Each follows the step it was taken after, and comes before the next reply.
+    expect(records.map((r) => r.lamport)).toEqual([tools[2].lamport, tools[5].lamport]);
+    for (const record of records) {
+      expect(record.runId).toBe(streamId);
+      expect(record.model).toBe(MODEL);
+      expect(record.digest).toContain("plan in seven steps");
+      expect(record.inputTokens).toBeGreaterThan(0);
+      expect(record.outputTokens).toBeGreaterThan(0);
+      expect(record.totalMs).toBe(record.endedAt.getTime() - record.startedAt.getTime());
+    }
+    // The card a client is sent, live and on catching up, is that record.
+    const starts = events.filter((e): e is Extract<StreamEventKind, { kind: "run.review.start" }> => e.kind === "run.review.start");
+    expect(starts.map((e) => e.review?.id)).toEqual(records.map((r) => r.id));
+    expect(starts.every((e) => e.review?.ended_at === undefined && e.review?.stream_id === streamId)).toBe(true);
+    expect(reviewsIn(events).map((e) => e.review)).toEqual(
+      records.map((r) => ({
+        id: r.id,
+        stream_id: streamId,
+        lamport: r.lamport,
+        step: r.step,
+        worked_ms: r.workedMs,
+        mode: "paused",
+        trigger: "steps",
+        started_at: r.startedAt.getTime(),
+        ended_at: r.endedAt.getTime(),
+        verdict: "progressing",
+        reason: r.reason,
+        action: "none",
+      })),
+    );
+    expect(snapshot.reviews).toEqual(reviewsIn(events).map((e) => e.review));
+    // And it is only a record: the thread's rows, which are what a prompt is
+    // built from, hold nothing of it.
+    expect(rows.filter((r) => r.authorType === "user")).toHaveLength(1);
+    expect(rows.some((r) => JSON.stringify(r.content).includes("## The task"))).toBe(false);
   });
 
   it("steers a stuck run once, then has it answer when it is stuck again", async () => {
@@ -225,6 +279,20 @@ describe("progress review", () => {
     expect(last?.authorType).toBe("assistant");
     expect(last?.status).toBe("complete");
     expect(last?.lamport).toBeGreaterThan(notes[1].row.lamport);
+
+    // The records say what each review did; each sits after the step it
+    // followed and before the note it wrote.
+    const records = await recordsOf(convId);
+    expect(records.map((r) => [r.verdict, r.action, r.step])).toEqual([
+      ["stuck", "steer", 3],
+      ["stuck", "answer", 6],
+    ]);
+    const tools = rows.filter((r) => r.authorType === "tool");
+    records.forEach((record, i) => {
+      expect(record.reason).toBe(notes[i].note?.reason);
+      expect(record.lamport).toBe(tools[i * 3 + 2].lamport);
+      expect(record.lamport).toBeLessThan(notes[i].row.lamport);
+    });
   });
 
   it("tells a run called finished so once, and has it answer when the next review says it again", async () => {
@@ -312,6 +380,8 @@ describe("progress review", () => {
 
     // The verdict is still told, but acts on nothing.
     expect(reviewsIn(await eventsOf(streamId)).map((e) => [e.verdict, e.action])).toEqual([["stuck", "none"]]);
+    // And recorded as it was: what the reviewer said, and that nothing was done.
+    expect((await recordsOf(convId)).map((r) => [r.verdict, r.action])).toEqual([["stuck", "none"]]);
     expect(await notesOf(convId)).toEqual([]);
     expect((await rowsOf(convId)).filter((r) => r.authorType === "tool")).toHaveLength(4);
   }, 60_000);
@@ -325,6 +395,8 @@ describe("progress review", () => {
     await waitFor("the run to end", () => getRunByConversation(convId) === undefined);
 
     expect(reviewsIn(await eventsOf(streamId))).toEqual([]);
+    // A review the stop abandoned gave no verdict and leaves no record.
+    expect(await recordsOf(convId)).toEqual([]);
     expect((await getStreamBroker().getMeta(streamId))?.status).toBe("cancelled");
     // The three steps it took stay, complete.
     const rows = await rowsOf(convId);
@@ -389,7 +461,8 @@ describe("progress review", () => {
       const streamId = await run("take your time over one step", convId, 60_000);
 
       const events = await eventsOf(streamId);
-      expect(events.filter((e) => e.kind === "run.review.start")).toEqual([{ kind: "run.review.start", mode: "paused" }]);
+      expect(events.filter((e) => e.kind === "run.review.start")).toMatchObject([{ kind: "run.review.start", mode: "paused" }]);
+      expect((await recordsOf(convId)).map((r) => [r.trigger, r.mode])).toEqual([["time", "paused"]]);
       expect(reviewsIn(events).map((e) => [e.verdict, e.action])).toEqual([["progressing", "none"]]);
       expect((await rowsOf(convId)).filter((r) => r.authorType === "tool")).toHaveLength(1);
     },
@@ -411,19 +484,27 @@ describe("progress review", () => {
       const streamId = await run("take your time, review-stuck", convId, 75_000);
 
       const events = await eventsOf(streamId);
-      expect(events.filter((e) => e.kind === "run.review.start")).toEqual([
+      expect(events.filter((e) => e.kind === "run.review.start")).toMatchObject([
         { kind: "run.review.start", mode: "alongside" },
         { kind: "run.review.start", mode: "alongside" },
       ]);
       expect(reviewsIn(events).map((e) => e.action)).toEqual(["steer", "answer"]);
+      // Taken mid-reply: each record follows the reply it read, which is the
+      // row its note was written after.
+      const taken = await recordsOf(convId);
+      expect(taken.map((r) => [r.trigger, r.mode, r.action])).toEqual([
+        ["time", "alongside", "steer"],
+        ["time", "alongside", "answer"],
+      ]);
       // Not one tool ran: both replies were cut short before their call.
       const rows = await rowsOf(convId);
       expect(rows.filter((r) => r.authorType === "tool")).toEqual([]);
       const notes = await notesOf(convId);
       expect(notes.map((n) => n.note?.action)).toEqual(["steer", "answer"]);
-      for (const { row } of notes) {
+      for (const [i, { row }] of notes.entries()) {
         const cut = rows.filter((r) => r.lamport < row.lamport).at(-1);
         expect(cut).toMatchObject({ authorType: "assistant", status: "cancelled", content: [] });
+        expect(taken[i].lamport).toBe(cut?.lamport);
         // Nothing of it was written (the mock is slow to its first word), so
         // a client is told to drop it, not to show a blank stopped reply
         // above the note.
@@ -494,6 +575,17 @@ describe("progress review", () => {
       expect(childRows.filter((r) => r.authorType === "tool")).toEqual([]);
       expect(childRows.filter((r) => r.lamport < notes[0].row.lamport).at(-1)).toMatchObject({ authorType: "assistant", status: "cancelled" });
       expect(childRows.at(-1)).toMatchObject({ authorType: "assistant", status: "complete" });
+      // The ceiling asked no model, and still leaves a record and a card: the
+      // child's thread says why it ended. Under the child's own conversation.
+      await waitFor("the ceiling's record", async () => (await recordsOf(child.id)).length === 1);
+      const [record] = await recordsOf(child.id);
+      expect(record).toMatchObject({ trigger: "limit", forced: true, mode: null, verdict: null, action: "answer", model: null, digest: "", inputTokens: null });
+      expect(record.reason).toBe(notes[0].note?.reason);
+      const childRun = (await getStreamBroker().driver.listConvStreams(child.id))[0];
+      const ends = reviewsIn(await eventsOf(childRun));
+      expect(ends).toHaveLength(1);
+      expect(ends[0].review).toMatchObject({ id: record.id, trigger: "limit", forced: true, action: "answer" });
+      expect(await recordsOf(convId)).toEqual([]);
 
       // Its parent, which a person started, has no ceiling and got the report.
       expect(await notesOf(convId)).toEqual([]);

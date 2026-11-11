@@ -18,6 +18,10 @@ import { CHAT_APPROVAL_IDS, ToolApprovalSheet } from '@/components/agent/ToolApp
 import { ReviewStatus } from '@/components/chat/ReviewStatus';
 import { approvalKey } from '@/lib/pendingWaits';
 import { useOverlayGone } from '@/hooks/useOverlayGone';
+import { useRunReviews } from '@/hooks/useRunReviews';
+import { RunReviewContext } from '@/components/chat/RunReviewContext';
+import { RunReviewPanel } from '@/components/chat/RunReviewPanel';
+import { reviewLineMode } from '@/lib/progressReview';
 import { Composer } from '@/components/composer/Composer';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useSkills } from '@/hooks/useSkills';
@@ -77,6 +81,7 @@ export default function ChatScreen() {
     responseStartedAt,
     pendingApproval,
     reviewing,
+    runReviews: runReviewState,
     handleSend,
     handleRetry,
     applyLocalRewind,
@@ -207,6 +212,15 @@ export default function ChatScreen() {
   const approvalReason = pendingApproval
     ? activeConv?.msgs.find((m) => m.tools?.some((t) => t.callId === pendingApproval.callId))?.text
     : undefined;
+  // This chat's progress reviews: their cards in the thread and the panel
+  // one opens. The panel is only for reading, so it gives way to an approval
+  // rather than keeping one waiting behind it.
+  const runReviews = useRunReviews(runReviewState, activeId);
+  const closeReviewPanel = runReviews.panel.close;
+  const reviewPanelOpen = runReviews.sheetOpen;
+  useEffect(() => {
+    if (pendingApproval && reviewPanelOpen) closeReviewPanel();
+  }, [pendingApproval, reviewPanelOpen, closeReviewPanel]);
   // The approval opens by itself, so it waits for whatever is open over the
   // screen — this one's dialogs and sheets, the composer's `+`, the shell's
   // Settings — to close and leave: overlays never stack, and on iOS one put
@@ -221,6 +235,7 @@ export default function ChatScreen() {
       rewind.dialog !== null ||
       stages.dialog !== null ||
       plusMenuOpen ||
+      runReviews.sheetOpen ||
       shell.overlayOpen,
   );
 
@@ -327,6 +342,7 @@ export default function ChatScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
         >
         {activeConv ? (
+          <RunReviewContext.Provider value={runReviews.ui}>
           <MessageList
             conversation={activeConv}
             responseStartedAt={responseStartedAt}
@@ -338,7 +354,9 @@ export default function ChatScreen() {
             stageCard={stageCard}
             promptCache={promptCache}
             actions={rewind.actions}
+            reviews={runReviews.list}
           />
+          </RunReviewContext.Provider>
         ) : (
           <PromptSuggestions
             onPick={(text) => {
@@ -349,7 +367,7 @@ export default function ChatScreen() {
         )}
         {/* Above the composer, in the flow: a progress review of this run
             under way. Nothing to press — it decides on its own. */}
-        <ReviewStatus mode={reviewing} />
+        <ReviewStatus mode={reviewLineMode(reviewing, runReviews.list)} />
         {cacheNotice.banner && (
           <PromptCacheBanner banner={cacheNotice.banner} onDismiss={() => { if (cacheNotice.banner) cacheNotice.dismiss(cacheNotice.banner.key); }} />
         )}
@@ -400,6 +418,12 @@ export default function ChatScreen() {
         </>
       )}
 
+      <RunReviewPanel
+        review={runReviews.panel.review}
+        detail={runReviews.panel.detail}
+        onRetry={runReviews.panel.retry}
+        onClose={runReviews.panel.close}
+      />
       {pendingApproval && overlayGone && (
         <ToolApprovalSheet
           // A new question is a new sheet: re-rendering one in place could

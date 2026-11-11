@@ -33,6 +33,10 @@ import { useSession } from '@/lib/session';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { useMcpSwitches } from '@/hooks/useMcpSwitches';
 import { useSubAgents } from '@/hooks/useSubAgents';
+import { useRunReviews } from '@/hooks/useRunReviews';
+import { RunReviewContext } from '@/components/chat/RunReviewContext';
+import { RunReviewPanel } from '@/components/chat/RunReviewPanel';
+import { reviewLineMode } from '@/lib/progressReview';
 import { ConversationMenu } from '@/components/chat/ConversationMenu';
 import { SubAgentContext } from '@/components/subagents/SubAgentContext';
 import { SubAgentPanel } from '@/components/subagents/SubAgentPanel';
@@ -173,6 +177,7 @@ export default function RoutineChatScreen() {
     noRoom,
     dismissNoRoom,
     subAgents: subAgentState,
+    runReviews: runReviewState,
   } = useChatSession(token, undefined, scope);
   // What the "/" palette offers here, most-used first (#283).
   const { skills, noteUsed: noteSkillUsed } = useSkills(activeId, streaming);
@@ -181,20 +186,25 @@ export default function RoutineChatScreen() {
   // looking at one may stop its sub-agents and answer them.
   const subAgents = useSubAgents(subAgentState, activeConv?.id ?? null, activeConv !== null);
   const childApproval = pendingApproval ? null : subAgents.approvalChild;
+  // The chat's progress reviews: their cards, the panel one opens, and those
+  // of the sub-agent whose panel is open.
+  const runReviews = useRunReviews(runReviewState, activeConv?.id ?? null, subAgents.panel.view?.conversation_id ?? null);
   // The approval here is a sheet of its own, and this app never stacks one
   // overlay on another (iOS will not present one while the other is up, or
   // still leaving). So a sheet gives way to the run's own approval, and the
   // approval waits until the sheet has gone.
-  const sheetOpen = subAgents.listOpen || subAgents.panel.view !== null;
+  const sheetOpen = subAgents.listOpen || subAgents.panel.view !== null || runReviews.sheetOpen;
   const sheetGone = useOverlayGone(sheetOpen);
   const closeSubAgentPanel = subAgents.panel.close;
   const closeSubAgentList = subAgents.closeList;
+  const closeReviewPanel = runReviews.panel.close;
   useEffect(() => {
     if (pendingApproval && sheetOpen) {
       closeSubAgentPanel();
       closeSubAgentList();
+      closeReviewPanel();
     }
-  }, [pendingApproval, sheetOpen, closeSubAgentPanel, closeSubAgentList]);
+  }, [pendingApproval, sheetOpen, closeSubAgentPanel, closeSubAgentList, closeReviewPanel]);
   // A routine's chats exist only because a run made them, so there is never
   // a first send to carry choices on: every switch here is a PATCH.
   const mcp = useMcpSwitches(token, activeConv?.id ?? null, 'routine');
@@ -445,6 +455,7 @@ export default function RoutineChatScreen() {
         >
           {activeConv ? (
             <SubAgentContext.Provider value={subAgents.ui}>
+            <RunReviewContext.Provider value={runReviews.ui}>
               <MessageList
                 conversation={activeConv}
                 responseStartedAt={responseStartedAt}
@@ -455,7 +466,9 @@ export default function RoutineChatScreen() {
                 model={model ? modelName : undefined}
                 history={history}
                 actions={rewind.actions}
+                reviews={runReviews.list}
               />
+            </RunReviewContext.Provider>
             </SubAgentContext.Provider>
           ) : !listLoaded ? (
             <Box className="flex-1 items-center justify-center">
@@ -487,7 +500,7 @@ export default function RoutineChatScreen() {
               </Button>
             </Box>
           )}
-          <ReviewStatus mode={reviewing} />
+          <ReviewStatus mode={reviewLineMode(reviewing, runReviews.list)} />
           {activeConv && (
             <Composer
               onSend={(text, attachments) => { handleSend(text, model, attachments); }}
@@ -542,6 +555,13 @@ export default function RoutineChatScreen() {
         onAllow={subAgents.panel.allow}
         onDeny={subAgents.panel.deny}
         onClose={subAgents.panel.close}
+        reviews={runReviews.childList}
+      />
+      <RunReviewPanel
+        review={runReviews.panel.review}
+        detail={runReviews.panel.detail}
+        onRetry={runReviews.panel.retry}
+        onClose={runReviews.panel.close}
       />
 
       {pendingApproval && sheetGone && (

@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_PROVIDER_ID, type ReviewAction, type ReviewVerdict } from "@loxaic/types";
+import { DEFAULT_PROVIDER_ID, type ReviewAction, type ReviewVerdict, type RunReview } from "@loxaic/types";
 import type { CompletionResult } from "../../../inference/provider.ts";
 import { __resetSchedulerForTest, resetSlotProbe, tryAcquireRunSlot } from "../../../inference/scheduler.ts";
-import { DEFAULT_REVIEW_PROMPT, PAUSED_STEP_REVIEW_MAX_CONTEXT, ProgressReviewer, REPLY_REVIEW_CHARS } from "../progress-review.ts";
+import {
+  DEFAULT_REVIEW_PROMPT,
+  PAUSED_STEP_REVIEW_MAX_CONTEXT,
+  ProgressReviewer,
+  REPLY_REVIEW_CHARS,
+  reviewCard,
+  type ReviewRecord,
+} from "../progress-review.ts";
 
 /**
  * The reviewer's sequencing, driven directly: what it does with a decision
@@ -19,8 +26,8 @@ const MODEL = "llama-3.1-8b-instruct";
 const HOURS = 60 * 60 * 1000;
 
 type Emitted =
-  | { kind: "run.review.start"; mode: "alongside" | "paused" }
-  | { kind: "run.review.end"; verdict: ReviewVerdict | null; action: ReviewAction; reason?: string };
+  | { kind: "run.review.start"; mode: "alongside" | "paused"; review: RunReview }
+  | { kind: "run.review.end"; verdict: ReviewVerdict | null; action: ReviewAction; reason?: string; review: RunReview };
 
 /** A reviewer for a run that holds one of the backend's `slots`, as a real
  * run does: with one slot a review has to borrow the run's own. */
@@ -34,6 +41,8 @@ async function make(over: {
   limitMs?: number | null;
   task?: string;
   onStart?: () => void;
+  /** What writing a review's record does; the default returns at once. */
+  save?: (record: ReviewRecord) => Promise<void> | void;
 }) {
   process.env.INFERENCE_MAX_CONCURRENT_RUNS = String(over.slots ?? 1);
   resetSlotProbe();
@@ -41,6 +50,9 @@ async function make(over: {
   const state = { worked: 0, off: false, realTime: null as number | null };
   const events: Emitted[] = [];
   const usage: CompletionResult[] = [];
+  const records: ReviewRecord[] = [];
+  // The newest row the run has written, as the engine would say it.
+  const position = { lamport: 100 };
   const reviewer = new ProgressReviewer({
     prefs: {
       enabled: over.enabled ?? true,
@@ -61,6 +73,12 @@ async function make(over: {
     onUsage: (result) => usage.push(result),
     // A real reply is looked at every ten seconds; a test cannot wait that.
     replyPollMs: 100,
+    streamId: "stream-1",
+    position: () => position.lamport,
+    onReview: (record) => {
+      records.push(record);
+      return over.save?.(record);
+    },
     emit: (event) => {
       events.push(event);
       if (event.kind === "run.review.start") over.onStart?.();
@@ -69,7 +87,7 @@ async function make(over: {
   const step = (contextTokens: number | null = 1_000) => {
     reviewer.recordStep({ calls: [], ms: 1, thinkingChars: 0, completionTokens: 1 }, { text: "", thinking: "", contextTokens });
   };
-  return { reviewer, state, events, usage, step };
+  return { reviewer, state, events, usage, records, position, step };
 }
 
 async function waitFor(label: string, check: () => boolean, timeoutMs = 10_000): Promise<void> {
@@ -134,7 +152,7 @@ describe("ProgressReviewer", () => {
   });
 
   it("holds a run nobody is watching to its working time, whatever its user's setting", async () => {
-    const { reviewer, state, events, step } = await track(
+    const { reviewer, state, events, usage, records, step } = await track(
       make({ unattended: true, subagent: true, enabled: false, limitMs: 4 * HOURS, everySteps: 500, task: "an ordinary task" }),
     );
     state.worked = 4 * HOURS - 1;
@@ -148,7 +166,15 @@ describe("ProgressReviewer", () => {
     // Said once, and not by a review: nothing was sent to a model.
     step();
     expect(await reviewer.atStepEnd()).toBeNull();
-    expect(events).toEqual([]);
+    expect(usage).toEqual([]);
+    // It is recorded and carded like a review all the same, so the thread
+    // says why the run ended: an end with no start, and no model or digest.
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ mode: null, trigger: "limit", step: 2, workedMs: 4 * HOURS, lamport: 100, forced: true, action: "answer", digest: "", result: null });
+    expect(events).toEqual([
+      { kind: "run.review.end", verdict: null, reason: over?.reason, action: "answer", review: reviewCard("stream-1", records[0]) },
+    ]);
+    expect(events[0].review).toMatchObject({ trigger: "limit", forced: true, mode: null });
   });
 
   it("gives a run a person started no ceiling", async () => {
@@ -194,7 +220,7 @@ describe("ProgressReviewer", () => {
     const stop = reviewer.watchRequest(() => ({ text: "", thinking: "round and round", startedAt: Date.now() }));
     await waitFor("the reply to be cut short", () => interrupt.mock.calls.length > 0);
     stop();
-    expect(events[0]).toEqual({ kind: "run.review.start", mode: "alongside" });
+    expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "alongside" });
     expect(ended(events)).toMatchObject([{ verdict: "stuck", action: "steer" }]);
     expect(reviewer.takeReady()).toMatchObject({ action: "steer" });
   });
@@ -210,7 +236,7 @@ describe("ProgressReviewer", () => {
 
     reply.thinking += "x";
     await waitFor("the review of the reply", () => ended(events).length === 1);
-    expect(events[0]).toEqual({ kind: "run.review.start", mode: "alongside" });
+    expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "alongside" });
     // Looked at then: not again for writing a little more...
     reply.thinking += "x".repeat(REPLY_REVIEW_CHARS - 1);
     await new Promise((r) => setTimeout(r, 400));
@@ -263,7 +289,7 @@ describe("ProgressReviewer", () => {
     // Due on time: it is.
     m.state.worked = 30 * 60_000;
     expect(await m.reviewer.atStepEnd()).toMatchObject({ verdict: "stuck", action: "steer" });
-    expect(m.events[0]).toEqual({ kind: "run.review.start", mode: "paused" });
+    expect(m.events[0]).toMatchObject({ kind: "run.review.start", mode: "paused" });
 
     // A small context pauses for either.
     __resetSchedulerForTest();
@@ -277,7 +303,114 @@ describe("ProgressReviewer", () => {
     step(PAUSED_STEP_REVIEW_MAX_CONTEXT * 5);
     expect(await reviewer.atStepEnd()).toBeNull();
     await waitFor("the review to end", () => ended(events).length === 1);
-    expect(events[0]).toEqual({ kind: "run.review.start", mode: "alongside" });
+    expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "alongside" });
+  });
+
+  describe("a review's record", () => {
+    it("says where the run stood when the review started, what was read and what came of it", async () => {
+      const { reviewer, state, events, records, position, step } = await track(make({ everySteps: 2 }));
+      state.worked = 1_234;
+      step();
+      expect(await reviewer.atStepEnd()).toBeNull();
+      step();
+      position.lamport = 250;
+      const before = Date.now();
+      expect(await reviewer.atStepEnd()).toMatchObject({ verdict: "stuck", action: "steer" });
+
+      expect(records).toHaveLength(1);
+      const [record] = records;
+      expect(record).toMatchObject({ mode: "paused", trigger: "steps", step: 2, workedMs: 1_234, lamport: 250, verdict: "stuck", action: "steer", forced: false });
+      expect(record.reason).toContain("says stuck");
+      expect(record.startedAt).toBeGreaterThanOrEqual(before);
+      expect(record.endedAt).toBeGreaterThanOrEqual(record.startedAt);
+      // The digest the reviewer read, and the request it cost.
+      expect(record.digest).toContain("review-stuck: go round again");
+      expect(record.digest).not.toContain(DEFAULT_REVIEW_PROMPT.slice(0, 40));
+      expect(record.result?.usage.completion_tokens).toBeGreaterThan(0);
+
+      // Its card: under way at the start, the same id finished at the end.
+      const [start, end] = events;
+      expect(start).toEqual({
+        kind: "run.review.start",
+        mode: "paused",
+        review: { id: record.id, stream_id: "stream-1", lamport: 250, step: 2, worked_ms: 1_234, mode: "paused", trigger: "steps", started_at: record.startedAt },
+      });
+      expect(end.review).toEqual({ ...start.review, ended_at: record.endedAt, verdict: "stuck", reason: record.reason, action: "steer" });
+      expect(end.review).toEqual(reviewCard("stream-1", record));
+    });
+
+    it("is written before the review is said to have ended", async () => {
+      let saved = false;
+      const m = await track(
+        make({
+          save: async () => {
+            await new Promise((r) => setTimeout(r, 150));
+            saved = true;
+          },
+        }),
+      );
+      m.step();
+      const deciding = m.reviewer.atStepEnd();
+      await waitFor("the record to be handed over", () => m.records.length === 1);
+      expect(ended(m.events)).toEqual([]);
+      await deciding;
+      expect(saved).toBe(true);
+      expect(ended(m.events)).toHaveLength(1);
+    });
+
+    it("says nothing when the run ended while it was being written", async () => {
+      const m = await track(
+        make({
+          slots: 2,
+          save: async () => {
+            m.reviewer.dispose();
+            await new Promise((r) => setTimeout(r, 50));
+          },
+        }),
+      );
+      m.step();
+      expect(await m.reviewer.atStepEnd()).toBeNull();
+      await waitFor("the record to be handed over", () => m.records.length === 1);
+      await new Promise((r) => setTimeout(r, 200));
+      expect(ended(m.events)).toEqual([]);
+      expect(m.reviewer.hasDecision()).toBe(false);
+    });
+
+    it("names the cadence that made it due: time at a step, time or size mid-reply", async () => {
+      const onTime = await track(make({ everyMs: 1_000, everySteps: 500, task: "an ordinary task" }));
+      onTime.state.worked = 1_000;
+      onTime.step();
+      await onTime.reviewer.atStepEnd();
+      expect(onTime.records.map((r) => [r.trigger, r.mode, r.verdict, r.action])).toEqual([["time", "paused", "progressing", "none"]]);
+
+      __resetSchedulerForTest();
+      const bySize = await track(make({ slots: 2, everySteps: 500, task: "an ordinary task" }));
+      const stopSize = bySize.reviewer.watchRequest(() => ({ text: "", thinking: "x".repeat(REPLY_REVIEW_CHARS), startedAt: Date.now() }));
+      await waitFor("the review of the reply", () => bySize.records.length === 1);
+      stopSize();
+      expect(bySize.records.map((r) => [r.trigger, r.mode, r.step])).toEqual([["in-reply", "alongside", 0]]);
+      // The digest it read had the reply still being written in it.
+      expect(bySize.records[0].digest).toContain("xxxxxxxx");
+
+      __resetSchedulerForTest();
+      const midReply = await track(make({ slots: 2, everyMs: 300, everySteps: 500, task: "an ordinary task" }));
+      midReply.state.realTime = Date.now();
+      const stopTime = midReply.reviewer.watchRequest(() => ({ text: "", thinking: "short", startedAt: Date.now() }));
+      await waitFor("the review on time", () => midReply.records.length === 1);
+      stopTime();
+      expect(midReply.records.map((r) => [r.trigger, r.mode])).toEqual([["time", "alongside"]]);
+    });
+
+    it("is not kept for a review a stop abandoned", async () => {
+      const m = await track(make({ task: "review-slow: wait" }));
+      m.step();
+      const deciding = m.reviewer.atStepEnd();
+      await waitFor("the review to start", () => m.events.length === 1);
+      m.reviewer.dispose();
+      expect(await deciding).toBeNull();
+      expect(m.records).toEqual([]);
+      expect(ended(m.events)).toEqual([]);
+    });
   });
 
   it("hands every finished review's usage on, once", async () => {
