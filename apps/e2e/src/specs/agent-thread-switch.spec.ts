@@ -16,8 +16,9 @@ import { browser, expect } from '@wdio/globals';
 import { apiToken, uniqueCreds } from '../helpers/auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { expectTextAbsent, isVisible, scrollTo, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
+  closeThreadKeyboard,
   REVIEW_LINGER_DONE,
   REVIEW_LINGER_PROMPT,
   MOCK_TOOL_DONE,
@@ -31,6 +32,7 @@ import {
   signUp,
   startNewAgentRun,
   waitForRunDone,
+  waitForRunReviews,
 } from '../helpers/app.ts';
 
 /** The mock waits eight seconds, then asks for fs_write: long enough to be
@@ -132,17 +134,30 @@ describe('switching agent threads while a run is waiting', () => {
     // Reviewed after three steps; the mock's reviewer takes twelve seconds.
     await patchPrefs(creds, { progressCheckSteps: 3 });
     const reviewing = await startRun('auto', REVIEW_LINGER_PROMPT);
-    await waitForFreshText('run.review.status', 'Paused to check progress', 90_000);
+    // On an iPhone the keyboard left up by the send leaves the list a sliver.
+    await closeThreadKeyboard();
+    // The review under way is a card in its own thread's transcript (it has
+    // no record, and so no id to select it by, until it ends).
+    const UNDER_WAY = 'Paused to check progress';
+    const gone = async (timeoutMsg: string) =>
+      browser.waitUntil(async () => expectTextAbsent(UNDER_WAY).then(() => true, () => false), { timeout: 20_000, timeoutMsg });
+    await waitForTextIn('chat.messageList', UNDER_WAY, 90_000);
+    expect(await isVisible('run.review.status')).toBe(false);
 
     await selectThread(other, 'agent');
-    await waitForAbsent('run.review.status');
+    await gone("the other thread showed a review that is not its run's");
 
     await selectThread(reviewing, 'agent');
-    await waitForFreshText('run.review.status', 'Paused to check progress');
+    await waitForTextIn('chat.messageList', UNDER_WAY, 30_000);
     await shot('agent-switch-review-back');
 
     await waitForRunDone(creds, reviewing, 90_000);
-    await waitForAbsent('run.review.status');
+    // Finished, the same card says what the review found, in this thread.
+    const [review] = await waitForRunReviews(creds, reviewing, 1);
+    // The run went on for more steps: the card is above the fold by now.
+    await scrollTo(`review.card.${review.id}.title`);
+    await waitForFreshText(`review.card.${review.id}.title`, 'Progress check · progressing');
+    await gone('the card still said the review was under way after the run ended');
     if (!(await getMessageTexts(creds, reviewing)).some((t) => t.includes(REVIEW_LINGER_DONE))) {
       throw new Error('the run did not finish its drill after the review');
     }

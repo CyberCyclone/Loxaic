@@ -638,7 +638,8 @@ export async function sendInNewRun(creds: Pick<Credentials, 'email' | 'password'
  * On an iPhone the keyboard stays up after a send and leaves the thread a
  * sliver above it, with a card scrolled out of it — and XCUITest reports an
  * off-screen element as not displayed. A tap on the list closes the keyboard
- * (the list does not keep it open for taps).
+ * (the list does not keep it open for taps), and a panel that tap opened by
+ * landing on a card is closed again.
  */
 export async function closeThreadKeyboard(): Promise<void> {
   if (platform() !== 'ios' || !(await browser.isKeyboardShown().catch(() => false))) return;
@@ -646,7 +647,17 @@ export async function closeThreadKeyboard(): Promise<void> {
   // Best effort. With an approval bar up as well the list has no room at
   // all and is not there to tap — and the bar itself is above the keyboard.
   const there = await list.waitForExist({ timeout: 5_000 }).then(() => true, () => false);
-  if (there) await list.click().catch(() => undefined);
+  if (!there) return;
+  await list.click().catch(() => undefined);
+  // The tap lands in the middle of the sliver of list above the keyboard,
+  // which can be a progress review's card by then (a fast run is reviewed
+  // within a second of the send): that opens the review's panel over the
+  // thread. Closed again, so the thread is what the spec goes on to read.
+  await browser.pause(400);
+  if (await isVisible('review.close').catch(() => false)) {
+    await tap('review.close');
+    await waitForAbsent('review.close');
+  }
 }
 
 /**
