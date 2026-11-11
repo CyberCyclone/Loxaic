@@ -21,6 +21,7 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 - When the node under a testID is replaced (download status → finished pill, a panel reopening), use `waitForFreshText`; `waitForTextIn` holds one reference. Under a sheet on native, `waitForTextIn` finds the card behind it; use `waitForFreshText`.
 - Wait for a dismissed sheet's or closed modal's contents with `waitForAbsent` (re-queries), never `waitForGone`: UiAutomator2 keeps reporting a closed window's element as displayed.
 - A progress review's card carries its review id (`review.card.<id>`): read it with `waitForRunReviews`, under the sub-agent's own conversation id for a child's. A review still under way has no record, so assert its card by its words in `chat.messageList`.
+- Bring an older card in a thread on screen with `scrollThreadBackTo`, by its pressable's testID; `scrollTo`'s drags start on the agent surface's run header on a phone and move nothing.
 - Use `sendInNewRun` to find a new conversation (the one absent before the send), never "the newest run".
 - Size windows with `helpers/window.ts`, never `browser.setWindowSize`. Phone-width web cases use `browser.setViewport` (Chrome won't go below 500 px).
 - A spec must pass alone and in any order: run `provisionAdmin()` in its own `before` if it uses the admin API.

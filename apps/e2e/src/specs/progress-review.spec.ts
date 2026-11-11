@@ -53,6 +53,7 @@ import {
   resetInferenceSettings,
   selectThread,
   sendInNewRun,
+  scrollThreadBackTo,
   sendMessage,
   signUp,
   startNewAgentRun,
@@ -359,6 +360,9 @@ describe('the progress review', () => {
     await expectNobodyAsked();
     // The same card, finished: what the review found.
     const [review] = await waitForRunReviews(creds, conversationId, 1, 60_000);
+    // The run carries on meanwhile, and on a phone the card is soon above
+    // the fold, where its words cannot be read: brought back by its pressable.
+    await scrollThreadBackTo(`review.card.${review.id}.open`);
     await waitForFreshText(cardTitle(review.id), 'Progress check · progressing', 30_000);
     await browser.waitUntil(async () => expectTextAbsent('Paused to check progress').then(() => true, () => false), {
       timeout: 30_000,

@@ -661,6 +661,35 @@ export async function closeThreadKeyboard(): Promise<void> {
 }
 
 /**
+ * Brings something further back in the open thread onto the screen: a card a
+ * run has since written past. `scrollTo` cannot on a phone: its drags start a
+ * quarter of the way down the screen, which on the agent surface is the run's
+ * header, not the list. These stay inside the list, and move towards older
+ * messages only (the list opens on its newest).
+ */
+export async function scrollThreadBackTo(id: string, timeout = 20_000): Promise<void> {
+  const p = platform();
+  if (p === 'web' || p === 'electron') {
+    await scrollTo(id, timeout);
+    return;
+  }
+  const { width, height } = await browser.getWindowSize();
+  for (let i = 0; i < 20; i++) {
+    if (await isVisible(id).catch(() => false)) return;
+    await browser
+      .action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ x: Math.round(width / 2), y: Math.round(height * 0.4) })
+      .down()
+      .pause(100)
+      .move({ duration: 400, x: Math.round(width / 2), y: Math.round(height * 0.62) })
+      .up()
+      .perform();
+    await browser.pause(400);
+  }
+  await byTestId(id).waitForDisplayed({ timeout });
+}
+
+/**
  * The seconds an elapsed label shows: "12.3s" or "4m 05s". NaN for anything
  * else, so a comparison against it fails rather than passing on a label that
  * merely contains an "s".

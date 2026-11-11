@@ -16,9 +16,10 @@ import { browser, expect } from '@wdio/globals';
 import { apiToken, uniqueCreds } from '../helpers/auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { expectTextAbsent, isVisible, scrollTo, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { expectTextAbsent, isVisible, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   closeThreadKeyboard,
+  scrollThreadBackTo,
   REVIEW_LINGER_DONE,
   REVIEW_LINGER_PROMPT,
   MOCK_TOOL_DONE,
@@ -154,8 +155,10 @@ describe('switching agent threads while a run is waiting', () => {
     await waitForRunDone(creds, reviewing, 90_000);
     // Finished, the same card says what the review found, in this thread.
     const [review] = await waitForRunReviews(creds, reviewing, 1);
-    // The run went on for more steps: the card is above the fold by now.
-    await scrollTo(`review.card.${review.id}.title`);
+    // The run went on for more steps (and a second review): the first
+    // review's card is well above the fold by now.
+    // By its pressable: on a phone that is what a lookup can see to scroll to.
+    await scrollThreadBackTo(`review.card.${review.id}.open`);
     await waitForFreshText(`review.card.${review.id}.title`, 'Progress check · progressing');
     await gone('the card still said the review was under way after the run ended');
     if (!(await getMessageTexts(creds, reviewing)).some((t) => t.includes(REVIEW_LINGER_DONE))) {
