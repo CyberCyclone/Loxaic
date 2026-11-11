@@ -25,10 +25,12 @@ import {
   answerOverdue,
   answerStarted,
   answerThinkingChars,
+  answerWritten,
   carriedReply,
   clampProgressCheckMs,
   clampProgressCheckSteps,
   clip,
+  onlyToolCallMarkup,
   parseVerdict,
   resolveReviewPrefs,
   reviewDeadlineMs,
@@ -82,6 +84,43 @@ describe("answerStarted", () => {
     expect(answerStarted({ text: " \n\t" })).toBe(false);
     expect(answerStarted({ text: "I" })).toBe(true);
     expect(answerStarted({ text: "\n\nSection 1" })).toBe(true);
+  });
+});
+
+describe("a tool call written out as text", () => {
+  const REAL = "<tool_call>\n<function=bash>\n<parameter=command>\ncat > /tmp/solve.py <<'EOF'\nprint(1)\nEOF\npython3 /tmp/solve.py\n</parameter>\n</function>\n</tool_call>";
+
+  it("is recognised when it is the whole reply", () => {
+    expect(onlyToolCallMarkup(REAL)).toBe(true);
+    expect(onlyToolCallMarkup(`\n\n${REAL}\n`)).toBe(true);
+    // Hermes writes JSON inside; several calls in a row are still only calls.
+    expect(onlyToolCallMarkup('<tool_call>{"name": "bash", "arguments": {"command": "ls"}}</tool_call>')).toBe(true);
+    expect(onlyToolCallMarkup(`${REAL}\n${REAL}`)).toBe(true);
+    // Without the wrapper, and left open by a reply cut at its token limit.
+    expect(onlyToolCallMarkup("<function=bash>\n<parameter=command>ls</parameter>\n</function>")).toBe(true);
+    expect(onlyToolCallMarkup("<tool_call>\n<function=bash>\n<parameter=command>\ncat > /tmp/a")).toBe(true);
+    expect(onlyToolCallMarkup(`${REAL}\n<tool_call>\n<function=bash>`)).toBe(true);
+  });
+  it("is not what a reply with any prose beside it is", () => {
+    expect(onlyToolCallMarkup(`The answer is 42.\n${REAL}`)).toBe(false);
+    expect(onlyToolCallMarkup(`${REAL}\nThat would print 1.`)).toBe(false);
+    expect(onlyToolCallMarkup("To run it, use <tool_call> in your template.")).toBe(false);
+    expect(onlyToolCallMarkup("The answer is 42.")).toBe(false);
+  });
+  it("is not a blank reply, which is unwritten for its own reason", () => {
+    expect(onlyToolCallMarkup("")).toBe(false);
+    expect(onlyToolCallMarkup(" \n")).toBe(false);
+  });
+  it("leaves the forms it does not know as answers", () => {
+    expect(onlyToolCallMarkup('[TOOL_CALLS] [{"name": "bash", "arguments": {}}]')).toBe(false);
+    expect(onlyToolCallMarkup('{"name": "bash", "arguments": {"command": "ls"}}')).toBe(false);
+  });
+  it("makes an answering reply unwritten, as a blank one is", () => {
+    expect(answerWritten("The answer is 42.")).toBe(true);
+    expect(answerWritten(`Run this:\n${REAL}`)).toBe(true);
+    expect(answerWritten(REAL)).toBe(false);
+    expect(answerWritten("")).toBe(false);
+    expect(answerWritten("\n ")).toBe(false);
   });
 });
 

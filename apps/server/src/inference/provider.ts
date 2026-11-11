@@ -430,6 +430,16 @@ const MOCK_RUMINATE_MATCH = /\bthink it over\b/i;
 const MOCK_RUMINATE_ALWAYS_MATCH = /\bthink it over whatever you are told\b/i;
 const MOCK_RUMINATE_CHUNKS = 1_500;
 
+/**
+ * A prompt the mock answers, once its tools are switched off, by writing the
+ * call it would have made as text: what a real model did with its last
+ * request. "once" makes it do so only while it may still think, so the request
+ * after it (thinking off) is answered in words.
+ */
+const MOCK_SPELLED_CALL_MATCH = /\bwrite the call out as text\b/i;
+const MOCK_SPELLED_CALL_ONCE_MATCH = /\bwrite the call out as text once\b/i;
+const MOCK_SPELLED_CALL = "<tool_call>\n<function=bash>\n<parameter=command>\npython3 /tmp/solve.py\n</parameter>\n</function>\n</tool_call>";
+
 /** A prompt whose tool call the mock makes without a word first. Real models
  * do this all the time; the mock's preamble meant no spec ever saw a reply
  * that is only a tool call, which the thread renders differently. */
@@ -839,6 +849,13 @@ async function* mockStream(
       await new Promise((r) => setTimeout(r, 10));
     }
     fullText = "";
+  } else if (
+    noTools &&
+    MOCK_SPELLED_CALL_MATCH.test(prompt) &&
+    !(MOCK_SPELLED_CALL_ONCE_MATCH.test(prompt) && options.thinking?.reasoning_effort === "none")
+  ) {
+    fullText = MOCK_SPELLED_CALL;
+    yield* emit(fullText);
   } else if (MOCK_EMPTY_MATCH.test(prompt)) {
     fullText = "";
   } else if (MOCK_THINKING_MATCH.test(prompt) && !alreadyRanTools) {

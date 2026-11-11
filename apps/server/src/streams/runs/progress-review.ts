@@ -234,6 +234,40 @@ export function answerOverdue(reply: { text: string; thinking: string }, budget:
   return reply.text.trim() === "" && reply.thinking.length > budget;
 }
 
+/**
+ * Whether a reply's text is nothing but tool calls written out as text.
+ *
+ * A model told to answer with its tools switched off can write the call it
+ * wanted to make instead of an answer: a real one's whole last reply was
+ * `<tool_call><function=bash>…</function></tool_call>`, a script nobody ran,
+ * and the run took it for the answer. Nothing parses these (with tools off no
+ * backend turns them into calls), so this only recognises the shape:
+ *
+ * - `<tool_call>…</tool_call>` blocks, whatever is inside (Qwen and Hermes
+ *   templates: JSON or `<function=…>`), any number of them;
+ * - one left open at the end, as a reply cut at its token limit leaves it;
+ * - bare `<function=name>…</function>` blocks.
+ *
+ * Any prose beside them makes the reply an answer: a sentence with a stray
+ * fragment of a call is still something to read. Not recognised, and so
+ * still taken as an answer: Mistral's `[TOOL_CALLS]`, Llama's
+ * `<|python_tag|>`, a bare JSON object naming a function, and a call inside a
+ * code fence.
+ */
+export function onlyToolCallMarkup(text: string): boolean {
+  const rest = text
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
+    .replace(/<function=[^>]*>[\s\S]*?<\/function>/g, "")
+    .replace(/<tool_call>[\s\S]*$/, "");
+  return text.trim() !== "" && rest.trim() === "";
+}
+
+/** Whether an answering reply wrote an answer: words, and not only a tool
+ * call spelled out. */
+export function answerWritten(text: string): boolean {
+  return text.trim() !== "" && !onlyToolCallMarkup(text);
+}
+
 /** The reason on the note that asks, one last time, for an answer. */
 export const ANSWER_UNWRITTEN_REASON = "You were asked for your final answer and have not written one.";
 

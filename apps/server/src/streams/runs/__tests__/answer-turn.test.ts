@@ -340,6 +340,54 @@ describe("a run that only thinks", () => {
     expect(rows.filter((r) => r.status === "cancelled")).toEqual([]);
   });
 
+  it("ends a run on a note when its answer, asked for twice, is only a tool call written out as text", async () => {
+    useScenarios([{ match: "review-stuck", steps: steps(12), finalText: "[Mock] never reached.\n" }]);
+    const convId = await newConversation();
+    const streamId = await run("review-stuck: write the call out as text", convId);
+
+    // The first answer was a call spelled out, so it was asked once more with
+    // thinking off; that one was the same, and the run ended saying so.
+    expect(answering().map((r) => r.thinking)).toEqual([THINKING_MEDIUM, THINKING_OFF]);
+    expect(await statusOf(streamId)).toBe("complete");
+    const rows = await rowsOf(convId);
+    const notes = await notesOf(convId);
+    expect(notes.map((n) => n.note?.action)).toEqual(["steer", "answer", "answer", "ended"]);
+    expect(notes[2].note?.reason).toBe(ANSWER_UNWRITTEN_REASON);
+    expect(rows.at(-1)?.id).toBe(notes[3].row.id);
+    // Each spelled-out call stays in the thread as a reply that was cut off,
+    // never as the run's answer: no complete reply holds the markup.
+    const spelled = rows.filter((r) => r.authorType === "assistant" && textOf(r.content).includes("<tool_call>"));
+    expect(spelled).toHaveLength(2);
+    expect(spelled.every((r) => r.status === "cancelled")).toBe(true);
+    const events = (await getStreamBroker().readFrom(streamId, 0)).map((r) => r.event);
+    for (const row of spelled) {
+      expect(events.filter((e) => e.kind === "message.end" && e.message_id === row.id)).toMatchObject([{ status: "cancelled" }]);
+    }
+    // What it wrote is carried in the notes, so the last request and the next
+    // turn both know of it...
+    expect(notes[2].note?.carried).toContain("Your reply was interrupted. It had written:\n<tool_call>");
+    expect(notes[3].note?.carried).toContain("<function=bash>");
+    // ...and the prompt replays as it was sent: a cancelled row is never sent.
+    const replay = (await loadHistory(convId)).messages.map((m) => JSON.stringify(m));
+    const last = requests.at(-1)?.messages ?? [];
+    expect(replay.slice(0, last.length - 1)).toEqual(last.slice(1));
+    expect(replay.some((m) => (JSON.parse(m) as { role: string; content?: unknown }).role === "assistant" && m.includes("<tool_call>"))).toBe(false);
+  });
+
+  it("keeps an answer in words from the last request, after a first that was only a tool call", async () => {
+    useScenarios([{ match: "review-stuck", steps: steps(12), finalText: "[Mock] never reached.\n" }]);
+    const convId = await newConversation();
+    const streamId = await run("review-stuck: write the call out as text once", convId);
+
+    expect(answering().map((r) => r.thinking)).toEqual([THINKING_MEDIUM, THINKING_OFF]);
+    expect(await statusOf(streamId)).toBe("complete");
+    expect((await notesOf(convId)).map((n) => n.note?.action)).toEqual(["steer", "answer", "answer"]);
+    const rows = await rowsOf(convId);
+    expect(rows.at(-1)).toMatchObject({ authorType: "assistant", status: "complete" });
+    expect(textOf(rows.at(-1)?.content)).toContain("Answering now without tools");
+    expect(rows.filter((r) => r.status === "cancelled")).toHaveLength(1);
+  });
+
   it("gives a parent a report from a sub-agent that never answers", async () => {
     useScenarios([
       {

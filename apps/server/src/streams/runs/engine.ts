@@ -116,6 +116,7 @@ import {
   ANSWER_UNWRITTEN_REASON,
   answerOverdue,
   answerThinkingChars,
+  answerWritten,
   carriedReply,
   type DigestStep,
   type ReviewDecision,
@@ -1615,8 +1616,15 @@ export async function runToolLoop(ctx: {
         // once more, or ended on a note saying so (`answerUnwritten`). Its
         // row holds no text, so no replay sends it and nothing joins the
         // prompt here either.
-        if (answerNow && !text.trim()) {
-          producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
+        // A reply that is only a tool call written out as text is no answer
+        // either (`onlyToolCallMarkup`). That one does hold text, which a
+        // replay would send and this prompt does not: its row ends cancelled,
+        // as a reply cut short does. It stays in the thread as what was
+        // written, never as the run's answer, and the note carries it on.
+        if (answerNow && !answerWritten(text)) {
+          const spelledOut = text.trim() !== "";
+          if (spelledOut) await db.update(messages).set({ status: "cancelled" }).where(eq(messages.id, assistantMsgId));
+          producer.emit({ kind: "message.end", message_id: assistantMsgId, status: spelledOut ? "cancelled" : "complete", usage: iterationUsage });
           if (await answerUnwritten({ text, thinking }, assistantMsgId, iterationUsage)) continue;
           break;
         }
