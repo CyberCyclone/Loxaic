@@ -120,11 +120,18 @@ describe('sub-agents', () => {
 
   afterEach(async () => {
     // A case that failed with a sheet open must not take the rest with it.
-    for (const close of ['subagent.close', 'subagent.list.close']) {
+    // The plan's sheet too: a case that fails before closing it left it over
+    // the whole screen, and every later case then could not reach the thread
+    // list or the sidebar.
+    for (const close of ['subagent.close', 'subagent.list.close', 'agent.plan.close']) {
       // Tolerant: a sheet that is already on its way out is still "visible"
       // for a frame, and gone by the time the tap arrives.
       if (await isVisible(close).catch(() => false)) await byTestId(close).click().catch(() => undefined);
     }
+    // Nor leave the app on a routine's chat: on a phone that screen has Back
+    // where the sidebar's menu button is, and every later case starts from
+    // the sidebar.
+    if (await isVisible('routineChat.back').catch(() => false)) await byTestId('routineChat.back').click().catch(() => undefined);
   });
 
   after(async () => {
