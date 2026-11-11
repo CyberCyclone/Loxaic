@@ -522,10 +522,11 @@ describe("progress review", () => {
     "reviews a reply still being written when its run has the only run slot and the backend has another",
     async () => {
       // One run allowed, and this is it: no run slot is ever spare. The
-      // backend holds two, so the review takes the lane instead of never
+      // model holds two, so the review takes the lane instead of never
       // happening (a reply cannot be paused half-written).
       process.env.INFERENCE_MAX_CONCURRENT_RUNS = "1";
-      const undo = await reportBackendSlots(2);
+      // The run's model has the two slots; a second model is served, not loaded.
+      const { undo } = await reportBackendSlots([{ id: MODEL, slots: 2 }, { slots: null }]);
       try {
         await setPrefs({ progressCheckMs: null, progressCheckSteps: 500 });
         process.env.PROGRESS_CHECK_MS = "2000";

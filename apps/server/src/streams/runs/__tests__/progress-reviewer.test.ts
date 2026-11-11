@@ -318,9 +318,12 @@ describe("ProgressReviewer", () => {
       await undo?.();
       undo = null;
     });
+    /** The run's model loaded with `slots` slots, on a router that also
+     * serves a second model, not loaded. */
+    const modelSlots = async (slots: number) => (await reportBackendSlots([{ id: MODEL, slots }, { slots: null }])).undo;
 
     it("reviews beside the run at a step boundary when the backend has slots the limit leaves idle", async () => {
-      undo = await reportBackendSlots(4);
+      undo = await modelSlots(4);
       const lane: boolean[] = [];
       const { reviewer, events, step } = await track(
         make({ slots: 2, otherRuns: 1, everySteps: 1, onStart: () => lane.push(schedulerState().reviewLane) }),
@@ -338,7 +341,7 @@ describe("ProgressReviewer", () => {
     });
 
     it("looks at a long reply while it is written, which nothing did before", async () => {
-      undo = await reportBackendSlots(4);
+      undo = await modelSlots(4);
       const { reviewer, events } = await track(make({ slots: 2, otherRuns: 1, everySteps: 500 }));
       const interrupt = vi.fn();
       reviewer.interrupt = interrupt;
@@ -350,7 +353,7 @@ describe("ProgressReviewer", () => {
     });
 
     it("takes a spare run slot before the lane when there is one", async () => {
-      undo = await reportBackendSlots(4);
+      undo = await modelSlots(4);
       const lane: boolean[] = [];
       const { reviewer, events, step } = await track(make({ slots: 2, everySteps: 1, onStart: () => lane.push(schedulerState().reviewLane) }));
       step();
@@ -361,7 +364,7 @@ describe("ProgressReviewer", () => {
     });
 
     it("pauses the run as before when the backend has no more slots than the limit", async () => {
-      undo = await reportBackendSlots(2);
+      undo = await modelSlots(2);
       const { reviewer, state, events, step } = await track(make({ slots: 2, otherRuns: 1, everyMs: 200, everySteps: 1 }));
       step();
       expect(await reviewer.atStepEnd()).toMatchObject({ verdict: "stuck", action: "steer" });
@@ -377,10 +380,19 @@ describe("ProgressReviewer", () => {
       expect(interrupt).not.toHaveBeenCalled();
     });
 
-    it("pauses the run when another review already has the lane", async () => {
-      undo = await reportBackendSlots(4);
+    it("pauses the run when its own model is not the loaded one with slots to spare", async () => {
+      // Four slots, but on the other model: nothing says this run's has any.
+      undo = (await reportBackendSlots([{ id: MODEL, slots: null }, { slots: 4 }])).undo;
       const { reviewer, events, step } = await track(make({ slots: 2, otherRuns: 1, everySteps: 1 }));
-      const taken = await tryAcquireReviewLane(DEFAULT_PROVIDER_ID);
+      step();
+      expect(await reviewer.atStepEnd()).toMatchObject({ verdict: "stuck", action: "steer" });
+      expect(events[0]).toMatchObject({ kind: "run.review.start", mode: "paused" });
+    });
+
+    it("pauses the run when another review already has the lane", async () => {
+      undo = await modelSlots(4);
+      const { reviewer, events, step } = await track(make({ slots: 2, otherRuns: 1, everySteps: 1 }));
+      const taken = await tryAcquireReviewLane(DEFAULT_PROVIDER_ID, MODEL);
       expect(taken).not.toBeNull();
       step();
       expect(await reviewer.atStepEnd()).toMatchObject({ verdict: "stuck", action: "steer" });

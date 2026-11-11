@@ -56,7 +56,7 @@
  * Process-local, like the run registry beside it. #78 owns making this work
  * across a cluster.
  */
-import { DEFAULT_PROVIDER_ID } from "@loxaic/types";
+import { DEFAULT_PROVIDER_ID, parseModelRef } from "@loxaic/types";
 import { getInferenceSettings } from "../settings.ts";
 // Type-only, so it is erased: the value import stays dynamic below, because
 // `providers.ts` → `models.ts` → this module is a real runtime cycle.
@@ -115,6 +115,8 @@ interface Queue {
   /** The review lane is taken: see `tryAcquireReviewLane`. Beside `running`,
    * never part of it. */
   reviewLane: boolean;
+  /** One built-in model's own slot count, by model id, cached like `probed`. */
+  modelSlots: Map<string, { value: number | null; at: number }>;
 }
 
 const queues = new Map<string, Queue>();
@@ -122,7 +124,7 @@ const queues = new Map<string, Queue>();
 function queueFor(providerId: string): Queue {
   let q = queues.get(providerId);
   if (!q) {
-    q = { running: 0, exclusive: false, waiting: [], probed: null, reviewLane: false };
+    q = { running: 0, exclusive: false, waiting: [], probed: null, reviewLane: false, modelSlots: new Map() };
     queues.set(providerId, q);
   }
   return q;
@@ -273,21 +275,33 @@ export async function tryAcquireRunSlot(providerId: string = DEFAULT_PROVIDER_ID
  * two backend slots sat idle, and a reply that streamed for an hour was never
  * looked at at all: a look mid-reply has no slot of its own to fall back on.
  *
- * - Open only when the backend itself says it has more slots than the limit
- *   (the same probe `resolveMaxConcurrent` falls back on). A backend that will
- *   not say, or has no more than the limit, has no lane: there the request
- *   would land in a slot a run's prefix is cached in.
- * - One holder per provider. The limit plus one never exceeds the backend's
- *   slots, whatever the reviews on spare run slots are doing.
+ * - Open only when the backend itself says it has more slots than the limit.
+ *   A backend that will not say, or has no more than the limit, has no lane:
+ *   there the request would land in a slot a run's prefix is cached in.
+ * - On the built-in backend the count is `model`'s own, as the router reports
+ *   it while that model is loaded (`reviewSlots`): the router serves several
+ *   models, each with its own slots, and the review goes to the run's model,
+ *   which is loaded while the run is going. Not loaded, or no answer: unknown,
+ *   and the lane stays shut. An added provider serves one model, and its count
+ *   is the provider's.
+ * - One holder per provider. At most `max` runs (and reviews on spare run
+ *   slots) are admitted across the provider, so at most `max` are on this
+ *   model, and `max + 1 <= slots` holds for it.
+ * - The count is cached for `PROBE_TTL_MS`, as the provider's is: a model
+ *   reloaded with fewer slots can keep a lane open for up to that long.
  * - Takes nothing from `running` and is no waiter, so it cannot delay or
  *   starve a run in line, and `release()` has nothing to pump.
  * - Shut while the backend is held exclusively or a switch is waiting for it:
  *   a model reload would cut the review off. A lane already taken does not
  *   hold a switch back; the review it carries is lost, as no verdict.
  */
-export async function tryAcquireReviewLane(providerId: string = DEFAULT_PROVIDER_ID): Promise<{ release(): void } | null> {
+export async function tryAcquireReviewLane(
+  providerId: string,
+  /** The model reference the review will be sent to. */
+  model: string,
+): Promise<{ release(): void } | null> {
   const max = await resolveMaxConcurrent(providerId);
-  const slots = await backendSlots(providerId);
+  const slots = await reviewSlots(providerId, model);
   // After both awaits, so the checks and the take are one synchronous step.
   const q = queueFor(providerId);
   if (slots === null || slots <= max) return null;
@@ -423,14 +437,14 @@ function pump(providerId: string): void {
 export function kickScheduler(providerId?: string): void {
   if (providerId === undefined) {
     for (const [id, q] of queues) {
-      q.probed = null;
+      forgetProbes(q);
       pump(id);
     }
     // A provider added since the last run has no queue yet; it will resolve
     // its limit fresh when its first run arrives, so there is nothing to kick.
     return;
   }
-  queueFor(providerId).probed = null;
+  forgetProbes(queueFor(providerId));
   pump(providerId);
 }
 
@@ -493,15 +507,30 @@ export async function resolveMaxConcurrent(providerId: string = DEFAULT_PROVIDER
 }
 
 /**
- * How many slots the backend itself reports, whatever limit is configured
- * over it; null when it does not say or the provider cannot be resolved
- * (which is never probed: see `resolveMaxConcurrent`).
+ * How many slots the backend has for a review sent to `model`, whatever limit
+ * is configured over it; null when it does not say.
+ *
+ * Built-in: that model's own count from the router, which answers only for a
+ * loaded model. Never `builtinSlots()`, which is null as soon as a second
+ * model is servable: that is the right floor for how many runs to admit, and
+ * the wrong answer to "does this loaded model have a slot to spare".
+ * Added provider: the provider's own probe; one that cannot be resolved is
+ * never probed (see `resolveMaxConcurrent`).
  */
-async function backendSlots(providerId: string): Promise<number | null> {
-  if (providerId === DEFAULT_PROVIDER_ID) return probeBackendSlots(providerId, undefined);
-  const { getProviderById } = await import("./providers.ts");
-  const provider = await getProviderById(providerId).catch(() => null);
-  return provider ? probeBackendSlots(providerId, provider) : null;
+async function reviewSlots(providerId: string, model: string): Promise<number | null> {
+  if (providerId !== DEFAULT_PROVIDER_ID) {
+    const { getProviderById } = await import("./providers.ts");
+    const provider = await getProviderById(providerId).catch(() => null);
+    return provider ? probeBackendSlots(providerId, provider) : null;
+  }
+  const id = parseModelRef(model).upstreamModel;
+  const q = queueFor(providerId);
+  const cached = q.modelSlots.get(id);
+  if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.value;
+  const { routerEndpoint, routerModelProps } = await import("../llama/router.ts");
+  const value = routerEndpoint() ? ((await routerModelProps(id))?.totalSlots ?? null) : null;
+  q.modelSlots.set(id, { value, at: Date.now() });
+  return value;
 }
 
 async function probeBackendSlots(providerId: string, provider: ResolvedProvider | undefined): Promise<number | null> {
@@ -515,7 +544,12 @@ async function probeBackendSlots(providerId: string, provider: ResolvedProvider 
 
 /** Test seam: forget the cached backend probes. */
 export function resetSlotProbe(): void {
-  for (const q of queues.values()) q.probed = null;
+  for (const q of queues.values()) forgetProbes(q);
+}
+
+function forgetProbes(q: Queue): void {
+  q.probed = null;
+  q.modelSlots.clear();
 }
 
 /** Test seam: the queues are process-global, so a suite that leaves waiters

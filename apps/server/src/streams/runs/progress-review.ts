@@ -721,8 +721,8 @@ export function reviewCard(streamId: string | undefined, review: ReviewStart | R
  * run limit leaves idle). In that order: a spare run slot is the queue's own
  * to give, and the lane is one review wide.
  */
-async function slotBesideRun(providerId: string): Promise<{ release(): void } | null> {
-  return (await tryAcquireRunSlot(providerId)) ?? (await tryAcquireReviewLane(providerId));
+async function slotBesideRun(providerId: string, model: string): Promise<{ release(): void } | null> {
+  return (await tryAcquireRunSlot(providerId)) ?? (await tryAcquireReviewLane(providerId, model));
 }
 
 /** What a request being written looks like to a review taken mid-reply. */
@@ -954,7 +954,7 @@ export class ProgressReviewer {
     });
     if (!trigger) return null;
     const messages = this.messagesFor(workedMs, null);
-    const spare = await slotBesideRun(this.opts.providerId);
+    const spare = await slotBesideRun(this.opts.providerId, this.opts.model);
     // Through calls: the checks above narrowed the fields, and the await is
     // exactly when the run can end or a look mid-reply can start a review.
     if (this.isDisposed() || this.reviewing()) {
@@ -1042,7 +1042,7 @@ export class ProgressReviewer {
       return;
     }
     const messages = this.messagesFor(workedMs, now);
-    const spare = await slotBesideRun(this.opts.providerId);
+    const spare = await slotBesideRun(this.opts.providerId, this.opts.model);
     if (!spare) {
       this.retryAt = Date.now() + RECHECK_MS;
       return;

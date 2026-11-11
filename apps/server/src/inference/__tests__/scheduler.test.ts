@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { db, eq } from "@loxaic/db";
+import { DEFAULT_PROVIDER_ID } from "@loxaic/types";
 import { localModels } from "@loxaic/db/schema";
 import { invalidateLocalModelCache } from "../../llama/catalog.ts";
 import {
@@ -569,119 +570,157 @@ describe("tryAcquireRunSlot (a progress review beside its run)", () => {
 
 describe("tryAcquireReviewLane (a review on a backend slot the run limit leaves idle)", () => {
   let undo: (() => Promise<void>) | null = null;
-  /** A backend that reports `slots`, under a run limit of `limit`. */
-  async function backend(slots: number, limit: number): Promise<void> {
-    undo = await reportBackendSlots(slots);
+  /**
+   * The box this was found on, in small: a router serving two models, the
+   * first loaded with `slots` slots and the second not loaded, under a run
+   * limit of `limit`. Returns both ids and how often each was asked about.
+   */
+  async function backend(slots: number, limit: number) {
+    const router = await reportBackendSlots([{ slots }, { slots: null }]);
+    undo = router.undo;
     pin(limit);
+    return { loaded: router.ids[0], unloaded: router.ids[1], asked: router.asked };
   }
   afterEach(async () => {
     await undo?.();
     undo = null;
   });
   const run = () => acquireRunSlot({ signal: live(), onQueued: noop });
+  const lane = (model: string, providerId: string = DEFAULT_PROVIDER_ID) => tryAcquireReviewLane(providerId, model);
 
-  it("is open when every run slot is taken and the backend has more", async () => {
-    await backend(4, 2);
+  it("is open for a loaded model with more slots than the limit, on a backend serving several models", async () => {
+    const { loaded } = await backend(4, 2);
     const a = await run();
     const b = await run();
     // No run slot to spare: what a review found before, every time.
     expect(await tryAcquireRunSlot()).toBeNull();
-    const lane = await tryAcquireReviewLane();
-    expect(lane).not.toBeNull();
+    const held = await lane(loaded);
+    expect(held).not.toBeNull();
     // Beside the runs, not one of them.
     expect(schedulerState()).toMatchObject({ running: 2, waiting: 0, reviewLane: true });
-    lane?.release();
+    held?.release();
     a?.release();
     b?.release();
+    // The limit itself is what it was: with several models and nothing
+    // pinned, the backend as a whole still will not say, and that means one.
+    await expect(resolveMaxConcurrent()).resolves.toBe(2);
+    Reflect.deleteProperty(process.env, "INFERENCE_MAX_CONCURRENT_RUNS");
+    resetSlotProbe();
+    await expect(resolveMaxConcurrent()).resolves.toBe(1);
+  });
+
+  it("is shut for a model that is not loaded, and for one the router does not know", async () => {
+    const { loaded, unloaded } = await backend(4, 2);
+    expect(await lane(unloaded)).toBeNull();
+    expect(await lane("llama-3.1-8b-instruct")).toBeNull();
+    expect(schedulerState().reviewLane).toBe(false);
+    // The loaded one beside it still has its lane.
+    const held = await lane(loaded);
+    expect(held).not.toBeNull();
+    held?.release();
+  });
+
+  it("is shut when the model has no more slots than the limit", async () => {
+    const { loaded } = await backend(2, 2);
+    expect(await lane(loaded)).toBeNull();
+    // Nor when the limit was set above what the model holds.
+    pin(3);
+    expect(await lane(loaded)).toBeNull();
+    // One more than the limit is enough.
+    pin(1);
+    const held = await lane(loaded);
+    expect(held).not.toBeNull();
+    held?.release();
+  });
+
+  it("asks the router about a model once a minute, not at every look", async () => {
+    const { loaded, unloaded, asked } = await backend(4, 2);
+    for (let i = 0; i < 3; i++) (await lane(loaded))?.release();
+    expect(asked(loaded)).toBe(1);
+    // "Not loaded" is remembered too.
+    for (let i = 0; i < 3; i++) expect(await lane(unloaded)).toBeNull();
+    expect(asked(unloaded)).toBe(1);
+    resetSlotProbe();
+    (await lane(loaded))?.release();
+    expect(asked(loaded)).toBe(2);
   });
 
   it("is open below the limit too, and leaves the run slots as they were", async () => {
-    await backend(4, 2);
+    const { loaded } = await backend(4, 2);
     const a = await run();
-    const lane = await tryAcquireReviewLane();
-    expect(lane).not.toBeNull();
+    const held = await lane(loaded);
+    expect(held).not.toBeNull();
     expect(schedulerState()).toMatchObject({ running: 1, reviewLane: true });
     // The spare run slot is still there for a run or a review to take.
     const spare = await tryAcquireRunSlot();
     expect(spare).not.toBeNull();
     spare?.release();
-    lane?.release();
+    held?.release();
     a?.release();
   });
 
   it("is one review wide, and free again once released", async () => {
-    await backend(4, 2);
-    const first = await tryAcquireReviewLane();
+    const { loaded } = await backend(4, 2);
+    const first = await lane(loaded);
     expect(first).not.toBeNull();
-    expect(await tryAcquireReviewLane()).toBeNull();
+    expect(await lane(loaded)).toBeNull();
     first?.release();
     expect(schedulerState().reviewLane).toBe(false);
-    const second = await tryAcquireReviewLane();
+    const second = await lane(loaded);
     expect(second).not.toBeNull();
     // Released twice, the first holder does not free the second's lane.
     first?.release();
     expect(schedulerState().reviewLane).toBe(true);
-    expect(await tryAcquireReviewLane()).toBeNull();
+    expect(await lane(loaded)).toBeNull();
     second?.release();
   });
 
-  it("does not exist on a backend that will not say how many slots it has", async () => {
+  it("does not exist on a backend that will not answer", async () => {
     // A limit of two, set by hand, over a backend that answers nothing.
     const restore = attachBuiltin("http://127.0.0.1:1");
     pin(2);
     try {
-      expect(await tryAcquireReviewLane()).toBeNull();
+      expect(await lane("slots/any:Q4")).toBeNull();
       expect(schedulerState().reviewLane).toBe(false);
     } finally {
       restore();
     }
   });
 
-  it("does not exist when the backend has no more slots than the limit", async () => {
-    await backend(2, 2);
-    expect(await tryAcquireReviewLane()).toBeNull();
-    // Nor when the limit was set above what the backend holds.
-    pin(3);
-    expect(await tryAcquireReviewLane()).toBeNull();
-    // One more than the limit is enough.
-    pin(1);
-    const lane = await tryAcquireReviewLane();
-    expect(lane).not.toBeNull();
-    lane?.release();
-  });
-
   it("does not exist when the limit follows the backend: every slot is a run's", async () => {
-    undo = await reportBackendSlots(4);
+    // One model, so the backend's count is the limit itself.
+    const router = await reportBackendSlots([{ slots: 4 }]);
+    undo = router.undo;
     Reflect.deleteProperty(process.env, "INFERENCE_MAX_CONCURRENT_RUNS");
     await expect(resolveMaxConcurrent()).resolves.toBe(4);
-    expect(await tryAcquireReviewLane()).toBeNull();
+    expect(await lane(router.ids[0])).toBeNull();
   });
 
   it("does not exist for a provider that cannot be resolved", async () => {
-    await backend(8, 1);
-    expect(await tryAcquireReviewLane("00000000-0000-4000-8000-000000000000")).toBeNull();
+    const { loaded } = await backend(8, 1);
+    expect(await lane(loaded, "00000000-0000-4000-8000-000000000000")).toBeNull();
   });
 
   it("is shut while the backend is held exclusively, and while a switch waits for it", async () => {
-    await backend(4, 2);
-    const held = await acquireExclusiveSlot({ signal: live(), onQueued: noop });
-    expect(await tryAcquireReviewLane()).toBeNull();
-    held?.release();
+    const { loaded } = await backend(4, 2);
+    const exclusive = await acquireExclusiveSlot({ signal: live(), onQueued: noop });
+    expect(await lane(loaded)).toBeNull();
+    exclusive?.release();
 
     const a = await run();
     const switching = acquireExclusiveSlot({ signal: live(), onQueued: noop });
     await waitForWaiters();
     // The reload is coming as soon as the run ends: no review starts under it.
-    expect(await tryAcquireReviewLane()).toBeNull();
+    expect(await lane(loaded)).toBeNull();
     a?.release();
     (await switching)?.release();
-    const lane = await tryAcquireReviewLane();
-    expect(lane).not.toBeNull();
-    lane?.release();
+    const held = await lane(loaded);
+    expect(held).not.toBeNull();
+    held?.release();
   });
 
   it("neither delays a run waiting in line nor is refused because of one", async () => {
-    await backend(4, 1);
+    const { loaded } = await backend(4, 1);
     const a = await run();
     let admitted = false;
     const queued = run().then((slot) => {
@@ -689,8 +728,8 @@ describe("tryAcquireReviewLane (a review on a backend slot the run limit leaves 
       return slot;
     });
     await waitForWaiters();
-    const lane = await tryAcquireReviewLane();
-    expect(lane).not.toBeNull();
+    const held = await lane(loaded);
+    expect(held).not.toBeNull();
     // The waiter is where it was, and gets the slot the moment it frees,
     // with the lane still taken.
     expect(schedulerState()).toMatchObject({ running: 1, waiting: 1, reviewLane: true });
@@ -703,7 +742,7 @@ describe("tryAcquireReviewLane (a review on a backend slot the run limit leaves 
     const switched = await acquireExclusiveSlot({ signal: live(), onQueued: noop });
     expect(schedulerState()).toMatchObject({ exclusive: true, reviewLane: true });
     switched?.release();
-    lane?.release();
+    held?.release();
   });
 });
 
