@@ -94,12 +94,16 @@ by chromedriver rather than a terminal, is refused when it tries to run a script
 
 ## iOS and Android
 
-Both use Appium. Install its drivers once — they go into a repo-local `.appium/`, so a run uses
-the versions this repo pins rather than whatever is installed globally:
+Both use Appium. Install its drivers — they go into a repo-local `.appium/`, so a run uses the
+versions this repo pins (`DRIVER_PINS` in `scripts/setup-appium.ts`) rather than whatever is
+installed globally:
 
 ```bash
 pnpm --filter @loxaic/e2e setup:appium
 ```
+
+Run it again whenever the pins change: it leaves a driver that is already at its pin alone and
+replaces one that is not.
 
 Both lanes run the shared specs plus `src/specs/native/`, which is where the things only a
 phone does are tested: locking and unlocking (`mobile: lock`/`mobile: unlock`), switching away
@@ -639,9 +643,10 @@ The Android row is the one with a trap in it. Appium's `id` strategy prepends
 `resource-id="login.email"`, with no package prefix, under React Native 0.81 with the new
 architecture enabled.
 
-**Appium 3, not 2.** The current `uiautomator2` and `xcuitest` drivers both require Appium 3
-(`^3.0.0-rc.2`); pinning Appium 2 would mean pinning older drivers, which is the riskier choice
-against a recent Xcode and RN's new architecture.
+**Appium 3, with the drivers pinned to it.** `uiautomator2` 8.7.0 and `xcuitest` 12.20.0 are
+pinned because they are the release lines that run on Appium 3 (`^3.0.0-rc.2`): `uiautomator2`
+9 and `xcuitest` 13 need Appium 4 (`^4.0.0-beta.6`), and an unpinned install takes those and
+fails. Move to them together with Appium, not before.
 
 ## Asserting on text
 
