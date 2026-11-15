@@ -126,7 +126,7 @@ describe("a completion through an added provider", () => {
       { role: "user", content: "hello" },
       { role: "system", content: "A late notice." },
     ];
-    for await (const ev of streamCompletion(`${row.slug}::mock-remote-model`, sent)) void ev;
+    for await (const ev of streamCompletion(`${row.slug}::mock-remote-model`, sent)) expect(ev.type).not.toBe("error");
     expect(mock.completions[0].body.messages).toEqual([
       { role: "system", content: "You are Loxaic.\n\nA late notice." },
       { role: "user", content: "hello" },
