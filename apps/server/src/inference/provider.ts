@@ -384,6 +384,8 @@ const MOCK_PROVIDER_OVERFLOW_BODY = {
   },
 };
 let mockAnswerCount = 0;
+/** The end of llama.cpp's own refusal (b11342, a Qwen3.5 template). */
+export const MOCK_SYSTEM_NOT_FIRST_MESSAGE = "Jinja Exception: System message must be at the beginning.";
 const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
 
 /**
@@ -578,6 +580,11 @@ async function* mockStream(
   messages: ChatMessage[],
   options: StreamOptions,
 ): AsyncGenerator<StreamEvent, void, unknown> {
+  // Chat templates from Qwen3.5 on raise on a system message anywhere but
+  // first, and llama.cpp answers HTTP 500 before anything streams. The mock
+  // holds every request to the same rule, so no test passes with a prompt a
+  // real model would refuse (`promptFront` is how the run keeps to it).
+  if (messages.some((m, i) => m.role === "system" && i > 0)) throw new Error(MOCK_SYSTEM_NOT_FIRST_MESSAGE);
   const startTime = Date.now();
   const toolNames = new Set((options.tools ?? []).map((t) => t.function.name));
   // Only the *current* turn counts: earlier turns in the conversation have

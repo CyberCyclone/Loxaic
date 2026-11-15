@@ -3,8 +3,11 @@ import type { ToolSource } from "@loxaic/agent";
 import {
   addChars,
   apportion,
+  promptFront,
   splitToolTokens,
+  SUMMARY_PREAMBLE,
   tallyChatMessages,
+  tallyFrontedPrompt,
   tallyToolSources,
   type ContextTally,
   type ToolSourceTally,
@@ -114,6 +117,65 @@ describe("addChars", () => {
     addChars(tally, "history", "");
 
     expect(tally.history).toBe(11);
+  });
+});
+
+describe("promptFront", () => {
+  // Qwen3.5-and-later templates raise on a system message anywhere but first,
+  // and llama.cpp answers that with a 500: the front is one message at most.
+  it("puts the summary in the system prompt's message, after it", () => {
+    expect(promptFront("You are Loxaic.", "Earlier.")).toEqual([
+      { role: "system", content: `You are Loxaic.\n\n${SUMMARY_PREAMBLE}Earlier.` },
+    ]);
+  });
+
+  it("is the system prompt alone, or the summary alone, when there is only one", () => {
+    expect(promptFront("You are Loxaic.", null)).toEqual([{ role: "system", content: "You are Loxaic." }]);
+    expect(promptFront(undefined, "Earlier.")).toEqual([{ role: "system", content: `${SUMMARY_PREAMBLE}Earlier.` }]);
+    expect(promptFront("", "Earlier.")).toEqual([{ role: "system", content: `${SUMMARY_PREAMBLE}Earlier.` }]);
+  });
+
+  it("is nothing when there is neither", () => {
+    expect(promptFront(null, null)).toEqual([]);
+    expect(promptFront("", "")).toEqual([]);
+  });
+
+  it("opens with the system prompt's own bytes, so the cached prefix before a compaction still matches", () => {
+    const [front] = promptFront("You are Loxaic.", "Earlier.");
+    expect(front.content.startsWith("You are Loxaic.")).toBe(true);
+  });
+});
+
+describe("tallyFrontedPrompt", () => {
+  const tools: OpenAiTool[] = [
+    { type: "function", function: { name: "read_file", description: "Read a file", parameters: { a: 1 } } },
+  ];
+  const rest: ChatMessage[] = [
+    { role: "assistant", content: "earlier reply" },
+    { role: "user", content: "the question" },
+  ];
+
+  it("counts the system prompt and the summary apart, though they share a message", () => {
+    const messages = [...promptFront("You are Loxaic.", "Earlier."), ...rest];
+    const tally = tallyFrontedPrompt(messages, tools, "You are Loxaic.", "Earlier.");
+    expect(tally.system).toBe("You are Loxaic.".length);
+    expect(tally.summary).toBe((SUMMARY_PREAMBLE + "Earlier.").length);
+    expect(tally.history).toBe("earlier reply".length);
+    expect(tally.current).toBe("the question".length);
+    expect(tally.tools).toBe(JSON.stringify(tools).length);
+  });
+
+  it("is tallyChatMessages exactly when there is no summary", () => {
+    const messages = [...promptFront("You are Loxaic.", null), ...rest];
+    expect(tallyFrontedPrompt(messages, tools, "You are Loxaic.", null)).toEqual(tallyChatMessages(messages, tools));
+  });
+
+  it("counts a summary with no system prompt as summary alone", () => {
+    const messages = [...promptFront(null, "Earlier."), ...rest];
+    const tally = tallyFrontedPrompt(messages, undefined, null, "Earlier.");
+    expect(tally.system).toBeUndefined();
+    expect(tally.summary).toBe((SUMMARY_PREAMBLE + "Earlier.").length);
+    expect(tally.current).toBe("the question".length);
   });
 });
 

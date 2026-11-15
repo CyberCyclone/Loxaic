@@ -68,8 +68,42 @@ export function estimateTallyTokens(tally: ContextTally): number {
 export const SUMMARY_PREAMBLE =
   "Summary of the conversation so far. Earlier messages were compacted into this summary; treat it as the authoritative history.\n\n";
 
-export function summaryMessage(summaryText: string): Extract<ChatMessage, { role: "system" }> {
-  return { role: "system", content: SUMMARY_PREAMBLE + summaryText };
+/** Between the system prompt and the summary, inside the one system message. */
+const SUMMARY_JOIN = "\n\n";
+
+/**
+ * The messages a prompt opens with: the system prompt and the compaction
+ * summary, as one system message at most. Chat templates from Qwen3.5 on
+ * refuse a system message anywhere but first (llama.cpp answers HTTP 500,
+ * "System message must be at the beginning"), so the summary joins the system
+ * prompt instead of following it as a second one. Every request that replays
+ * a conversation (a run, its compaction, a context-stage warm-up) builds its
+ * front here, so the bytes match and the cached prefix holds.
+ */
+export function promptFront(
+  system: string | null | undefined,
+  summaryText: string | null | undefined,
+): Extract<ChatMessage, { role: "system" }>[] {
+  const summary = summaryText ? SUMMARY_PREAMBLE + summaryText : "";
+  const content = system && summary ? system + SUMMARY_JOIN + summary : system || summary;
+  return content ? [{ role: "system", content }] : [];
+}
+
+/**
+ * Tally a prompt that opens with `promptFront(system, summaryText)`: the system
+ * prompt and the summary each under its own category, though they share one
+ * message, and everything after the front as `tallyChatMessages` reads it.
+ */
+export function tallyFrontedPrompt(
+  messages: ChatMessage[],
+  tools: OpenAiTool[] | undefined,
+  system: string | null | undefined,
+  summaryText: string | null | undefined,
+): ContextTally {
+  const tally = tallyChatMessages(messages.slice(promptFront(system, summaryText).length), tools);
+  addChars(tally, "system", system);
+  if (summaryText) addChars(tally, "summary", SUMMARY_PREAMBLE + summaryText);
+  return tally;
 }
 
 /** Character counts per category, accumulated while a prompt is assembled. */

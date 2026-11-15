@@ -20,7 +20,7 @@ import {
 } from "../../inference/provider.ts";
 import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
 import { assertModelUsable, resolveModelRef } from "../../inference/providers.ts";
-import { estimateTallyTokens, estimateTokens, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
+import { estimateTallyTokens, estimateTokens, promptFront, tallyChatMessages } from "../../inference/context.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
 import { fingerprintPrompt, measureReuse } from "../../inference/prompt-reuse.ts";
 import { assertConversationAccess } from "../authz.ts";
@@ -147,23 +147,17 @@ export function compactionRequest(input: {
   reusesPrefix: boolean;
 } {
   const { shape, history } = input;
-  const summary = history.summaryText ? [summaryMessage(history.summaryText)] : [];
   const instruction: ChatMessage = { role: "user", content: input.instruction };
   if (shape?.model === input.model && input.hasRoom) {
     return {
-      messages: [
-        ...(shape.system ? [{ role: "system", content: shape.system } as ChatMessage] : []),
-        ...summary,
-        ...history.messages,
-        instruction,
-      ],
+      messages: [...promptFront(shape.system, history.summaryText), ...history.messages, instruction],
       ...(shape.tools.length ? { tools: shape.tools, toolChoice: "none" as const } : {}),
       thinking: shape.thinking,
       reusesPrefix: true,
     };
   }
   return {
-    messages: [...summary, ...stripImagesForCompaction(history.messages), instruction],
+    messages: [...promptFront(null, history.summaryText), ...stripImagesForCompaction(history.messages), instruction],
     reusesPrefix: false,
   };
 }
@@ -716,7 +710,7 @@ async function generateSummary(input: {
     for (const [i, part] of parts.entries()) {
       const carried = running ? estimateTokens("summary", running) : 0;
       generated = await ask(
-        [...(running ? [summaryMessage(running)] : []), ...part, { role: "user", content: input.instruction }],
+        [...promptFront(null, running), ...part, { role: "user", content: input.instruction }],
         undefined,
         undefined,
         i === parts.length - 1,

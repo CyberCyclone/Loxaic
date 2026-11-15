@@ -624,6 +624,18 @@ const server = createServer(async (req, res) => {
     // The real router's words, which name nothing: the reason is in the log.
     if (ok === "failed") return json(res, 500, { error: { code: 500, message: `model name=${body.model} failed to load` } });
     if (!ok) return json(res, 400, { error: { code: 400, message: `model '${body.model}' not found` } });
+    // A system message anywhere but first: refused as a Qwen3.5-or-later chat
+    // template makes b11342 refuse it, before any slot is taken, with a 500
+    // in its own shape (streamed or not, the body is plain JSON).
+    if ((body.messages ?? []).some((m, i) => m.role === "system" && i > 0)) {
+      return json(res, 500, {
+        error: {
+          code: 500,
+          message: "\n------------\nWhile executing CallExpression at line 85, column 32 in source:\n...\nError: Jinja Exception: System message must be at the beginning.",
+          type: "server_error",
+        },
+      });
+    }
     // Which slot it runs in and what that slot gives back, as llama.cpp's
     // `cache_n` (see slotState); the slot takes this request once it ends.
     const msgs = (body.messages ?? []).map((m) => JSON.stringify(m));

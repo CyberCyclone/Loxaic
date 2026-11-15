@@ -2,7 +2,7 @@ import { v4 as uuid } from "uuid";
 import { and, count, db, eq, isNull } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
 import type { ContextStageReason, ContextStageStatus, PromptProgress } from "@loxaic/types";
-import { summaryMessage } from "../../inference/context.ts";
+import { promptFront } from "../../inference/context.ts";
 import { streamCompletion, type ChatMessage } from "../../inference/provider.ts";
 import { getLocalModelRow } from "../../llama/catalog.ts";
 import { applyStageChange, type StageOutcome } from "../../llama/context-stage-switch.ts";
@@ -54,11 +54,7 @@ export function warmer(convId: string, model: string, opts: { slotId?: number } 
     // Dynamic, as compaction does: the engine imports this module.
     const { loadHistory } = await import("./engine.ts");
     const history = await loadHistory(convId);
-    const messages: ChatMessage[] = [
-      ...(shape.system ? [{ role: "system", content: shape.system } as ChatMessage] : []),
-      ...(history.summaryText ? [summaryMessage(history.summaryText)] : []),
-      ...history.messages,
-    ];
+    const messages: ChatMessage[] = [...promptFront(shape.system, history.summaryText), ...history.messages];
     const started = Date.now();
     let reports = 0;
     let last: PromptProgress | null = null;

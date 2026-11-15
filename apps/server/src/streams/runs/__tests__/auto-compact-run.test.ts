@@ -181,8 +181,20 @@ describe("automatic compaction", () => {
 
     it("compacts between two requests of the run, and the run carries on from the summary", async () => {
       const convId = await seedConversation(2);
+      requests.length = 0;
       await startChatRun({ userId, content: "work in four steps", model: "llama-3.1-8b-instruct", conversationId: convId });
       await waitFor(() => Promise.resolve(getRunByConversation(convId) ? null : true), 30_000);
+
+      // Every request, the compaction's and those after it included, opened
+      // with one system message and had no other: Qwen3.5-and-later templates
+      // refuse a second, and llama.cpp answers that with a 500. After the
+      // summary, it rides in the system prompt's message.
+      expect(requests.length).toBeGreaterThan(0);
+      for (const r of requests) expect(r.filter((m, i) => m.role === "system" && i > 0)).toEqual([]);
+      const systemText = (r: ChatMessage[]): string => (r[0]?.role === "system" ? r[0].content : "");
+      const resumed = requests.filter((r) => systemText(r).includes(SUMMARY_PREAMBLE));
+      expect(resumed.length).toBeGreaterThan(0);
+      for (const r of resumed) expect(systemText(r).indexOf(SUMMARY_PREAMBLE)).toBeGreaterThan(0);
 
       const rows = await db.query.messages.findMany({
         where: eq(messages.conversationId, convId),
@@ -295,7 +307,10 @@ describe("automatic compaction", () => {
     // model is asked, rather than a nudge to "continue the task".
     expect(after.messages[0]).toEqual({ role: "user", content: "another question" });
     const answered = requests.filter((r) => !summarising.includes(r)).at(-1);
-    expect(answered?.some((m) => m.role === "system" && m.content.startsWith(SUMMARY_PREAMBLE))).toBe(true);
+    // The summary rides in the system prompt's message, the only system one.
+    expect(answered?.[0]?.role).toBe("system");
+    expect(answered?.[0]?.content).toContain(SUMMARY_PREAMBLE);
+    expect(answered?.filter((m) => m.role === "system")).toHaveLength(1);
     expect(answered?.at(-1)).toEqual({ role: "user", content: "another question" });
     const rows = await db.query.messages.findMany({
       where: eq(messages.conversationId, conv.id),
