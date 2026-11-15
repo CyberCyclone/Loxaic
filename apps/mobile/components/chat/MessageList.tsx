@@ -16,7 +16,7 @@ import { isStageActive, type StageCard } from '@/lib/stageCard';
 import { promptCacheActive } from '@/lib/promptCache';
 import { canRewind, isContextFailure, retryIndex } from '@/lib/rewind';
 import { isEmptyGenerating, liveCounterStart, typingIndicatorFor } from '@/lib/liveTimer';
-import { reviewsByMessage } from '@/lib/progressReview';
+import { notesSaidByCards, reviewsByMessage } from '@/lib/progressReview';
 
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
@@ -214,6 +214,8 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   const lastRenderIndex = msgsToRender.length - 1;
   // Each review's card under the message it followed, by that message's index.
   const reviewsAt = useMemo(() => reviewsByMessage(msgsToRender, reviews), [msgsToRender, reviews]);
+  // The notes a card already speaks for: they show the reviewer's reason alone.
+  const notesOnCards = useMemo(() => notesSaidByCards(msgsToRender, reviews), [msgsToRender, reviews]);
   // Nothing to rewind or retry while a run is going: the server would refuse.
   const live = actions && !pending ? actions : null;
   const retryAt = live ? retryIndex(msgsToRender) : -1;
@@ -239,6 +241,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
             onRewind={live && canRewind(item) ? live.onRewind : undefined}
             onRetry={live && originalIndex === retryAt ? live.onRetry : undefined}
             onEdit={originalIndex === retryAt && isContextFailure(item) ? onEdit : undefined}
+            noteOnCard={notesOnCards.has(originalIndex)}
           />
           {reviewsAt.get(originalIndex)?.map((review) => (
             <Box key={review.id} className="px-4">
@@ -248,7 +251,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
         </Box>
       );
     },
-    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, counterSince, liveCompactionIndex, liveCompaction, live, retryAt, onEdit, reviewsAt],
+    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, counterSince, liveCompactionIndex, liveCompaction, live, retryAt, onEdit, reviewsAt, notesOnCards],
   );
 
   if (!conversation) return null;

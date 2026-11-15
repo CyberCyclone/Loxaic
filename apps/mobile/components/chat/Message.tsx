@@ -49,6 +49,9 @@ interface MessageProps {
   onRetry?: () => void;
   /** On a reply that could not fit: put its message back to edit. */
   onEdit?: () => void;
+  /** A progress note whose review card, above it in the thread, already says
+   * what the run was told: the note shows the reviewer's reason alone. */
+  noteOnCard?: boolean;
 }
 
 /** "photo.png" when the server knew a name, "An image"/"A file" when it didn't
@@ -66,7 +69,7 @@ function listOmitted(atts: { mime: string; name?: string }[], max = 4): string {
   return rest > 0 ? `${shown} and ${String(rest)} more` : shown;
 }
 
-function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveCompaction, onRewind, onRetry, onEdit }: MessageProps) {
+function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveCompaction, onRewind, onRetry, onEdit, noteOnCard }: MessageProps) {
   // Hoisted above the summary early-return below: hooks can't be called
   // conditionally, and a summary card renders no attachments anyway.
   const { token, user } = useSession();
@@ -93,17 +96,20 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
   }
 
   // What a progress review wrote into the run: the reviewer's reason, and
-  // whether the run was told to change approach or to answer. Persisted as a
-  // user row so the next turn replays it, but nobody typed it.
+  // whether the run was told to change approach or to answer, unless the
+  // review's card above already says which. Persisted as a user row so the
+  // next turn replays it, but nobody typed it.
   if (progressNote) {
     return (
       <VStack testID="progress.note" className="items-center px-4 py-2">
         <Text testID="progress.note.reason" size="xs" className="text-center italic text-muted-foreground">
           {progressNote.reason}
         </Text>
-        <Text testID="progress.note.outcome" size="2xs" className="text-center text-muted-foreground">
-          {progressNote.outcome}
-        </Text>
+        {noteOnCard ? null : (
+          <Text testID="progress.note.outcome" size="2xs" className="text-center text-muted-foreground">
+            {progressNote.outcome}
+          </Text>
+        )}
       </VStack>
     );
   }
@@ -474,5 +480,8 @@ export const Message = memo(
     // them, and a newer reply moves Retry off this one.
     prev.onRewind === next.onRewind &&
     prev.onRetry === next.onRetry &&
-    prev.onEdit === next.onEdit,
+    prev.onEdit === next.onEdit &&
+    // The reviews are read apart from the messages: after a reload the note
+    // is drawn first, and its card arrives a moment later.
+    prev.noteOnCard === next.noteOnCard,
 );

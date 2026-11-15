@@ -42,19 +42,56 @@ const NOTE_OUTCOME: Record<NonNullable<ReturnType<typeof parseProgressNote>>['ac
   ended: 'Ended without an answer',
 };
 
+type NoteAction = NonNullable<ReturnType<typeof parseProgressNote>>['action'];
+
 /** A progress note, as the transcript shows it: the reviewer's reason, and
  * what the run was told. Never what the note carried over from a reply it cut
  * short: that is thousands of characters of the run's own thinking, there for
  * the model's next request and not for a reader. Null for anything else —
  * including the same words typed by a person, which are that person's message
  * and shown as one. */
-export function progressNoteView(msg: { text: string; authorUserId?: string | null }): { reason: string; outcome: string } | null {
+export function progressNoteView(msg: { text: string; authorUserId?: string | null }): { reason: string; outcome: string; action: NoteAction } | null {
   const note = isServerNote(msg.text, msg.authorUserId) ? parseProgressNote(msg.text) : null;
   if (!note) return null;
   return {
     reason: `Progress check: ${note.reason}`,
     outcome: NOTE_OUTCOME[note.action],
+    action: note.action,
   };
+}
+
+/**
+ * The notes whose second line ("Told to change approach") a card in the
+ * thread already says, by index into `msgs`: those show the reason alone.
+ *
+ * A note's card is the newest review before it that told the run anything,
+ * when that review told it this, its card is on the page (some loaded message
+ * is at or before it) and no earlier note has it already: a review writes one
+ * note. A note with no card keeps its line: one from a server that sent no
+ * reviews, and the one that ended a run which never answered, which no
+ * review's card says.
+ */
+export function notesSaidByCards(
+  msgs: readonly { lamport?: number; role?: string; text: string; authorUserId?: string | null }[],
+  reviews: readonly RunReview[],
+): Set<number> {
+  const said = new Set<number>();
+  if (reviews.length === 0) return said;
+  const oldest = msgs.find((m) => m.lamport !== undefined)?.lamport;
+  const claimed = new Set<string>();
+  msgs.forEach((m, i) => {
+    const at = m.lamport;
+    if (at === undefined || oldest === undefined || m.role !== 'user') return;
+    const note = progressNoteView(m);
+    if (!note || note.action === 'ended') return;
+    const card = reviews
+      .filter((r) => r.lamport < at && (r.action === 'steer' || r.action === 'answer'))
+      .reduce<RunReview | undefined>((newest, r) => (newest && newest.lamport > r.lamport ? newest : r), undefined);
+    if (card?.action !== note.action || card.lamport < oldest || claimed.has(card.id)) return;
+    claimed.add(card.id);
+    said.add(i);
+  });
+  return said;
 }
 
 // ── Review cards ───────────────────────────────────────────────────────────

@@ -113,6 +113,22 @@ async function waitForTextInAny(id: string, text: string, timeout = 30_000): Pro
 
 const cardTitle = (reviewId: string) => `review.card.${reviewId}.title`;
 
+/** What a run was told is said once, by the review's card: the note under it
+ * gives the reviewer's reason and no second line. Waited for, since after a
+ * reload a note is drawn a moment before its card arrives. On a phone only
+ * what is on screen is in the tree, which is where a reader would see it. */
+async function expectNotesLeaveTheToldLineToCards(): Promise<void> {
+  await browser.waitUntil(
+    async () => {
+      for (const el of await $$(testIdSelector('progress.note.outcome')).getElements()) {
+        if ((await el.getText()).includes('Told to')) return false;
+      }
+      return true;
+    },
+    { timeout: 15_000, interval: 300, timeoutMsg: 'a note under a review card still said what the run was told' },
+  );
+}
+
 /** Whether the thread's list really scrolls and `id` is inside what it shows:
  * `isDisplayed()` is true below the fold. Web and Electron. */
 async function reachableInPanel(id: string): Promise<boolean> {
@@ -232,7 +248,6 @@ describe('the progress review', () => {
       // list, and is read from the server below.
       await waitForRunDone(creds, conversationId);
       await waitForTextInAny('progress.note.reason', PROGRESS_NOTE_TEXT, 90_000);
-      await waitForTextInAny('progress.note.outcome', 'Told to answer now');
       await shot(`progress-review-stuck-${surface}`);
       const texts = await getMessageTexts(creds, conversationId);
       expect(texts.some((t) => t.includes(ANSWER_NOW_TEXT))).toBe(true);
@@ -261,6 +276,8 @@ describe('the progress review', () => {
         await scrollTo(cardTitle(reviews[0].id));
         await waitForFreshText(cardTitle(reviews[0].id), 'Progress check · stuck · told to change approach');
       }
+      // The cards say what the run was told; the notes under them only why.
+      await expectNotesLeaveTheToldLineToCards();
       await shot(`progress-review-card-stuck-${surface}`);
       await expectPanel(
         reviews[wholeList ? 0 : 1].id,
@@ -288,27 +305,33 @@ describe('the progress review', () => {
         await waitForComposerReady();
         await goToSurface(surface);
         await selectThread(conversationId, surface);
-        await waitForTextInAny('progress.note.outcome', 'Told to answer now');
+        await waitForTextInAny('progress.note.reason', PROGRESS_NOTE_TEXT);
         await waitForFreshText(cardTitle(reviews[1].id), 'Progress check · stuck · told to answer');
         await scrollTo(cardTitle(reviews[0].id));
         await waitForFreshText(cardTitle(reviews[0].id), 'Progress check · stuck · told to change approach');
         // Each card sits above the note it wrote: steer card, its note, answer
         // card, its note, top to bottom.
         const tops = await browser.execute(
-          (first: string, second: string, outcome: string) => {
-            const top = (el: Element | null) => el?.getBoundingClientRect().top ?? Number.NaN;
-            const notes = [...document.querySelectorAll(outcome)];
+          (first: string, second: string, note: string) => {
+            const top = (el: Element | null | undefined) => el?.getBoundingClientRect().top ?? Number.NaN;
+            // The steering note is the upper of the two, wherever the list
+            // keeps each in the document.
+            const notes = [...document.querySelectorAll(note)].map(top).sort((a, b) => a - b);
             return {
+              notes: notes.length,
               steerCard: top(document.querySelector(first)),
               answerCard: top(document.querySelector(second)),
-              steerNote: top(notes.find((n) => n.textContent.includes('change approach')) ?? null),
-              answerNote: top(notes.find((n) => n.textContent.includes('answer now')) ?? null),
+              steerNote: notes.at(0) ?? Number.NaN,
+              answerNote: notes.at(1) ?? Number.NaN,
             };
           },
           testIdSelector(`review.card.${reviews[0].id}`),
           testIdSelector(`review.card.${reviews[1].id}`),
-          testIdSelector('progress.note.outcome'),
+          testIdSelector('progress.note'),
         );
+        expect(tops.notes).toBe(2);
+        // Read from history, each note finds its card again and drops its line.
+        await expectNotesLeaveTheToldLineToCards();
         expect(tops.steerCard).toBeLessThan(tops.steerNote);
         expect(tops.steerNote).toBeLessThan(tops.answerCard);
         expect(tops.answerCard).toBeLessThan(tops.answerNote);
@@ -414,7 +437,13 @@ describe('the progress review', () => {
     const conversationId = await runIn(creds, 'agent', REVIEW_FINISHED_PROMPT);
     await waitForRunDone(creds, conversationId);
     await waitForTextInAny('progress.note.reason', 'says finished', 90_000);
-    await waitForTextInAny('progress.note.outcome', 'Told to answer now');
+    const reviews = await waitForRunReviews(creds, conversationId, 2);
+    expect(reviews.map((r) => [r.verdict, r.action])).toEqual([
+      ['finished', 'steer'],
+      ['finished', 'answer'],
+    ]);
+    await waitForFreshText(cardTitle(reviews[1].id), 'Progress check · finished · told to answer');
+    await expectNotesLeaveTheToldLineToCards();
     await shot('progress-review-finished');
     // One "finished" alone never ends a run somebody started: told so after
     // step 3, it went on to step 6, and was told to answer there.
@@ -473,7 +502,9 @@ describe('the progress review', () => {
       expect(notes[1]).toContain('give your best final answer now');
       // Read once the run is over: on Android a lookup beside a slow step
       // takes longer than the step.
-      await waitForTextInAny('progress.note.outcome', 'Told to answer now', 60_000);
+      const reviews = await waitForRunReviews(creds, conversationId, 2);
+      await waitForFreshText(cardTitle(reviews[1].id), 'Progress check · stuck · told to answer', 60_000);
+      await expectNotesLeaveTheToldLineToCards();
       await shot('progress-review-on-the-clock');
       await expectNobodyAsked();
     } finally {

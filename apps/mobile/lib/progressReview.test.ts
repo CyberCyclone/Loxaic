@@ -3,6 +3,7 @@ import { progressNoteText, type RunReview, type RunReviewDetail } from '@loxaic/
 import {
   followSavedPrompt,
   isReviewRunning,
+  notesSaidByCards,
   progressNoteView,
   reviewActionText,
   reviewCardView,
@@ -49,6 +50,7 @@ describe('progressNoteView', () => {
     expect(progressNoteView(note(progressNoteText('steer', 'It keeps reading the same file.')))).toEqual({
       reason: 'Progress check: It keeps reading the same file.',
       outcome: 'Told to change approach',
+      action: 'steer',
     });
   });
 
@@ -70,6 +72,7 @@ describe('progressNoteView', () => {
     expect(progressNoteView(note(progressNoteText('ended', 'It already has the cause.')))).toEqual({
       reason: 'Progress check: It already has the cause.',
       outcome: 'Ended without an answer',
+      action: 'ended',
     });
   });
 
@@ -83,6 +86,58 @@ describe('progressNoteView', () => {
     expect(progressNoteView({ text, authorUserId: 'someone' })).toBeNull();
     // Nor when the author is not known: only a row with no author is a note.
     expect(progressNoteView({ text })).toBeNull();
+  });
+});
+
+describe('notesSaidByCards', () => {
+  const row = (lamport: number) => ({ lamport, role: 'assistant', text: 'working', authorUserId: null });
+  const note = (lamport: number, action: 'steer' | 'answer' | 'ended') => ({ lamport, role: 'user', text: progressNoteText(action, 'why'), authorUserId: null });
+  const review = (id: string, lamport: number, action: 'none' | 'steer' | 'answer'): RunReview => ({
+    id, lamport, step: 3, worked_ms: 1000, mode: 'paused', trigger: 'steps', started_at: lamport, ended_at: lamport + 1, verdict: action === 'none' ? 'progressing' : 'stuck', reason: 'why', action,
+  });
+
+  it('drops the line of a note whose card says it, however many rows the run wrote in between', () => {
+    // The review was taken beside the run after row 10; its note landed at 14.
+    const msgs = [row(10), row(11), row(12), note(14, 'steer'), row(15), note(17, 'answer')];
+    expect([...notesSaidByCards(msgs, [review('a', 10, 'steer'), review('b', 15, 'answer')])]).toEqual([3, 5]);
+  });
+
+  it('keeps the line with no reviews at all: a server that sent none', () => {
+    expect(notesSaidByCards([row(10), note(11, 'steer')], []).size).toBe(0);
+  });
+
+  it('keeps the line of a note whose own review is missing: an earlier card is not its card', () => {
+    const msgs = [row(10), note(11, 'steer'), row(12), note(13, 'steer')];
+    expect([...notesSaidByCards(msgs, [review('a', 10, 'steer')])]).toEqual([1]);
+  });
+
+  it('keeps the line when the newest card before the note told the run something else', () => {
+    expect(notesSaidByCards([row(10), note(11, 'answer')], [review('a', 10, 'steer')]).size).toBe(0);
+  });
+
+  it('looks past a review that told the run nothing', () => {
+    const msgs = [row(10), row(12), note(13, 'steer')];
+    expect([...notesSaidByCards(msgs, [review('a', 10, 'steer'), review('b', 12, 'none')])]).toEqual([2]);
+  });
+
+  it('keeps the line of the note that ended a run which never answered: no card says that', () => {
+    const msgs = [row(10), note(11, 'answer'), note(12, 'ended')];
+    expect([...notesSaidByCards(msgs, [review('a', 10, 'answer')])]).toEqual([1]);
+  });
+
+  it('keeps the line while the card is on an older page, not yet loaded', () => {
+    expect(notesSaidByCards([row(20), note(21, 'steer')], [review('a', 10, 'steer')]).size).toBe(0);
+  });
+
+  it('keeps the line of the same words under a person\'s name, and of a row with no place yet', () => {
+    const typed = { ...note(11, 'steer'), authorUserId: 'someone' };
+    const optimistic = { role: 'user', text: progressNoteText('steer', 'why'), authorUserId: null };
+    expect(notesSaidByCards([row(10), typed, optimistic], [review('a', 10, 'steer')]).size).toBe(0);
+  });
+
+  it('does not depend on the order the reviews are listed in', () => {
+    const msgs = [row(10), note(11, 'steer'), row(12), note(13, 'answer')];
+    expect([...notesSaidByCards(msgs, [review('b', 12, 'answer'), review('a', 10, 'steer')])]).toEqual([1, 3]);
   });
 });
 
