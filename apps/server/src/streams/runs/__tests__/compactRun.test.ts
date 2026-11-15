@@ -8,7 +8,7 @@ import {
   summaryHeadroomTokens,
   summaryParts,
 } from "../compactRun.ts";
-import { estimateTallyTokens, SUMMARY_PREAMBLE, tallyChatMessages } from "../../../inference/context.ts";
+import { estimateTallyTokens, summaryBlock, tallyChatMessages } from "../../../inference/context.ts";
 import type { ChatMessage } from "../../../inference/provider.ts";
 
 /**
@@ -184,7 +184,7 @@ describe("compactionRequest", () => {
     expect(r.reusesPrefix).toBe(true);
     // The previous summary rides in the system prompt's message, as the run
     // sent it: a second system message is a 500 on Qwen3.5-and-later templates.
-    expect(r.messages[0]).toEqual({ role: "system", content: `You are Loxaic.\n\n${SUMMARY_PREAMBLE}Earlier.` });
+    expect(r.messages[0]).toEqual({ role: "system", content: `You are Loxaic.\n\n${summaryBlock("Earlier.")}` });
     expect(r.messages.filter((m) => m.role === "system")).toHaveLength(1);
     // Images stay: stripping them would rewrite every message after the first.
     expect(r.messages[1]).toBe(imageTurn);
@@ -207,7 +207,7 @@ describe("compactionRequest", () => {
       // No front to match: the generation picks the default level instead.
       expect(r.thinking).toBeUndefined();
       expect(r.messages.some((m) => m.role === "system" && m.content.includes("You are Loxaic."))).toBe(false);
-      expect(r.messages[0]).toEqual({ role: "system", content: `${SUMMARY_PREAMBLE}Earlier.` });
+      expect(r.messages[0]).toEqual({ role: "system", content: summaryBlock("Earlier.") });
       expect(r.messages[1]).toEqual({ role: "user", content: "what is this" });
     }
   });

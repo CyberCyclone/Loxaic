@@ -65,7 +65,7 @@ The stream log, run registry and conversation authorization shared by every run 
 - Never change an older part of the prompt (an attachment verdict, a replayed row's bytes) — it breaks the cache like a trim.
 - On replay strip partner-less tool calls (`resolvedCallIds`) and partner-less results (`presentCallIds`). A skipped or stopped call still persists a `tool_result`; never leave a `tool_call` unpartnered.
 - The thinking level is fixed per run in `RequestShape` and recorded on `conversations.thinking_level`; send it unchanged in compaction and context-stage warm-up.
-- Open every replayed prompt with `promptFront` (`inference/context.ts`): one system message at most, first, the summary inside it. Qwen3.5-and-later templates answer a second with a 500.
+- Open every replayed prompt with `promptFront` (`inference/context.ts`): one system message at most, first, the summary fenced inside it.
 
 ### Usage
 

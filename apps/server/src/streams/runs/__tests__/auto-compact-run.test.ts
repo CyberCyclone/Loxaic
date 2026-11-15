@@ -192,7 +192,13 @@ describe("automatic compaction", () => {
       expect(requests.length).toBeGreaterThan(0);
       for (const r of requests) expect(r.filter((m, i) => m.role === "system" && i > 0)).toEqual([]);
       const systemText = (r: ChatMessage[]): string => (r[0]?.role === "system" ? r[0].content : "");
-      const resumed = requests.filter((r) => systemText(r).includes(SUMMARY_PREAMBLE));
+      // The run's own requests only: a compaction that cannot reuse the prefix
+      // sends the summary alone, at index 0, and is correct too.
+      const summarising = (r: ChatMessage[]): boolean => {
+        const last = r.at(-1);
+        return last?.role === "user" && typeof last.content === "string" && last.content.startsWith("Summarize this conversation");
+      };
+      const resumed = requests.filter((r) => !summarising(r) && systemText(r).includes(SUMMARY_PREAMBLE));
       expect(resumed.length).toBeGreaterThan(0);
       for (const r of resumed) expect(systemText(r).indexOf(SUMMARY_PREAMBLE)).toBeGreaterThan(0);
 

@@ -48,6 +48,7 @@ import {
   apportion,
   estimateTallyTokens,
   promptFront,
+  promptFrontLength,
   tallyChatMessages,
   tallyFrontedPrompt,
   tallyToolSources,
@@ -758,7 +759,7 @@ export async function runToolLoop(ctx: {
     // Appended to as the run goes; rebuilt only by a compaction inside it.
     let chatMessages: ChatMessage[] = [...promptFront(systemPrompt, summaryText), ...history.messages];
     /** The messages before the replayed history: the one carrying the system prompt and the summary. */
-    const frontLength = (): number => promptFront(systemPrompt, summaryText).length;
+    const frontLength = (): number => promptFrontLength(systemPrompt, summaryText);
     // What the context breakdown reports as replayed, and the attachments this
     // prompt left out — both describe the loaded history until a compaction
     // inside the run replaces it.

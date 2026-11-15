@@ -9,7 +9,7 @@
  */
 import { provisionUser, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { waitForTextIn } from '../helpers/selectors.ts';
+import { waitForFreshText } from '../helpers/selectors.ts';
 import { mockEcho, sendAndAwaitReply, sendMessage, signIn } from '../helpers/app.ts';
 
 describe('after a compaction', () => {
@@ -27,7 +27,9 @@ describe('after a compaction', () => {
     await sendAndAwaitReply('second thing to remember', mockEcho('second thing to remember'));
 
     await sendMessage('/compact keep both things');
-    await waitForTextIn('chat.messageList', 'Compacted', 60_000);
+    // The guidance line is on the finished card only (CompactionCard.tsx):
+    // a live or skipped compaction has none.
+    await waitForFreshText('chat.compaction.guidance', 'keep both things', 60_000);
 
     await sendAndAwaitReply('a question after the compaction', mockEcho('a question after the compaction'));
     await shot('compaction-continues-answered');
