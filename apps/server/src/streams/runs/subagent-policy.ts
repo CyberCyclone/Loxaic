@@ -230,6 +230,8 @@ export function subagentOutcome(input: {
   description: string;
   status: Exclude<SubAgentStatus, "running">;
   text: string | null;
+  /** `text` is `unansweredReport`, not a reply: the child never answered. */
+  unanswered?: boolean;
   error?: string | null;
 }): SubagentOutcome {
   if (input.text === null && input.status === "complete") {
@@ -240,8 +242,19 @@ export function subagentOutcome(input: {
   }
   return {
     output: subagentResultText({ description: input.description, status: input.status, text: input.text ?? "", error: input.error }),
-    ok: input.status === "complete",
+    ok: input.status === "complete" && !input.unanswered,
   };
+}
+
+/**
+ * What the parent reads for a child that was told to give its final answer
+ * and never wrote one: the note that ended it (`progressNoteText("ended", …)`),
+ * as a report. Why it was ended, and the end of its thinking, which is all
+ * the work it has to show. Pure: it becomes a persisted tool result.
+ */
+export function unansweredReport(note: { reason: string; carried?: string }): string {
+  const head = `This sub-agent was told to give its final answer and never wrote one, so it was ended. The check that ended it said: ${note.reason}`;
+  return note.carried ? `${head}\n\nThe note that ended it, written to the sub-agent, shows where its work had got to:\n\n${note.carried}` : head;
 }
 
 /** Cuts at a character boundary at or below `maxBytes`, saying so. */

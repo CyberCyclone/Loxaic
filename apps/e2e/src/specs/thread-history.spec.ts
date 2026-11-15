@@ -29,7 +29,7 @@ import {
   startNewThread,
   waitForRunDone,
 } from '../helpers/app.ts';
-import { LONG_HISTORY_DONE, LONG_HISTORY_PROMPT, LONG_HISTORY_STEPS } from '../../scripts/long-history.ts';
+import { LONG_HISTORY_DONE, LONG_HISTORY_PROMPT } from '../../scripts/long-history.ts';
 
 /** Whether the message list's own text contains `text`. Scoped to the list,
  * because the thread list names a conversation after its first message. */
@@ -131,13 +131,13 @@ describe('a thread longer than one page of history', () => {
 
   before(async () => {
     await signUp(creds);
-    // The scenario is one turn of LONG_HISTORY_STEPS steps; the default
-    // window of 100 would pause it at a check-in halfway.
-    await patchPrefs(creds, { maxIterations: LONG_HISTORY_STEPS + 20 });
+    // The scenario is one turn of LONG_HISTORY_STEPS steps; a progress review
+    // every twenty of them would only slow it, and is not what this is about.
+    await patchPrefs(creds, { progressReview: false });
   });
 
   after(async () => {
-    await patchPrefs(creds, { maxIterations: 100 });
+    await patchPrefs(creds, { progressReview: true });
   });
 
   // One input per surface: each surface has its own session hook, and both

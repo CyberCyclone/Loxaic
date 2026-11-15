@@ -1,4 +1,4 @@
-import { isNudgeText, type AttachmentRef, type FileRestoreReport, type RewindPreview, type ServerMessage } from '@loxaic/api-client';
+import { isServerNote, type AttachmentRef, type FileRestoreReport, type RewindPreview, type ServerMessage } from '@loxaic/api-client';
 import type { Message } from './types';
 
 /**
@@ -39,7 +39,7 @@ export function applyRewound(msgs: Message[], event: Rewound): Message[] {
  * stored. Not a nudge the server wrote, not a sub-agent's task, and not a
  * bubble still waiting for its id. */
 export function canRewind(msg: Message): boolean {
-  return msg.role === 'user' && isStored(msg) && !msg.fromAgent && !isNudgeText(msg.text);
+  return msg.role === 'user' && isStored(msg) && !msg.fromAgent && !isServerNote(msg.text, msg.authorUserId);
 }
 
 /**

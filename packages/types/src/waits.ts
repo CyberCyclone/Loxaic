@@ -1,15 +1,9 @@
 /**
- * How long a run waits for a person, and what happens when nobody comes.
+ * How long a run waits for a person to approve a tool call, and what happens
+ * when nobody comes.
  *
  * Shared by the server (which enforces these) and the settings screen (which
  * offers them), so the two cannot disagree about a range or a default.
- *
- * Two waits, deliberately separate. A **step check-in** parks a run between
- * iterations to ask whether to carry on; an **approval** parks it mid-turn on
- * one tool call. They used to share a single `APPROVAL_TIMEOUT_MS`, which
- * meant a deployment could not make one patient without making the other
- * patient too — and an unanswered check-in is a much cheaper thing to wait on
- * than an unanswered approval, since nothing is mid-flight.
  */
 
 /** The built-in window when neither the user nor the operator has chosen one.
@@ -21,9 +15,9 @@ export const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
 /**
  * The shortest window a user may choose.
  *
- * Not a product floor — nobody wants a five-second check-in — but the one that
- * makes the unattended path testable end to end: a spec has to wait the window
- * out, and a floor of minutes would put a real timeout beyond any e2e run.
+ * Not a product floor — nobody wants a five-second approval wait — but the one
+ * that makes the unanswered path testable end to end: a spec has to wait the
+ * window out, and a floor of minutes would put a real timeout beyond any e2e run.
  */
 export const MIN_WAIT_TIMEOUT_MS = 5_000;
 
@@ -48,62 +42,30 @@ export const MAX_WAIT_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 export type TimeoutBasis = "setting" | "adaptive";
 
 /**
- * How many consecutive unanswered check-ins may carry on by themselves before
- * the run wraps up with what it has.
- *
- * Each one grants another full step window of work with nobody watching, so the
- * ceiling is small on purpose: at a few minutes a step, even one extra window
- * of a hundred steps is hours.
- */
-export const MAX_CHECKIN_AUTO_CONTINUES = 3;
-export const DEFAULT_CHECKIN_AUTO_CONTINUES = 2;
-
-/**
- * How eagerly the run notices it is repeating itself.
- *
- * `normal` asks after the same step three times, or a short cycle twice.
- * `relaxed` waits for five, or a cycle three times — for a model that
- * legitimately re-reads files. `off` never asks for this reason; the step
- * window still applies.
- */
-export type LoopSensitivity = "off" | "relaxed" | "normal";
-export const LOOP_SENSITIVITIES: readonly LoopSensitivity[] = ["off", "relaxed", "normal"];
-export const DEFAULT_LOOP_SENSITIVITY: LoopSensitivity = "normal";
-
-export function isLoopSensitivity(value: unknown): value is LoopSensitivity {
-  return typeof value === "string" && (LOOP_SENSITIVITIES as readonly string[]).includes(value);
-}
-
-/**
- * What a conversation's owner has turned off for its runs (chat and agent
- * threads; a routine stays bounded). Each stops one kind of check-in, the step
- * limit's or the loop check's, for as long as it is off, and can be turned back
- * on at any point, mid-run included.
+ * What a conversation's owner has switched off for its runs (chat and agent
+ * threads; a routine and a sub-agent are always reviewed). It can be turned
+ * back on at any point, mid-run included.
  */
 export interface RunLimits {
-  stepLimitOff: boolean;
-  loopCheckOff: boolean;
+  /** No progress review for this conversation's runs: nothing then bounds a
+   * run but its owner pressing Stop. */
+  progressReviewOff: boolean;
 }
 
-/** Every limit on: what a run has until told otherwise, and what it falls back
+/** Everything on: what a run has until told otherwise, and what it falls back
  * to when the conversation could not be read. */
-export const LIMITS_ON: RunLimits = { stepLimitOff: false, loopCheckOff: false };
+export const LIMITS_ON: RunLimits = { progressReviewOff: false };
 
 /** A `RunLimits` on the wire. Absent means left as it is, or on for a new
  * conversation. */
 export interface RunLimitChoices {
-  step_limit_off?: boolean;
-  loop_check_off?: boolean;
+  progress_review_off?: boolean;
 }
 
 /** An untrusted `run_limits` as what it asks for, dropping anything that is
  * not a boolean; `undefined` when nothing is left. */
 export function normalizeRunLimits(value: unknown): RunLimitChoices | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { step_limit_off: stepLimit, loop_check_off: loopCheck } = value as Record<string, unknown>;
-  const choices: RunLimitChoices = {
-    ...(typeof stepLimit === "boolean" ? { step_limit_off: stepLimit } : {}),
-    ...(typeof loopCheck === "boolean" ? { loop_check_off: loopCheck } : {}),
-  };
-  return Object.keys(choices).length > 0 ? choices : undefined;
+  const { progress_review_off: off } = value as Record<string, unknown>;
+  return typeof off === "boolean" ? { progress_review_off: off } : undefined;
 }

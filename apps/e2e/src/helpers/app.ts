@@ -70,43 +70,44 @@ export const NEW_PROJECT_SCENARIO_PROMPT = 'Create a new project with three file
 export const NEW_PROJECT_SCENARIO_DONE = 'node --test passes';
 
 /**
- * Matches the `scenarios.json` fixture's check-in scenario: two `todo_write`
- * steps with *different* todos — ordinary progress, so nothing looks like a
- * loop and only the step budget can pause it. `todo_write` needs no sandbox
- * and no approval on either surface, which is what lets the same prompt drive
- * chat and agent alike.
+ * Prompts for the `scenarios.json` fixture's progress-review drills. The mock
+ * reviewer answers from keywords in the task it is shown
+ * (apps/server/src/inference/provider.ts): `review-stuck` is stuck,
+ * `review-linger` takes twelve seconds before saying progressing, anything
+ * else is progressing at once. Every drill is `todo_write` steps, which need no
+ * sandbox and no approval on either surface.
  */
-export const CHECKIN_SCENARIO_PROMPT = 'Plan the work, then check in after each step.';
-
-/** Substring of the check-in scenario's wrap-up text, once both steps ran.
- * Case matters — `waitForTextIn` compares with `String.includes`. */
-export const CHECKIN_SCENARIO_DONE = 'Planned it in two steps';
-
-/**
- * Matches the `scenarios.json` fixture's loop scenario: four `todo_write`
- * steps with byte-identical arguments. The detector speaks at the third, well
- * inside any sane step budget — which is how a spec tells a loop check-in from
- * a budget one.
- */
-export const LOOP_SCENARIO_PROMPT = 'Repeat yourself until someone stops you.';
+export const REVIEW_STEADY_PROMPT = 'Work steadily through the review drill.';
+export const REVIEW_STEADY_DONE = 'Worked through it steadily';
+export const REVIEW_STUCK_PROMPT = 'review-stuck: circle the review drill until told otherwise.';
+/** A drill the mock's reviewer calls finished at every review: a run that has
+ * its answer and keeps rechecking it. */
+export const REVIEW_FINISHED_PROMPT = 'review-finished: recheck the review drill until told otherwise.';
+/** The stuck drill for a model that never answers: told to answer, the mock
+ * only thinks ("think it over"), with thinking switched off too ("whatever
+ * you are told"). */
+export const REVIEW_NEVER_ANSWERS_PROMPT = 'review-stuck: circle the review drill until told otherwise, then think it over whatever you are told.';
+/** What the mock's thinking is made of: never to be read in a note. */
+export const MOCK_THOUGHT_TEXT = 'weighing it once more';
+/** The same drill at eight seconds a step ("take your time"), for a review
+ * that only the clock can make due. */
+export const REVIEW_STUCK_SLOW_PROMPT = 'review-stuck: circle the review drill until told otherwise, and take your time over each step.';
+export const REVIEW_LINGER_PROMPT = 'review-linger: take the slow review drill.';
+export const REVIEW_LINGER_DONE = 'The slow review drill finished';
+/** The same drill with every step slow too ("take your time": eight seconds a
+ * request), so a run reviewed beside it is still working while the review
+ * lingers — at full speed it would finish, and drop the review, in a second. */
+export const REVIEW_LINGER_SLOW_PROMPT = 'review-linger: take the slow review drill, and take your time over each step.';
+/** An agent run whose one sub-agent gets stuck; the parent's own wrap-up. */
+export const REVIEW_SUBAGENT_PROMPT = 'Delegate a stuck investigation.';
+export const REVIEW_SUBAGENT_DONE = 'Parent finished after the report';
 
 /** What the mock answers with once it is told to stop using tools — the
  * evidence that "answer now" really did send `tool_choice: "none"`. */
 export const ANSWER_NOW_TEXT = 'Answering now without tools';
 
-/**
- * The instruction the server persists when a check-in is answered with
- * "answer now", as `CHECKIN_ANSWER_NUDGE` in `packages/types`.
- *
- * Copied rather than imported: this package deliberately has no workspace
- * dependencies and talks to the server over HTTP alone, the same way every
- * other mirrored string here does (MOCK_TOOL_DONE, the scenario wrap-ups). If
- * it drifts, the spec that reads it back fails — which is the point, because
- * that text is part of the conversation's replay and changing it silently
- * would break the prompt prefix for every existing thread.
- */
-export const CHECKIN_ANSWER_NUDGE =
-  'Please stop using tools and give your best final answer now from what you have so far.';
+/** How a progress note starts in the thread (apps/mobile/lib/progressReview.ts). */
+export const PROGRESS_NOTE_TEXT = 'Progress check:';
 
 /** A prompt the mock provider answers with a `bash` tool call — the probe
  * used to check that a sandbox actually executes, in whichever mode is
@@ -159,8 +160,8 @@ export async function openSidebar(): Promise<void> {
       // 20s, which is the whole outer budget. One attempt therefore consumed
       // every retry, and the helper failed with "menuButton still not
       // displayed" whenever the first check ran a moment too early: right
-      // after a `browser.refresh()`, which is exactly where agent-checkin
-      // uses it. Letting the tap miss keeps re-checking for the pinned
+      // after a `browser.refresh()`, which is where a spec reading a thread
+      // back from history uses it. Letting the tap miss keeps re-checking for the pinned
       // sidebar instead of committing to a button that will never appear.
       const menu = byTestId('shell.menuButton');
       const tapped = await menu
@@ -643,7 +644,8 @@ export async function sendInNewRun(creds: Pick<Credentials, 'email' | 'password'
  * On an iPhone the keyboard stays up after a send and leaves the thread a
  * sliver above it, with a card scrolled out of it — and XCUITest reports an
  * off-screen element as not displayed. A tap on the list closes the keyboard
- * (the list does not keep it open for taps).
+ * (the list does not keep it open for taps), and a panel that tap opened by
+ * landing on a card is closed again.
  */
 export async function closeThreadKeyboard(): Promise<void> {
   if (platform() !== 'ios' || !(await browser.isKeyboardShown().catch(() => false))) return;
@@ -651,7 +653,46 @@ export async function closeThreadKeyboard(): Promise<void> {
   // Best effort. With an approval bar up as well the list has no room at
   // all and is not there to tap — and the bar itself is above the keyboard.
   const there = await list.waitForExist({ timeout: 5_000 }).then(() => true, () => false);
-  if (there) await list.click().catch(() => undefined);
+  if (!there) return;
+  await list.click().catch(() => undefined);
+  // The tap lands in the middle of the sliver of list above the keyboard,
+  // which can be a progress review's card by then (a fast run is reviewed
+  // within a second of the send): that opens the review's panel over the
+  // thread. Closed again, so the thread is what the spec goes on to read.
+  await browser.pause(400);
+  if (await isVisible('review.close').catch(() => false)) {
+    await tap('review.close');
+    await waitForAbsent('review.close');
+  }
+}
+
+/**
+ * Brings something further back in the open thread onto the screen: a card a
+ * run has since written past. `scrollTo` cannot on a phone: its drags start a
+ * quarter of the way down the screen, which on the agent surface is the run's
+ * header, not the list. These stay inside the list, and move towards older
+ * messages only (the list opens on its newest).
+ */
+export async function scrollThreadBackTo(id: string, timeout = 20_000): Promise<void> {
+  const p = platform();
+  if (p === 'web' || p === 'electron') {
+    await scrollTo(id, timeout);
+    return;
+  }
+  const { width, height } = await browser.getWindowSize();
+  for (let i = 0; i < 20; i++) {
+    if (await isVisible(id).catch(() => false)) return;
+    await browser
+      .action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ x: Math.round(width / 2), y: Math.round(height * 0.4) })
+      .down()
+      .pause(100)
+      .move({ duration: 400, x: Math.round(width / 2), y: Math.round(height * 0.62) })
+      .up()
+      .perform();
+    await browser.pause(400);
+  }
+  await byTestId(id).waitForDisplayed({ timeout });
 }
 
 /**
@@ -683,6 +724,46 @@ export async function listSubAgents(
   });
   if (!res.ok) throw new Error(`[e2e] listing sub-agents failed (${String(res.status)})`);
   return ((await res.json()) as { subagents: E2ESubAgent[] }).subagents;
+}
+
+/** A progress review as the API lists it: what its card is drawn from. */
+export interface E2ERunReview {
+  id: string;
+  step: number;
+  verdict?: string | null;
+  action?: string;
+  mode: string | null;
+  trigger: string;
+}
+
+/**
+ * Waits until the conversation has `count` recorded progress reviews and
+ * returns them in thread order.
+ *
+ * A card's testID carries its review's id, which a spec cannot know in
+ * advance — so it is read from here, the record the app itself reads after a
+ * reload. A sub-agent's are listed under its own conversation id.
+ */
+export async function waitForRunReviews(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+  count: number,
+  timeoutMs = 30_000,
+): Promise<E2ERunReview[]> {
+  const token = await apiToken(creds);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/reviews`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`[e2e] listing progress reviews failed (${String(res.status)})`);
+    const list = ((await res.json()) as { reviews: E2ERunReview[] }).reviews;
+    if (list.length >= count) return list;
+    if (Date.now() > deadline) {
+      throw new Error(`[e2e] ${conversationId} had ${String(list.length)} progress review(s), wanted ${String(count)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
 }
 
 /** Waits until the thread has `count` sub-agents and returns them, oldest
@@ -757,9 +838,8 @@ export async function patchSandboxSettings(patch: Record<string, unknown>): Prom
 /**
  * Patches a user's own prefs straight through the API.
  *
- * The settings screen offers presets (20/50/100/200), and a spec that wants to
- * *see* a check-in cannot wait for twenty real tool calls — so the cadence it
- * needs is set here rather than clicked. Per-user, so it takes that user's own
+ * A spec that wants to *see* a progress review cannot wait for twenty real
+ * tool calls — so the cadence it needs is set here rather than clicked. Per-user, so it takes that user's own
  * session rather than the admin's, unlike patchSandboxSettings above.
  */
 export async function patchPrefs(
@@ -890,8 +970,9 @@ export async function chooseScratchWorkspace(): Promise<void> {
   // after confirm (the mode selector, in agent-new-project) could land on
   // the backdrop and be lost, which then presented as a four-minute scenario
   // timeout in manual mode. Its siblings wait on the pill; this waits on
-  // the dialog itself.
-  await waitForGone('agent.workspace.dialog');
+  // the dialog itself. Queried afresh on each poll: under UiAutomator2 the
+  // dialog found before it closed goes on reporting itself displayed.
+  await waitForAbsent('agent.workspace.dialog', 60_000);
 }
 
 /**

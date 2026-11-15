@@ -166,20 +166,20 @@ describe('the server becoming unreachable', () => {
     await tap('sidebar.settings');
     await tap('settings.nav.checkins');
     await waitForVisible('checkins.scroll', 20_000);
-    const before = await allDisabled('settings.stepLimit.');
-    if (before.count === 0) throw new Error('no step-limit choices rendered');
+    const before = await allDisabled('settings.progressCheck.');
+    if (before.count === 0) throw new Error('no review-cadence choices rendered');
     if (before.enabled.length !== before.count) throw new Error('settings were disabled while the server was reachable');
 
     await cutServer();
     await waitForTextIn(BANNER, "Can't reach your server", 30_000);
-    const cut = await allDisabled('settings.stepLimit.');
+    const cut = await allDisabled('settings.progressCheck.');
     if (cut.enabled.length > 0) throw new Error(`pressable while unreachable: ${cut.enabled.join(', ')}`);
     await shot('unreachable-settings');
 
     await restoreServer();
     await tap('shell.offlineRetry');
     await waitForGone(BANNER, 15_000);
-    const after = await allDisabled('settings.stepLimit.');
+    const after = await allDisabled('settings.progressCheck.');
     if (after.enabled.length !== after.count) throw new Error('settings stayed disabled after the server came back');
 
     // And the chat that was cut off sends again.

@@ -17,7 +17,7 @@
 import { v4 as uuid } from "uuid";
 import { db, and, desc, eq, gt, gte, inArray, isNull, ne, sql } from "@loxaic/db";
 import { attachments, conversations, messages, sandboxes, usageRecords } from "@loxaic/db/schema";
-import { isNudgeText, type AttachmentRef, type ContentBlock } from "@loxaic/types";
+import { isServerNote, type AttachmentRef, type ContentBlock } from "@loxaic/types";
 import { getConversationSettings } from "../settings.ts";
 import { assertConversationAccess, NotFoundError } from "../streams/authz.ts";
 import { getStreamBroker, hasStreamBroker } from "../streams/index.ts";
@@ -26,6 +26,7 @@ import { announceConversationEvent } from "../streams/watchers.ts";
 import { checkpointsSince, dropTurns, hasCheckpointsSince, restoreCheckpoints, type RestoreReport } from "../agent/checkpoints.ts";
 import { attachActiveSandbox, attachRunningSandbox } from "../agent/sandbox-manager.ts";
 import type { SandboxHandle } from "../sandbox/provider.ts";
+import { eraseRunReviews, removeRunReviewsSince } from "../streams/runs/run-reviews.ts";
 
 /** What a rewind does: the conversation and the files the agent edited (the
  * default), the conversation alone, or the files alone. */
@@ -147,7 +148,7 @@ export async function previewRewind(input: {
   if (grant.kind === "subagent") throw new NotFoundError();
   const target = await rewindTarget(convId, input.messageId);
   const rows = await suffixRows(convId, target.id, true);
-  const typed = rows.filter((r) => r.authorType === "user" && !isNudgeText(textOf(r.content as ContentBlock[])));
+  const typed = rows.filter((r) => r.authorType === "user" && !isServerNote(textOf(r.content as ContentBlock[]), r.authorUserId));
   return {
     turns: typed.length,
     others: typed.filter((r) => r.authorUserId !== userId).length,
@@ -189,6 +190,7 @@ async function newestTyped(convId: string) {
       id: messages.id,
       lamport: messages.lamport,
       parentId: messages.parentId,
+      authorUserId: messages.authorUserId,
       content: messages.content,
       createdAt: messages.createdAt,
     })
@@ -196,10 +198,10 @@ async function newestTyped(convId: string) {
     .where(and(eq(messages.conversationId, convId), eq(messages.authorType, "user"), isNull(messages.deletedAt)))
     .orderBy(desc(messages.lamport), desc(messages.createdAt))
     .limit(20);
-  // The newest user rows may be nudges the last run wrote (a check-in's
-  // "answer now", a compaction's "continue"); the message to answer again is
+  // The newest user rows may be notes the last run wrote (a progress review's,
+  // a compaction's "continue"); the message to answer again is
   // the newest one a person typed.
-  return rows.find((r) => !isNudgeText(textOf(r.content as ContentBlock[])));
+  return rows.find((r) => !isServerNote(textOf(r.content as ContentBlock[]), r.authorUserId));
 }
 
 /** How long a files restore may hold the conversation, in total. */
@@ -287,7 +289,7 @@ async function rewindTarget(convId: string, messageId: string): Promise<Target> 
   if (!row) throw new NotFoundError();
   const blocks = row.content as ContentBlock[];
   const text = textOf(blocks);
-  if (row.authorType !== "user" || isNudgeText(text)) {
+  if (row.authorType !== "user" || isServerNote(text, row.authorUserId)) {
     throw new RewindError("not_rewindable", "Only a message someone typed can be rewound to.");
   }
   return { id: row.id, createdAt: row.createdAt, authorUserId: row.authorUserId, text, attachments: attachmentsOf(blocks) };
@@ -346,6 +348,13 @@ async function removeSuffix(
   if (removedIds.length > 0) {
     await db.transaction(async (tx) => {
       const now = new Date();
+      // The progress reviews that followed the removed rows go with them.
+      // First: the pivot's `created_at` is read from its row, which a rewind
+      // is about to remove. A removed child's are erased with its messages;
+      // a stamped child keeps its own, as it keeps its messages.
+      const pivotCreatedAt = sql`(SELECT m2.created_at FROM messages m2 WHERE m2.id = ${pivot.id})`;
+      await removeRunReviewsSince(tx, convId, pivotCreatedAt, { inclusive: opts.inclusive, keep, now });
+      if (!keep) await eraseRunReviews(tx, childIds);
       if (keep) {
         await tx.update(messages).set({ deletedAt: now }).where(inArray(messages.id, removedIds));
         // A child is reached only through its parent (`resolveAccess`), and a

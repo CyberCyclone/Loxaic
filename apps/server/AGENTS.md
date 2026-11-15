@@ -40,7 +40,7 @@ The Fastify API, WebSockets, run engine, sandboxes and llama.cpp runtime. These 
 
 - Authenticate through `authenticate`/`requireAdmin` (`auth/middleware.ts`), never `auth.api.getSession` directly — that skips the ban and must-change-password checks.
 - `routes/auth.ts` calls `auth.api.*` directly so a flagged user can still sign in, read the session, change password and sign out; a new `/api/auth/*` route a flagged user must not reach has to go through the middleware.
-- Authorize conversation access with `hasRole`, never an inlined ownership predicate: reading needs viewer; model/MCP prefs and delete are owner-only; sandbox and git routes are owner-only.
+- Authorize conversation access with `hasRole`, never an inlined ownership predicate: reading needs viewer (a thread's reviews included, and a sub-agent's under its own id); model/MCP prefs and delete are owner-only; sandbox and git routes are owner-only.
 - Every route touching `inference_providers` is `requireAdmin` — one key pays for every user's requests.
 - **Never let a request choose sandbox kind or network**: derive the kind from `getSandboxMode()`; `PATCH /v1/admin/settings/sandbox` is `requireAdmin`.
 - `POST /v1/sandboxes` requires owner role on its `conversation_id` (404 otherwise).
@@ -75,11 +75,13 @@ The Fastify API, WebSockets, run engine, sandboxes and llama.cpp runtime. These 
 
 ### Deleting a conversation
 
+- Erasing a conversation erases its `run_reviews` and its sub-agents' (`eraseRunReviews`): a digest is the conversation's content.
 - `delete.ts` is the only code that deletes or stamps a whole conversation (`rewind.ts` stamps only a rewound suffix's sub-agent children). Delete is owner-only and answers the identical `200 {ok:true}` to everyone else, admins included.
 
 ### Rewind and retry
 
 - `rewind.ts` is the only code that removes part of a conversation. Rewind removes a message and everything after; retry removes everything after the newest typed message and answers that row again.
+- A rewind removes the `run_reviews` rows that started at or after the pivot's `created_at` (after it, for a retry), stamping them instead under audit retention; read the pivot's time before its row goes (`removeRunReviewsSince`).
 - Return a rewound message's attachments only to their uploader, refreshing `created_at` so the reaper's grace restarts.
 
 ### Elsewhere, about conversation rows
@@ -90,7 +92,7 @@ The Fastify API, WebSockets, run engine, sandboxes and llama.cpp runtime. These 
 
 ### Running a routine
 
-- A routine run uses its owner's prefs and wait settings (approval window, check-in ladder); that is what keeps an unattended run bounded.
+- A routine run uses its owner's prefs (approval window, progress review); the review is what keeps an unattended run bounded.
 - **A routine's chats use only `routines.model`.** A null or unresolvable model records the run `failed` with an error assistant row; never fall back to the built-in default or `recent_models[0]` (that spends a provider key on a model nobody picked).
 
 ### Deleting a routine

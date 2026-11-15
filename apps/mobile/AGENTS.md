@@ -62,6 +62,11 @@ The one frontend (Expo + expo-router + gluestack-ui v5 + UniWind) for iOS, Andro
 - Pass a snapshot's `server_now` through as received, never default it to `Date.now()` (`localDeadline`). Convert `expires_at` once on receipt (`pendingWaits.ts`) and keep it.
 - Copy `author_user_id` in `foldSnapshot`/`applyEventToMsgs` only when the key is present. In `checkinNotice.ts` an id means that person, null means nobody (timed out), absent claims neither.
 
+### Progress reviews (`progressReview.ts`)
+
+- A conversation's review cards are one list keyed by review id, fed by the stream (`reviewsAfterEvent`, `reviewsAfterSnapshot`, `reviewsAfterEnd`) and the stored listing (`withListedReviews`, which drops a finished card it does not list: a rewind removed it). Ask the listing again on `conversation.rewound`; never filter cards by the removed message ids.
+- Place cards with `reviewsByMessage` (by lamport, under the message they followed); never by index or by time.
+
 ### Run state
 
 - Never read a waiting approval's mode from the mode selector — the selector is the next message's mode.
@@ -96,4 +101,4 @@ The one frontend (Expo + expo-router + gluestack-ui v5 + UniWind) for iOS, Andro
 
 ### Screens
 
-- Wait settings live on `checkins.tsx` (`settings.nav.checkins`), not the settings modal; each control hides when the server omits its field.
+- Approval-wait and progress-review settings live on `checkins.tsx` ("Approvals & progress", `settings.nav.checkins`), not the settings modal; each control hides when the server omits its field.

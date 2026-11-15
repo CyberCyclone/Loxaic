@@ -22,19 +22,25 @@ vi.mock("../../auth/middleware", () => ({
 }));
 
 const { prefsRoutes } = await import("../prefs.ts");
+const { DEFAULT_REVIEW_PROMPT } = await import("../../streams/runs/progress-review.ts");
 
 interface PrefsBody {
   toolAllowlist: string[];
-  maxIterations: number;
   recentModels: string[];
-  checkinTimeoutMs: number | null;
   approvalTimeoutMs: number | null;
   adaptiveTimeout: boolean;
-  checkinAutoContinues: number;
-  loopSensitivity: string;
+  progressReview: boolean;
+  progressCheckMs: number | null;
+  progressCheckSteps: number | null;
+  progressReviewPrompt: string | null;
   subagentModelMode: string;
   subagentModel: string | null;
-  serverDefaults: { checkinTimeoutMs: number; approvalTimeoutMs: number };
+  serverDefaults: {
+    approvalTimeoutMs: number;
+    progressCheckMs: number;
+    progressCheckSteps: number;
+    progressReviewPrompt: string;
+  };
 }
 
 const userId = `test-prefs-${uuid()}`;
@@ -78,27 +84,36 @@ describe("GET /v1/prefs", () => {
     expect(serverDefaults).toBeDefined();
     expect(prefs).toEqual({
       toolAllowlist: [],
-      maxIterations: 100,
       recentModels: [],
-      checkinTimeoutMs: null,
       approvalTimeoutMs: null,
       adaptiveTimeout: true,
-      checkinAutoContinues: 2,
-      loopSensitivity: "normal",
+      progressReview: true,
+      progressCheckMs: null,
+      progressCheckSteps: null,
+      progressReviewPrompt: null,
       subagentModelMode: "choose",
       subagentModel: null,
       bashGrantRetired: false,
     });
   });
 
-  it("reports the server's own window beside the user's, so the screen can name it", async () => {
-    const previous = process.env.APPROVAL_TIMEOUT_MS;
+  it("reports what a null setting means on this server, so the screen can name it", async () => {
+    const saved = { a: process.env.APPROVAL_TIMEOUT_MS, m: process.env.PROGRESS_CHECK_MS, s: process.env.PROGRESS_CHECK_STEPS };
     process.env.APPROVAL_TIMEOUT_MS = "90000";
+    process.env.PROGRESS_CHECK_MS = "600000";
+    process.env.PROGRESS_CHECK_STEPS = "12";
     try {
-      expect((await get()).serverDefaults).toEqual({ checkinTimeoutMs: 90_000, approvalTimeoutMs: 90_000 });
+      expect((await get()).serverDefaults).toEqual({
+        approvalTimeoutMs: 90_000,
+        progressCheckMs: 600_000,
+        progressCheckSteps: 12,
+        progressReviewPrompt: DEFAULT_REVIEW_PROMPT,
+      });
     } finally {
-      if (previous === undefined) delete process.env.APPROVAL_TIMEOUT_MS;
-      else process.env.APPROVAL_TIMEOUT_MS = previous;
+      for (const [key, value] of [["APPROVAL_TIMEOUT_MS", saved.a], ["PROGRESS_CHECK_MS", saved.m], ["PROGRESS_CHECK_STEPS", saved.s]] as const) {
+        if (value === undefined) Reflect.deleteProperty(process.env, key);
+        else process.env[key] = value;
+      }
     }
   });
 });
@@ -113,20 +128,22 @@ describe("PATCH /v1/prefs", () => {
     expect(await get()).not.toHaveProperty("autoCompact");
   });
 
-  it("does not disturb the tool allowlist when only the step limit is sent", async () => {
-    await patch({ toolAllowlist: ["fs_read"] });
-    await patch({ maxIterations: 40 });
+  it("refuses the step check-in's settings by name: the progress review replaced them", async () => {
+    for (const key of ["maxIterations", "checkinTimeoutMs", "checkinAutoContinues", "loopSensitivity"]) {
+      const res = await patch({ [key]: key === "loopSensitivity" ? "normal" : 10 });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toBe(`${key} is no longer a setting: runs are bounded by the progress review`);
+    }
     const prefs = await get();
-    expect(prefs.toolAllowlist).toEqual(["fs_read"]);
-    expect(prefs.maxIterations).toBe(40);
+    for (const key of ["maxIterations", "checkinTimeoutMs", "checkinAutoContinues", "loopSensitivity"]) expect(prefs).not.toHaveProperty(key);
   });
 
-  it("does not disturb the step limit when only the allowlist is sent", async () => {
-    await patch({ maxIterations: 40 });
+  it("does not disturb the tool allowlist when only a review setting is sent, nor the other way", async () => {
+    await patch({ toolAllowlist: ["fs_read"] });
+    await patch({ progressCheckSteps: 40 });
+    expect(await get()).toMatchObject({ toolAllowlist: ["fs_read"], progressCheckSteps: 40 });
     await patch({ toolAllowlist: ["grep"] });
-    const prefs = await get();
-    expect(prefs.maxIterations).toBe(40);
-    expect(prefs.toolAllowlist).toEqual(["grep"]);
+    expect(await get()).toMatchObject({ toolAllowlist: ["grep"], progressCheckSteps: 40 });
   });
 
   it("rejects an allowlist that is not builtin tool names", async () => {
@@ -134,83 +151,63 @@ describe("PATCH /v1/prefs", () => {
     expect((await patch({ toolAllowlist: "fs_read" })).statusCode).toBe(400);
   });
 
-  it("sets the agent step limit and reads it back", async () => {
-    const res = await patch({ maxIterations: 5 });
-    expect(res.statusCode).toBe(200);
-    expect((await get()).maxIterations).toBe(5);
-  });
-
-  it("leaves the other prefs alone when only the step limit is sent", async () => {
-    await patch({ adaptiveTimeout: false, toolAllowlist: ["fs_read"] });
-    await patch({ maxIterations: 50 });
-    const prefs = await get();
-    expect(prefs.maxIterations).toBe(50);
-    expect(prefs.adaptiveTimeout).toBe(false);
-    expect(prefs.toolAllowlist).toEqual(["fs_read"]);
-  });
-
-  it("refuses a step limit outside the supported range", async () => {
-    // Rejected rather than silently clamped — a client that asked for 5000
-    // should be told it did not get 5000.
-    for (const bad of [0, -1, 501, 5000, 2.5, "20", null]) {
-      expect((await patch({ maxIterations: bad })).statusCode).toBe(400);
-    }
-    // The boundaries themselves are valid.
-    expect((await patch({ maxIterations: 1 })).statusCode).toBe(200);
-    expect((await patch({ maxIterations: 500 })).statusCode).toBe(200);
-  });
-
   it("rejects a patch with nothing in it, rather than writing an empty row", async () => {
     expect((await patch({})).statusCode).toBe(400);
   });
 
-  it("sets each wait setting and reads it back, leaving the others alone", async () => {
-    expect((await patch({ checkinTimeoutMs: 30 * 60_000 })).statusCode).toBe(200);
-    expect((await patch({ approvalTimeoutMs: 5_000 })).statusCode).toBe(200);
+  it("sets each review and wait setting and reads it back, leaving the others alone", async () => {
+    expect((await patch({ progressReview: false })).statusCode).toBe(200);
+    expect((await patch({ progressCheckMs: 15 * 60_000 })).statusCode).toBe(200);
+    expect((await patch({ progressCheckSteps: 50 })).statusCode).toBe(200);
+    expect((await patch({ progressReviewPrompt: "Be strict about repeats." })).statusCode).toBe(200);
+    expect((await patch({ approvalTimeoutMs: 2 * 60_000 })).statusCode).toBe(200);
     expect((await patch({ adaptiveTimeout: false })).statusCode).toBe(200);
-    expect((await patch({ checkinAutoContinues: 0 })).statusCode).toBe(200);
-    expect((await patch({ loopSensitivity: "relaxed" })).statusCode).toBe(200);
     expect(await get()).toMatchObject({
-      checkinTimeoutMs: 30 * 60_000,
-      approvalTimeoutMs: 5_000,
+      progressReview: false,
+      progressCheckMs: 15 * 60_000,
+      progressCheckSteps: 50,
+      progressReviewPrompt: "Be strict about repeats.",
+      approvalTimeoutMs: 2 * 60_000,
       adaptiveTimeout: false,
-      checkinAutoContinues: 0,
-      loopSensitivity: "relaxed",
     });
   });
 
-  it("resets a window to the server default with null", async () => {
-    await patch({ checkinTimeoutMs: 60_000 });
-    expect((await patch({ checkinTimeoutMs: null })).statusCode).toBe(200);
-    expect((await get()).checkinTimeoutMs).toBeNull();
+  it("resets each to the server's default with null", async () => {
+    await patch({ progressCheckMs: 60_000, progressCheckSteps: 10, progressReviewPrompt: "Mine.", approvalTimeoutMs: 60_000 });
+    expect((await patch({ progressCheckMs: null, progressCheckSteps: null, progressReviewPrompt: null, approvalTimeoutMs: null })).statusCode).toBe(200);
+    expect(await get()).toMatchObject({ progressCheckMs: null, progressCheckSteps: null, progressReviewPrompt: null, approvalTimeoutMs: null });
   });
 
-  it("refuses wait settings outside the supported range", async () => {
-    for (const bad of [0, 4_999, 86_400_001, 1.5e4 + 0.5, "60000", true]) {
-      expect((await patch({ checkinTimeoutMs: bad })).statusCode).toBe(400);
-      expect((await patch({ approvalTimeoutMs: bad })).statusCode).toBe(400);
+  it("refuses values outside the supported ranges, and takes the edges", async () => {
+    for (const bad of [4_999, 8 * 60 * 60 * 1000 + 1, 1.5, "60000", true]) {
+      expect((await patch({ progressCheckMs: bad })).statusCode).toBe(400);
     }
-    expect((await patch({ checkinTimeoutMs: 5_000 })).statusCode).toBe(200);
-    expect((await patch({ checkinTimeoutMs: 86_400_000 })).statusCode).toBe(200);
-    for (const bad of [-1, 4, 1.5, "2", null]) {
-      expect((await patch({ checkinAutoContinues: bad })).statusCode).toBe(400);
-    }
-    expect((await patch({ checkinAutoContinues: 3 })).statusCode).toBe(200);
-    for (const bad of ["strict", "", null, 1]) {
-      expect((await patch({ loopSensitivity: bad })).statusCode).toBe(400);
-    }
-    for (const bad of ["yes", null, 1]) {
-      expect((await patch({ adaptiveTimeout: bad })).statusCode).toBe(400);
-    }
+    expect((await patch({ progressCheckMs: 5_000 })).statusCode).toBe(200);
+    expect((await patch({ progressCheckMs: 8 * 60 * 60 * 1000 })).statusCode).toBe(200);
+    for (const bad of [2, 501, 3.5, "20"]) expect((await patch({ progressCheckSteps: bad })).statusCode).toBe(400);
+    expect((await patch({ progressCheckSteps: 3 })).statusCode).toBe(200);
+    expect((await patch({ progressCheckSteps: 500 })).statusCode).toBe(200);
+    for (const bad of ["", "   ", "x".repeat(8_001), 7]) expect((await patch({ progressReviewPrompt: bad })).statusCode).toBe(400);
+    expect((await patch({ progressReviewPrompt: "x".repeat(8_000) })).statusCode).toBe(200);
+    expect((await patch({ progressReview: "yes" })).statusCode).toBe(400);
+    for (const bad of [4_999, 86_400_001]) expect((await patch({ approvalTimeoutMs: bad })).statusCode).toBe(400);
   });
 
   it("refuses to write the server defaults, rather than pretending to", async () => {
-    expect((await patch({ serverDefaults: { checkinTimeoutMs: 1 } })).statusCode).toBe(400);
+    expect((await patch({ serverDefaults: { progressCheckMs: 1 } })).statusCode).toBe(400);
   });
 
-  it("clamps a stored value that arrived some other way", async () => {
-    await db.update(userPrefs).set({ checkinTimeoutMs: 1, checkinAutoContinues: 99, loopSensitivity: "bogus" }).where(eq(userPrefs.userId, userId));
-    expect(await get()).toMatchObject({ checkinTimeoutMs: 5_000, checkinAutoContinues: 3, loopSensitivity: "normal" });
+  it("clamps a stored value that arrived some other way, and ignores an unusable prompt", async () => {
+    await db
+      .update(userPrefs)
+      .set({ approvalTimeoutMs: 1, progressCheckMs: 1, progressCheckSteps: 9_999, progressReviewPrompt: "  " })
+      .where(eq(userPrefs.userId, userId));
+    expect(await get()).toMatchObject({
+      approvalTimeoutMs: 5_000,
+      progressCheckMs: 5_000,
+      progressCheckSteps: 500,
+      progressReviewPrompt: null,
+    });
   });
 });
 
@@ -292,9 +289,9 @@ describe("the sub-agent model setting", () => {
   });
 
   it("leaves every other setting alone", async () => {
-    await patch({ maxIterations: 42 });
+    await patch({ progressCheckSteps: 42 });
     await patch({ subagentModelMode: "parent" });
-    expect(await get()).toMatchObject({ maxIterations: 42, subagentModelMode: "parent" });
+    expect(await get()).toMatchObject({ progressCheckSteps: 42, subagentModelMode: "parent" });
   });
 });
 

@@ -1,8 +1,8 @@
 /**
  * A run's waiting prompt survives a switch to another thread and back.
  *
- * The agent screen kept one run's state — its status, a pending approval or
- * check-in, the step counter, the to-do list — as a single value for "the
+ * The agent screen kept one run's state — its status, a pending approval, the
+ * step counter, the to-do list — as a single value for "the
  * thread on screen". Opening another thread cleared it, events for a thread
  * in the background were dropped, and coming back asked for no snapshot (the
  * socket had subscribed to that conversation already). On the beta, a run
@@ -16,12 +16,15 @@ import { browser, expect } from '@wdio/globals';
 import { apiToken, uniqueCreds } from '../helpers/auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { expectTextAbsent, isVisible, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
-  CHECKIN_SCENARIO_DONE,
-  CHECKIN_SCENARIO_PROMPT,
+  closeThreadKeyboard,
+  scrollThreadBackTo,
+  REVIEW_LINGER_DONE,
+  REVIEW_LINGER_PROMPT,
   MOCK_TOOL_DONE,
   TOOL_PROMPT,
+  getMessageTexts,
   goToSurface,
   listConversations,
   patchPrefs,
@@ -30,6 +33,7 @@ import {
   signUp,
   startNewAgentRun,
   waitForRunDone,
+  waitForRunReviews,
 } from '../helpers/app.ts';
 
 /** The mock waits eight seconds, then asks for fs_write: long enough to be
@@ -75,7 +79,7 @@ describe('switching agent threads while a run is waiting', () => {
   });
 
   after(async () => {
-    await patchPrefs(creds, { maxIterations: 100 });
+    await patchPrefs(creds, { progressCheckSteps: null });
   });
 
   it('brings an approval back to its thread, and keeps it off the other one', async function () {
@@ -126,26 +130,39 @@ describe('switching agent threads while a run is waiting', () => {
     await waitForRunDone(creds, asking, 60_000);
   });
 
-  it('brings a step check-in back to its thread', async function () {
+  it("brings a progress review's status back to its thread, and keeps it off the other one", async function () {
     this.timeout(4 * 60_000);
-    // Two steps, and a scenario with exactly two, so the run asks once.
-    await patchPrefs(creds, { maxIterations: 2 });
-    const asking = await startRun('auto', CHECKIN_SCENARIO_PROMPT);
-    await waitForVisible('checkin.banner', 90_000);
-    await waitForTextIn('agent.run.status', 'Waiting for you');
+    // Reviewed after three steps; the mock's reviewer takes twelve seconds.
+    await patchPrefs(creds, { progressCheckSteps: 3 });
+    const reviewing = await startRun('auto', REVIEW_LINGER_PROMPT);
+    // On an iPhone the keyboard left up by the send leaves the list a sliver.
+    await closeThreadKeyboard();
+    // The review under way is a card in its own thread's transcript (it has
+    // no record, and so no id to select it by, until it ends).
+    const UNDER_WAY = 'Paused to check progress';
+    const gone = async (timeoutMsg: string) =>
+      browser.waitUntil(async () => expectTextAbsent(UNDER_WAY).then(() => true, () => false), { timeout: 20_000, timeoutMsg });
+    await waitForTextIn('chat.messageList', UNDER_WAY, 90_000);
+    expect(await isVisible('run.review.status')).toBe(false);
 
     await selectThread(other, 'agent');
-    await waitForAbsent('checkin.banner');
+    await gone("the other thread showed a review that is not its run's");
 
-    await selectThread(asking, 'agent');
-    await waitForVisible('checkin.banner');
-    // The step count is part of what was kept.
-    await waitForTextIn('agent.run.status', 'Waiting for you · 2/2');
-    await shot('agent-switch-checkin-back');
+    await selectThread(reviewing, 'agent');
+    await waitForTextIn('chat.messageList', UNDER_WAY, 30_000);
+    await shot('agent-switch-review-back');
 
-    await tap('checkin.continue');
-    await waitForAbsent('checkin.banner');
-    await waitForTextIn('chat.messageList', CHECKIN_SCENARIO_DONE);
-    await waitForRunDone(creds, asking, 60_000);
+    await waitForRunDone(creds, reviewing, 90_000);
+    // Finished, the same card says what the review found, in this thread.
+    const [review] = await waitForRunReviews(creds, reviewing, 1);
+    // The run went on for more steps (and a second review): the first
+    // review's card is well above the fold by now.
+    // By its pressable: on a phone that is what a lookup can see to scroll to.
+    await scrollThreadBackTo(`review.card.${review.id}.open`);
+    await waitForFreshText(`review.card.${review.id}.title`, 'Progress check · progressing');
+    await gone('the card still said the review was under way after the run ended');
+    if (!(await getMessageTexts(creds, reviewing)).some((t) => t.includes(REVIEW_LINGER_DONE))) {
+      throw new Error('the run did not finish its drill after the review');
+    }
   });
 });

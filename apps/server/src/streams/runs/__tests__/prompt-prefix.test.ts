@@ -8,9 +8,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { attachments, conversations, messages, sandboxes, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import { CHECKIN_ANSWER_NUDGE, PLAN_ACCEPTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX, type ThinkingLevel } from "@loxaic/types";
+import { PLAN_ACCEPTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX, parseProgressNote, type ContentBlock, type ThinkingLevel } from "@loxaic/types";
 import type { ChatMessage } from "../../../inference/provider.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
+import { REVIEW_OUTPUT_CONTRACT } from "../review-marker.ts";
 import { managedExecutable } from "../../../browser/install.ts";
 import { SCREENSHOTS_SHOWN_LIMIT } from "../screenshots.ts";
 import { __resetExecutorsForTest, handleExecutorResult, registerExecutor } from "../../../executor/registry.ts";
@@ -69,6 +70,12 @@ vi.mock("../../../inference/provider.ts", async (importOriginal) => {
   return {
     ...actual,
     streamCompletion: (model: string, msgs: ChatMessage[], options?: unknown) => {
+      // A progress review is a request of its own, beside the conversation's
+      // prompt and never part of it (progress-review.ts): not recorded.
+      const first = msgs.at(0);
+      if (first?.role === "system" && first.content.endsWith(REVIEW_OUTPUT_CONTRACT)) {
+        return actual.streamCompletion(model, msgs, options as never);
+      }
       // Snapshot at call time. `chatMessages` is the live array the tool loop
       // keeps appending to, so holding a reference would record what it looked
       // like at the *end* of the run and quietly assert nothing.
@@ -703,93 +710,70 @@ describe("the stale todo reminder replays exactly", () => {
   });
 });
 
-describe("prompt prefix across a step check-in", () => {
+describe("prompt prefix across a progress note", () => {
   /**
-   * A check-in parks the run mid-turn and then resumes it, which makes it a
-   * new way for the live loop and the replay to diverge — and "answer now"
-   * goes further, writing a message into the middle of the transcript that the
-   * *next* turn has to reproduce byte for byte.
-   *
-   * That last part is why the instruction is persisted as a `user` row using
-   * the exported constant rather than injected into the live prompt only: this
-   * is the test that would fail if either side ever interpolated a step count,
-   * a name, or a different key order into it.
+   * A progress review writes a user row into the middle of a run — a steer
+   * that the run carries on after, or an answer that ends it — and the *next*
+   * turn has to reproduce it byte for byte. The note carries the reviewer's
+   * own words, so this is the test that would fail if the live push and the
+   * stored row ever differed in a byte, a key order or a trimmed space.
    */
   let dir: string;
   let file: string;
 
   beforeAll(async () => {
-    dir = mkdtempSync(path.join(tmpdir(), "checkin-prefix-"));
+    dir = mkdtempSync(path.join(tmpdir(), "review-prefix-"));
     file = path.join(dir, "scenarios.json");
     writeFileSync(
       file,
       JSON.stringify([
         {
-          match: "check in on me",
+          match: "review-stuck",
           steps: [
             { tool: "todo_write", args: { todos: [{ status: "pending", id: "1", text: "look around" }] } },
+            { tool: "todo_write", args: { todos: [{ status: "in_progress", id: "1", text: "look around" }] } },
             { tool: "todo_write", args: { todos: [{ status: "completed", id: "1", text: "look around" }] } },
           ],
-          finalText: "[Mock] check-in scenario finished.\n",
+          finalText: "[Mock] review scenario finished.\n",
         },
       ]),
     );
+    // Reviewed after every step.
     await db
       .insert(userPrefs)
-      .values({ userId, maxIterations: 1, updatedAt: new Date() })
-      .onConflictDoUpdate({ target: userPrefs.userId, set: { maxIterations: 1 } });
+      .values({ userId, progressCheckSteps: null, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { progressCheckSteps: null } });
+    process.env.PROGRESS_CHECK_STEPS = "1";
   });
 
   afterAll(async () => {
     delete process.env.MOCK_SCENARIOS_FILE;
+    delete process.env.PROGRESS_CHECK_STEPS;
     __resetMockScenariosForTest();
     rmSync(dir, { recursive: true, force: true });
     await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
   });
 
-  /** Starts a turn, waits for it to park at a check-in, and answers it. */
-  async function turnAnsweringCheckin(content: string, decision: "continue" | "answer", conversationId?: string) {
-    const result = await startChatRun({
-      userId,
-      content,
-      model: "llama-3.1-8b-instruct",
-      ...(conversationId === undefined ? {} : { conversationId }),
-    });
-    const convId = result.conversationId;
-    if (!convIds.includes(convId)) convIds.push(convId);
-
-    const deadline = Date.now() + 20_000;
-    for (;;) {
-      const run = getRunByConversation(convId);
-      if (!run) break;
-      if (run.stepsDecision) {
-        run.stepsDecision(decision, userId);
-        continue;
-      }
-      if (Date.now() > deadline) throw new Error("timed out waiting for the run to finish");
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    return convId;
-  }
-
-  it("holds when a check-in is answered with keep going", async () => {
+  it("holds across a steer and an answer, and on the turn after", async () => {
     process.env.MOCK_SCENARIOS_FILE = file;
     __resetMockScenariosForTest();
 
-    const convId = await turnAnsweringCheckin("check in on me", "continue");
-    await turn("thanks, what is next?", convId);
+    // Stuck after step 1 (a steer: it carries on), stuck again after step 2
+    // (told to answer, without tools).
+    const convId = await turn("review-stuck: look around");
+    const notes = (
+      await db.query.messages.findMany({
+        where: eq(messages.conversationId, convId),
+        orderBy: (m, { asc }) => [asc(m.lamport), asc(m.createdAt)],
+      })
+    )
+      .map((r) => (r.content as ContentBlock[]).map((b) => (b.kind === "text" ? b.text : "")).join(""))
+      .filter((text) => parseProgressNote(text) !== null);
+    expect(notes.map((t) => parseProgressNote(t)?.action)).toEqual(["steer", "answer"]);
+    // The live run already carried both notes forward, each request extending
+    // the one before.
     expectEachRequestExtendsTheLast();
-    // Keep going adds no message of its own — the window moves, the prompt
-    // does not.
-    expect(requestOptions.every((o) => o.toolChoice === undefined)).toBe(true);
-  });
-
-  it("holds when a check-in is answered with answer now, and on the turn after", async () => {
-    process.env.MOCK_SCENARIOS_FILE = file;
-    __resetMockScenariosForTest();
-
-    const convId = await turnAnsweringCheckin("check in on me", "answer");
-    const afterAnswerNow = requests.length;
+    const afterAnswer = requests.length;
     // The wrap-up request is the one that must not use tools...
     expect(requestOptions.at(-1)?.toolChoice).toBe("none");
     // ...but it still carries them, so the template renders the same prefix it
@@ -799,46 +783,9 @@ describe("prompt prefix across a step check-in", () => {
     expect(requestOptions.at(-1)?.toolCount).toBe(requestOptions.at(-2)?.toolCount);
     expect(requestOptions.at(-1)?.toolCount).toBeGreaterThan(0);
 
-    // The next turn replays the persisted instruction in the position the live
-    // loop pushed it, byte for byte — this is the assertion that catches an
-    // interpolated step count or a `system` row that replays differently.
     await turn("thanks, what is next?", convId);
     expectEachRequestExtendsTheLast();
-    const replayed = requests[afterAnswerNow];
-    expect(replayed).toContain(JSON.stringify({ role: "user", content: CHECKIN_ANSWER_NUDGE }));
-  });
-
-  it("holds when nobody answers: an auto-continue, then an automatic answer, then the next turn", async () => {
-    // The ladder writes nothing of its own on a keep-going — its notice is
-    // client-only — and the automatic answer persists the same fixed nudge a
-    // person's would. So neither may move the prefix.
-    process.env.MOCK_SCENARIOS_FILE = file;
-    __resetMockScenariosForTest();
-    const previous = process.env.APPROVAL_TIMEOUT_MS;
-    process.env.APPROVAL_TIMEOUT_MS = "50";
-    await db.update(userPrefs).set({ checkinAutoContinues: 1 }).where(eq(userPrefs.userId, userId));
-    try {
-      const result = await startChatRun({ userId, content: "check in on me", model: "llama-3.1-8b-instruct" });
-      const convId = result.conversationId;
-      convIds.push(convId);
-      const deadline = Date.now() + 20_000;
-      while (getRunByConversation(convId)) {
-        if (Date.now() > deadline) throw new Error("timed out waiting for the run to answer for itself");
-        await new Promise((r) => setTimeout(r, 25));
-      }
-      const afterAutoAnswer = requests.length;
-      expect(requestOptions.at(-1)?.toolChoice).toBe("none");
-      // Both steps ran: the first check-in kept going, the second wrapped up.
-      expect(requestOptions.filter((o) => o.toolChoice === undefined).length).toBeGreaterThanOrEqual(2);
-
-      await turn("thanks, what is next?", convId);
-      expectEachRequestExtendsTheLast();
-      expect(requests[afterAutoAnswer]).toContain(JSON.stringify({ role: "user", content: CHECKIN_ANSWER_NUDGE }));
-    } finally {
-      if (previous === undefined) delete process.env.APPROVAL_TIMEOUT_MS;
-      else process.env.APPROVAL_TIMEOUT_MS = previous;
-      await db.update(userPrefs).set({ checkinAutoContinues: 2 }).where(eq(userPrefs.userId, userId));
-    }
+    for (const note of notes) expect(requests[afterAnswer]).toContain(JSON.stringify({ role: "user", content: note }));
   });
 });
 

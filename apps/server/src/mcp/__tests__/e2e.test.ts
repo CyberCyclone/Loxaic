@@ -201,16 +201,13 @@ describe("MCP end-to-end through the agent loop", () => {
     }
   }, 30_000);
 
-  it("waits on the approval window, not the check-in one, and says how long", async () => {
-    // A short check-in window must not shorten an approval: they are separate
-    // settings because they are separate questions — "may this run?" is often
-    // worth waiting longer for than "keep going?".
+  it("waits on the user's approval window, and says how long", async () => {
     await db
       .insert(userPrefs)
-      .values({ userId, checkinTimeoutMs: 5_000, approvalTimeoutMs: 60_000, adaptiveTimeout: false, updatedAt: new Date() })
+      .values({ userId, approvalTimeoutMs: 60_000, adaptiveTimeout: false, updatedAt: new Date() })
       .onConflictDoUpdate({
         target: userPrefs.userId,
-        set: { checkinTimeoutMs: 5_000, approvalTimeoutMs: 60_000, adaptiveTimeout: false },
+        set: { approvalTimeoutMs: 60_000, adaptiveTimeout: false },
       });
     try {
       const turn = await runTurn("please use mcp echo", "manual", true);

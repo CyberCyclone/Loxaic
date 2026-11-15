@@ -19,25 +19,13 @@ describe('formatCountdown', () => {
 });
 
 describe('deadlineSentence', () => {
-  it('says the check-in will keep going, and where it is on the ladder', () => {
-    expect(
-      deadlineSentence({ kind: 'checkin', remainingMs: 581_000, onTimeout: 'continue', unattended: 0, autoContinues: 2 }),
-    ).toBe("If nobody answers in 9:41, I'll keep going (1 of 2).");
-  });
-
-  it('says it will wrap up at the end of the ladder', () => {
-    expect(deadlineSentence({ kind: 'checkin', remainingMs: 60_000, onTimeout: 'answer' })).toBe(
-      "If nobody answers in 1:00, I'll wrap up with what I have.",
-    );
-  });
-
   it('says an approval will not run', () => {
-    expect(deadlineSentence({ kind: 'approval', remainingMs: 60_000 })).toBe("If nobody answers in 1:00, this call won't run.");
+    expect(deadlineSentence({ remainingMs: 60_000 })).toBe("If nobody answers in 1:00, this call won't run.");
   });
 
   it('explains a window stretched by a slow step', () => {
-    expect(
-      deadlineSentence({ kind: 'approval', remainingMs: 60_000, timeoutMs: 44 * 60_000, basis: 'adaptive' }),
-    ).toContain('a step here has taken up to 22 min');
+    expect(deadlineSentence({ remainingMs: 60_000, timeoutMs: 44 * 60_000, basis: 'adaptive' })).toContain(
+      'a step here has taken up to 22 min',
+    );
   });
 });

@@ -1,6 +1,7 @@
 import { PERMISSION_CHECK_MARKER } from "../permissions/marker.ts";
+import { REVIEW_OUTPUT_CONTRACT } from "../streams/runs/review-marker.ts";
 import type { PromptProgress } from "@loxaic/types";
-import { PLAN_REQUIRED_NUDGE, QUESTIONS_ANSWERED_PREFIX } from "@loxaic/types";
+import { PLAN_REQUIRED_NUDGE, QUESTIONS_ANSWERED_PREFIX, parseProgressNote } from "@loxaic/types";
 import { scenarioDecisionFor } from "./mock-scenarios.ts";
 import { parsePromptProgress } from "./prompt-progress.ts";
 import { redactSecrets } from "./provider-secrets.ts";
@@ -162,7 +163,7 @@ export interface StreamOptions {
   /**
    * Whether the model may call a tool this request. Defaults to `"auto"`.
    *
-   * `"none"` is what a check-in answered with "answer now" sends. The tools
+   * `"none"` is what a run told to answer by its progress review sends. The tools
    * stay in the request either way, deliberately: llama.cpp renders their
    * schemas into the prompt's system region, so dropping them would change the
    * prefix and cost a full re-evaluation of the whole conversation on the one
@@ -189,6 +190,14 @@ export interface StreamOptions {
    * reply is thrown away. A body field, never a message.
    */
   maxTokens?: number;
+  /**
+   * Hold the reply to a JSON schema (`response_format`). llama.cpp constrains
+   * generation to it, so the reply cannot be prose, wander, or stop short of
+   * its closing brace. Sent only to a generic OpenAI-compatible backend: a
+   * named hosted API never gets a field it might refuse. Only the progress
+   * review sets it.
+   */
+  jsonSchema?: { name: string; schema: Record<string, unknown> };
   /**
    * The thinking level as request-body fields (`thinkingFields` in
    * thinking.ts): `reasoning_effort`, `chat_template_kwargs` or `reasoning`,
@@ -408,6 +417,29 @@ const MOCK_SUMMARY = "[Mock] Summary of the conversation so far.\n";
  * compaction's instruction. */
 const MOCK_EMPTY_MATCH = /\bsay nothing\b/i;
 
+/**
+ * A prompt the mock only thinks about: every reply that calls no tool is
+ * thinking and not a word, about sixteen seconds and 57,000 characters of it
+ * unless it is cut short first. What a run that ruminates looks like to the
+ * engine, which nothing else here produced: the mock never thought at all.
+ * Told not to think (`reasoning_effort: "none"`) it answers like any other
+ * prompt, as a model that honours the field does; "whatever you are told"
+ * makes it one that does not.
+ */
+const MOCK_RUMINATE_MATCH = /\bthink it over\b/i;
+const MOCK_RUMINATE_ALWAYS_MATCH = /\bthink it over whatever you are told\b/i;
+const MOCK_RUMINATE_CHUNKS = 1_500;
+
+/**
+ * A prompt the mock answers, once its tools are switched off, by writing the
+ * call it would have made as text: what a real model did with its last
+ * request. "once" makes it do so only while it may still think, so the request
+ * after it (thinking off) is answered in words.
+ */
+const MOCK_SPELLED_CALL_MATCH = /\bwrite the call out as text\b/i;
+const MOCK_SPELLED_CALL_ONCE_MATCH = /\bwrite the call out as text once\b/i;
+const MOCK_SPELLED_CALL = "<tool_call>\n<function=bash>\n<parameter=command>\npython3 /tmp/solve.py\n</parameter>\n</function>\n</tool_call>";
+
 /** A prompt whose tool call the mock makes without a word first. Real models
  * do this all the time; the mock's preamble meant no spec ever saw a reply
  * that is only a tool call, which the thread renders differently. */
@@ -557,9 +589,15 @@ async function* mockStream(
   const isScreenshotMessage = (m: ChatMessage): boolean =>
     m.role === "user" && typeof m.content !== "string" && m.content.at(0)?.type === "text" &&
     (m.content.at(0) as { text: string }).text.startsWith("Screenshot from web_fetch");
+  // A progress review's note that the run should change approach is Loxaic's
+  // too: a real model carries on with the task it was given, so the mock
+  // carries on with its scenario rather than reading the note as a prompt.
+  // A note that says to answer turns tools off, which the mock honours below.
+  const isProgressNote = (m: ChatMessage): boolean =>
+    m.role === "user" && parseProgressNote(textOfContent(m.content)) !== null;
   let lastUserIndex = -1;
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user" && !isScreenshotMessage(messages[i])) {
+    if (messages[i].role === "user" && !isScreenshotMessage(messages[i]) && !isProgressNote(messages[i])) {
       lastUserIndex = i;
       break;
     }
@@ -620,6 +658,53 @@ async function* mockStream(
     };
     return;
   }
+  // A progress review (streams/runs/progress-review.ts), answered from
+  // keywords in the task its digest quotes: `review-stuck`, `review-finished`,
+  // `review-garbage` (no verdict), `review-slow` (past any deadline), else
+  // progressing. `review-linger` takes twelve seconds over it, long enough
+  // for a spec on a phone to watch the review under way; `review-brief` two,
+  // so a review beside a slow run decides while the run is mid-reply. The reason quotes
+  // the start of the instructions it was given, so a spec can see a user's
+  // own instructions reached the reviewer.
+  const system = messages.at(0)?.role === "system" ? textOfContent(messages[0].content) : "";
+  if (system.endsWith(REVIEW_OUTPUT_CONTRACT)) {
+    const digest = textOfContent(messages.at(-1)?.content);
+    const delayMs = /\breview-slow\b/.test(digest)
+      ? 10 * 60_000
+      : /\breview-linger\b/.test(digest)
+        ? 12_000
+        : /\breview-brief\b/.test(digest)
+          ? 2_000
+          : 0;
+    if (delayMs > 0) {
+      await sleepUnlessAborted(delayMs, options.signal);
+      throwIfAborted(options.signal);
+    }
+    const verdict = /\breview-stuck\b/.test(digest) ? "stuck" : /\breview-finished\b/.test(digest) ? "finished" : "progressing";
+    const said = system.slice(0, 60).replace(/\s+/g, " ").trim();
+    const reply = /\breview-garbage\b/.test(digest)
+      ? "I would rather not say."
+      : JSON.stringify({ verdict, reason: `The mock reviewer says ${verdict} (instructions: "${said}").` });
+    yield { type: "delta", content: reply };
+    const tokens = mockPromptTokens(digest);
+    yield {
+      type: "done",
+      result: {
+        text: reply,
+        content: reply,
+        toolCalls: [],
+        finishReason: "stop",
+        ttftMs: Date.now() - startTime,
+        totalMs: Date.now() - startTime,
+        usage: { prompt_tokens: tokens, completion_tokens: 30, total_tokens: tokens + 30 },
+        timings: null,
+        cachedTokens: null,
+        promptTps: null,
+        genTps: null,
+      },
+    };
+    return;
+  }
   // Before anything is yielded, as a refused request is: nothing streamed.
   if (MOCK_FAIL_MATCH.test(prompt)) throw new Error(MOCK_FAIL_MESSAGE);
   if (MOCK_PROVIDER_OVERFLOW_MATCH.test(prompt) && isContextOverflow(backendErrorFields(MOCK_PROVIDER_OVERFLOW_BODY) ?? {})) {
@@ -634,11 +719,9 @@ async function* mockStream(
   // ordinary trigger when it fires.
   const toolStepIndex = currentTurn.filter((m) => m.role === "tool").length;
   // `tool_choice: "none"` is a real constraint, not a hint, so the mock has to
-  // honour it or the one path that depends on it — a check-in answered with
-  // "answer now" — would be untestable in the mock lane. It must be decided
-  // *before* the scenario lookup: the nudge that turns tools off is itself a
-  // user message, so `lastUserIndex` has already moved and `toolStepIndex` is
-  // back at 0 — a scenario consulted here would cheerfully restart at step 1.
+  // honour it or the one path that depends on it — a run a progress review
+  // told to answer — would be untestable in the mock lane. Decided before the
+  // scenario lookup, so a scenario cannot hand it a step to run.
   const noTools = options.toolChoice === "none";
   const scenarioDecision = noTools ? null : scenarioDecisionFor(prompt, toolNames, toolStepIndex);
 
@@ -755,6 +838,24 @@ async function* mockStream(
         function: { name: t.name, arguments: JSON.stringify(t.args) },
       });
     }
+  } else if (
+    MOCK_RUMINATE_MATCH.test(prompt) &&
+    (options.thinking?.reasoning_effort !== "none" || MOCK_RUMINATE_ALWAYS_MATCH.test(prompt))
+  ) {
+    for (let i = 0; i < MOCK_RUMINATE_CHUNKS; i++) {
+      throwIfAborted(options.signal);
+      ttftMs ??= Date.now() - startTime;
+      yield { type: "thinking", content: `Thought ${String(i + 1)}: weighing it once more. ` };
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    fullText = "";
+  } else if (
+    noTools &&
+    MOCK_SPELLED_CALL_MATCH.test(prompt) &&
+    !(MOCK_SPELLED_CALL_ONCE_MATCH.test(prompt) && options.thinking?.reasoning_effort === "none")
+  ) {
+    fullText = MOCK_SPELLED_CALL;
+    yield* emit(fullText);
   } else if (MOCK_EMPTY_MATCH.test(prompt)) {
     fullText = "";
   } else if (MOCK_THINKING_MATCH.test(prompt) && !alreadyRanTools) {
@@ -929,6 +1030,9 @@ async function* liveStream(
   // never gets a field it would refuse, whatever the caller believed.
   if (options.reportProgress && provider.preset === null) body.return_progress = true;
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
+  if (options.jsonSchema && provider.preset === null) {
+    body.response_format = { type: "json_schema", json_schema: { name: options.jsonSchema.name, strict: true, schema: options.jsonSchema.schema } };
+  }
   if (options.slotId !== undefined && provider.preset === null) body.id_slot = options.slotId;
   // Merged last but never over the fields above: none of them is a thinking
   // field, and thinkingFields only ever produces those.

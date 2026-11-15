@@ -9,7 +9,7 @@ import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/
 import { COMPACTION_CONTINUE_NUDGE, type CompactionStats, type ContentBlock } from "@loxaic/types";
 import { initStreamBroker } from "../../index.ts";
 import { startChatRun } from "../chatRun.ts";
-import { DEFAULT_MAX_ITERATIONS, loadHistory } from "../engine.ts";
+import { loadHistory } from "../engine.ts";
 import { getRunByConversation } from "../../registry.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 import { nextConversationLamport } from "../compactRun.ts";
@@ -359,56 +359,6 @@ describe("automatic compaction", () => {
       createdAt: new Date(),
     });
     expect(await nextConversationLamport(convId)).toBe(ahead + 1);
-  });
-
-  it("checks in at the user's step cadence rather than the built-in default", async () => {
-    // The cadence used to be a constant, and used to be a *ceiling* — the run
-    // died at it. Now it pauses and asks (see step-checkin.test.ts for the
-    // three answers); what this case is about is whose number decides when,
-    // not what happens next. So the same prompt is run twice and compared: one
-    // run gets its answer, the other is parked with a question.
-    const promptText = "make a todo list";
-
-    const withDefault = await seedConversation(2);
-    await startChatRun({ userId, content: promptText, model: "llama-3.1-8b-instruct", conversationId: withDefault });
-    await waitFor(async () => {
-      // `model` is set only on assistant rows the tool loop created, which is
-      // what separates them from the seeded ones this conversation starts with.
-      const done = (await db.query.messages.findMany({ where: eq(messages.conversationId, withDefault) }))
-        .filter((r) => r.authorType === "assistant" && r.model !== null && r.status === "complete");
-      // The loop takes a second iteration to turn the tool result into an
-      // answer, so an unbounded run produces two assistant turns.
-      return done.length >= 2 ? done : null;
-    });
-
-    await db
-      .insert(userPrefs)
-      .values({ userId, maxIterations: 1, updatedAt: new Date() })
-      .onConflictDoUpdate({ target: userPrefs.userId, set: { maxIterations: 1 } });
-    try {
-      const limited = await seedConversation(2);
-      await startChatRun({ userId, content: promptText, model: "llama-3.1-8b-instruct", conversationId: limited });
-      // Parked, not finished: the run holds a resolver nobody has answered.
-      // Waiting on that rather than on a sleep is also what keeps this honest
-      // — a loop ignoring the pref would sail past and end the run instead.
-      await waitFor(() => Promise.resolve(getRunByConversation(limited)?.stepsDecision ?? null));
-
-      const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, limited) });
-      // One iteration's worth: the tool ran, and the loop stopped to ask
-      // before turning the result into an answer.
-      expect(rows.filter((r) => r.authorType === "assistant" && r.model !== null)).toHaveLength(1);
-      expect(rows.some((r) => r.authorType === "tool")).toBe(true);
-
-      // Answer it, so the run gives its inference slot back before the suite
-      // moves on — a parked run at concurrency 1 would stall everything after.
-      getRunByConversation(limited)?.stepsDecision?.("answer", userId);
-      await waitFor(() => Promise.resolve(getRunByConversation(limited) ? null : true));
-    } finally {
-      await db
-        .update(userPrefs)
-        .set({ maxIterations: DEFAULT_MAX_ITERATIONS })
-        .where(eq(userPrefs.userId, userId));
-    }
   });
 
   it("leaves a short conversation alone even when it is proportionally full", async () => {

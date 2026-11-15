@@ -12,7 +12,7 @@ import type {
   ThinkingLevel,
   Workspace,
 } from "@loxaic/types";
-import { LIMITS_ON, SUBAGENT_LOST_ERROR } from "@loxaic/types";
+import { LIMITS_ON, SUBAGENT_LOST_ERROR, parseProgressNote } from "@loxaic/types";
 import type { PermissionMode } from "@loxaic/agent";
 import type { SubagentOutcome } from "./subagent-policy.ts";
 import { stripControl } from "../../mcp/sanitize.ts";
@@ -29,7 +29,7 @@ import { getRun, registerRun, seedRunLimits, startModeLog, type RunHandle } from
 import { announceNewRun } from "../watchers.ts";
 import { chatWorkspaceDescription } from "./chatRun.ts";
 import { runToolLoop } from "./engine.ts";
-import { subagentOutcome } from "./subagent-policy.ts";
+import { subagentOutcome, unansweredReport } from "./subagent-policy.ts";
 import type { CheckpointTurn } from "../../agent/checkpoints.ts";
 
 /**
@@ -445,7 +445,7 @@ export async function runSubagent(
   // `complete` told its parent `ok: true` and "finished without a final
   // reply" — stored as the tool result and replayed on every later turn, with
   // the real report sitting unread in the child's conversation.
-  const text = await finalText(childId).catch((err: unknown) => {
+  const said = await finalText(childId).catch((err: unknown) => {
     console.warn(`could not read sub-agent ${childId}'s reply: ${(err as Error).message}`);
     return null;
   });
@@ -460,7 +460,7 @@ export async function runSubagent(
     ...(end.error === undefined ? {} : { error: end.error }),
   });
 
-  return subagentOutcome({ description: call.description, status: end.status, text, error: end.error });
+  return subagentOutcome({ description: call.description, status: end.status, text: said?.text ?? null, unanswered: said?.unanswered, error: end.error });
 }
 
 /**
@@ -485,7 +485,7 @@ export function mirrorProgress(
   hooks: {
     onInLine?: () => void;
     /** It is waiting for a slot: first in line, or back in line after
-     * handing its slot back (an approval, a check-in). */
+     * handing its slot back (an approval). */
     onQueued?: () => void;
     /** Its first iteration: the moment it got a slot, once. */
     onAdmitted?: (at: number) => void;
@@ -586,22 +586,42 @@ export function mirrorProgress(
   };
 }
 
-/** The text of the child's last assistant message — its report. Ordered as
- * the engine replays, never by insertion (see the root AGENTS.md). Empty when
- * it never wrote one. */
-async function finalText(childConvId: string): Promise<string> {
+/**
+ * The child's report: the text of its last assistant message. Ordered as the
+ * engine replays, never by insertion (see the root AGENTS.md). Empty when it
+ * never wrote one.
+ *
+ * A child told to answer that never wrote a word ends on a note saying so
+ * (`answerUnwritten` in engine.ts). That note is then its report, built from
+ * the row and so the same on every read: why it was ended, and where its
+ * thinking had got to. `unanswered` marks it, so the parent's call fails
+ * rather than passing as a finished job.
+ */
+async function finalText(childConvId: string): Promise<{ text: string; unanswered?: true }> {
+  const textOf = (content: unknown): string =>
+    ((content ?? []) as ContentBlock[])
+      .filter((b): b is Extract<ContentBlock, { kind: "text" }> => b.kind === "text")
+      .map((b) => b.text)
+      .join("\n")
+      .trim();
+  const newest = await db
+    .select({ content: messages.content, authorType: messages.authorType, authorUserId: messages.authorUserId })
+    .from(messages)
+    .where(eq(messages.conversationId, childConvId))
+    .orderBy(desc(messages.lamport), desc(messages.createdAt))
+    .limit(1);
+  const last = newest.at(0);
+  if (last?.authorType === "user" && last.authorUserId === null) {
+    const note = parseProgressNote(textOf(last.content));
+    if (note?.action === "ended") return { text: unansweredReport(note), unanswered: true };
+  }
   const rows = await db
     .select({ content: messages.content })
     .from(messages)
     .where(and(eq(messages.conversationId, childConvId), eq(messages.authorType, "assistant")))
     .orderBy(desc(messages.lamport), desc(messages.createdAt))
     .limit(1);
-  const blocks = (rows.at(0)?.content ?? []) as ContentBlock[];
-  return blocks
-    .filter((b): b is Extract<ContentBlock, { kind: "text" }> => b.kind === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim();
+  return { text: textOf(rows.at(0)?.content) };
 }
 
 async function markEnded(

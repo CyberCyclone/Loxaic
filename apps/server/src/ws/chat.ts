@@ -7,7 +7,7 @@ import { resolveCommandSkill } from "../skills/resolve.ts";
 import { recordSkillUse } from "../skills/usage.ts";
 import { createDelivery } from "./delivery.ts";
 import { assertConversationAccess } from "../streams/authz.ts";
-import { answerApproval, answerCheckin, mayActOnRun } from "./run-actions.ts";
+import { answerApproval, mayActOnRun } from "./run-actions.ts";
 import { getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
 import { beginSendFor, sendErrorFor, sendOutcomeFor } from "./send-outcomes.ts";
@@ -239,8 +239,6 @@ export function chatWsHandler(app: FastifyInstance) {
             msg.stream_id,
             msg.type === "agent.approve" && msg.always === true,
           );
-        } else if (msg.type === "agent.steps") {
-          await answerCheckin(userId, msg.stream_id, msg.decision);
         }
       } catch (err) {
         // A no-op when the run already settled it: only the first counts.

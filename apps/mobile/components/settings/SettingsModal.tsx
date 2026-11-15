@@ -392,8 +392,8 @@ export function SettingsModal({
             <SettingsNavRow
               testID="settings.nav.checkins"
               icon={Hourglass}
-              title="Check-ins & approvals"
-              subtitle="How long the agent waits for you, and what it does if you are away"
+              title="Approvals & progress"
+              subtitle="How long an approval waits for you, and how long runs are reviewed"
               onPress={() => { openScreen('/checkins'); }}
             />
 

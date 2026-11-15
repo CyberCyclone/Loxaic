@@ -1,4 +1,4 @@
-import { endStaleSubAgents, type ServerMessage, type StreamSnapshot, type StreamStatus } from "@loxaic/types";
+import { endStaleSubAgents, settledRunReviews, type ServerMessage, type StreamSnapshot, type StreamStatus } from "@loxaic/types";
 import { assertConversationAccess, filterAccessible } from "../streams/authz.ts";
 import { getStreamBroker } from "../streams/index.ts";
 import type { StreamRecord } from "../streams/types.ts";
@@ -118,21 +118,16 @@ export function createDelivery(
     if (mode === "tapOnly") records = await broker.readFrom(streamId, 0);
     const folded = broker.foldSnapshot(records);
     currentSeq = records.length ? records[records.length - 1].seq : 0;
-    // A finished run holds no questions. Both `pending_approval` and
-    // `pending_checkin` describe a run parked on a person, and neither can be
-    // answered once the stream has ended — so advertising one to a client
-    // catching up is offering a button that does nothing.
+    // A finished run holds no questions and runs no review. `pending_approval`
+    // describes a run parked on a person, which cannot be answered once the
+    // stream has ended — so advertising one to a client catching up is
+    // offering a button that does nothing. `reviewing` is the same: a run that
+    // ended mid-review leaves no `run.review.end` (progress-review.ts).
     //
     // Stripped here rather than in `foldSnapshot`, which is pure over the
     // record log and cannot see the terminal status: `producer.end` writes no
     // record, it only finalizes the meta. This is the one place the snapshot
     // and the status are both in hand.
-    //
-    // Found by stopping a run parked at a check-in: the abort emits no
-    // `steps.decision` — nobody decided — so nothing in the log ever cleared
-    // the question, and the next resync put the banner back on a run that had
-    // already ended. An approval survives this by accident, because its abort
-    // path records a `tool.result` that the fold clears on.
     //
     // The same holds for its sub-agents. A run waits for its children before
     // it ends and stopping it stops them, so one still marked running in a
@@ -141,8 +136,10 @@ export function createDelivery(
     const snapshot: StreamSnapshot =
       status === "active"
         ? folded
-        : (({ pending_approval: _a, pending_checkin: _c, subagents, ...rest }) => ({
+        : (({ pending_approval: _a, reviewing: _r, subagents, reviews, ...rest }) => ({
             ...rest,
+            // A review the run ended under never finished: no card for it.
+            ...(reviews && settledRunReviews(reviews).length ? { reviews: settledRunReviews(reviews) } : {}),
             ...(subagents ? { subagents: endStaleSubAgents(subagents, meta?.updatedAt ?? Date.now()) } : {}),
           }))(folded);
 

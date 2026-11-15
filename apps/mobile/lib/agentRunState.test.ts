@@ -26,15 +26,15 @@ function fold(levels: RunLevels, convId: string, events: StreamEventKind[], stre
 describe('per-conversation run state', () => {
   it('keeps a background thread’s approval while another thread is on screen', () => {
     // A asks, the person opens B, B runs, then they come back to A.
-    let levels = fold({}, 'A', [{ kind: 'iteration', n: 3, max: 100 }, ask]);
-    levels = fold(levels, 'B', [{ kind: 'iteration', n: 1, max: 100 }], 's2');
+    let levels = fold({}, 'A', [{ kind: 'iteration', n: 3 }, ask]);
+    levels = fold(levels, 'B', [{ kind: 'iteration', n: 1 }], 's2');
     const a = runLevelOf(levels, 'A');
     expect(a.runState).toBe('awaiting_approval');
     expect(a.pendingApproval?.callId).toBe('call_0');
     expect(a.pendingApproval?.streamId).toBe('s1');
-    expect(a.iteration).toEqual({ n: 3, max: 100 });
+    expect(a.iteration).toEqual({ n: 3 });
     expect(runLevelOf(levels, 'B').pendingApproval).toBeNull();
-    expect(runLevelOf(levels, 'B').iteration).toEqual({ n: 1, max: 100 });
+    expect(runLevelOf(levels, 'B').iteration).toEqual({ n: 1 });
   });
 
   it('records an approval that arrives while its thread is not on screen', () => {
@@ -67,23 +67,34 @@ describe('per-conversation run state', () => {
   });
 
   it('does not touch the state for an event that changes nothing', () => {
-    const levels = fold({}, 'A', [{ kind: 'iteration', n: 1, max: 100 }]);
+    const levels = fold({}, 'A', [{ kind: 'iteration', n: 1 }]);
     const after = fold(levels, 'A', [{ kind: 'text.delta', message_id: 'm', text: 'hi' }]);
     expect(after).toBe(levels);
   });
 
-  it('asks and clears a step check-in, keeping the step count with it', () => {
-    let levels = fold({}, 'A', [{ kind: 'steps.checkin', n: 100, max: 100, reason: 'budget', timeout_ms: 1000 }]);
-    expect(runLevelOf(levels, 'A')).toMatchObject({ runState: 'awaiting_checkin', iteration: { n: 100, max: 100 } });
-    expect(runLevelOf(levels, 'A').pendingCheckin?.deadline?.deadlineAt).toBe(NOW + 1000);
-    levels = fold(levels, 'A', [{ kind: 'steps.decision', decision: 'continue', by: 'user' }]);
-    expect(runLevelOf(levels, 'A')).toMatchObject({ runState: 'running', pendingCheckin: null });
+  it('follows a progress review from its start to its end, without changing the run state', () => {
+    let levels = fold({}, 'A', [{ kind: 'iteration', n: 4 }, { kind: 'run.review.start', mode: 'alongside' }]);
+    expect(runLevelOf(levels, 'A')).toMatchObject({ runState: 'running', reviewing: 'alongside' });
+    // A repeat of the same start changes nothing.
+    const again = fold(levels, 'A', [{ kind: 'run.review.start', mode: 'alongside' }]);
+    expect(again).toBe(levels);
+    levels = fold(levels, 'A', [{ kind: 'run.review.end', verdict: 'progressing', action: 'none' }]);
+    expect(runLevelOf(levels, 'A')).toMatchObject({ runState: 'running', reviewing: null });
+    // An end with no review going (a resync) changes nothing.
+    expect(fold(levels, 'A', [{ kind: 'run.review.end', verdict: null, action: 'none' }])).toBe(levels);
+  });
+
+  it('says a paused review as paused', () => {
+    const levels = fold({}, 'A', [{ kind: 'run.review.start', mode: 'paused' }]);
+    expect(runLevelOf(levels, 'A').reviewing).toBe('paused');
   });
 
   it('ends a run, clearing what it was waiting on', () => {
     const levels = fold({}, 'A', [ask]);
     const ended = runLevelAfterEnd(runLevelOf(levels, 'A'), 'complete');
-    expect(ended).toMatchObject({ runState: 'done', pendingApproval: null, pendingCheckin: null, iteration: null, queuePosition: null });
+    expect(ended).toMatchObject({ runState: 'done', pendingApproval: null, reviewing: null, iteration: null, queuePosition: null });
+    const reviewing = runLevelOf(fold({}, 'A', [{ kind: 'run.review.start', mode: 'paused' }]), 'A');
+    expect(runLevelAfterEnd(reviewing, 'cancelled').reviewing).toBeNull();
     expect(runLevelAfterEnd(IDLE_RUN, 'error').runState).toBe('error');
   });
 
@@ -91,6 +102,7 @@ describe('per-conversation run state', () => {
     const snapshot: StreamSnapshot = {
       messages: [],
       iteration: { n: 4, max: 100 },
+      reviewing: { mode: 'alongside' },
       queued: { position: 1 },
       pending_approval: { call_id: 'call_0', tool: 't', args: {}, timeout_ms: 600_000, expires_at: 5_000 },
     };
@@ -101,11 +113,13 @@ describe('per-conversation run state', () => {
     expect(level.queuePosition).toBe(1);
     expect(level.pendingApproval).toMatchObject({ callId: 'call_0', streamId: 's1' });
     expect(level.pendingApproval?.deadline?.deadlineAt).toBe(NOW + 3_000);
+    // An older server's step limit is not carried; the review is.
+    expect(level.iteration).toEqual({ n: 4 });
+    expect(level.reviewing).toBe('alongside');
   });
 
   it('reads the other snapshot states', () => {
     const base: StreamSnapshot = { messages: [] };
-    expect(runLevelFromSnapshot({ ...base, pending_checkin: { n: 1, max: 1, reason: 'budget' } }, 'active', 's', NOW).runState).toBe('awaiting_checkin');
     expect(runLevelFromSnapshot({ ...base, queued: { position: 3 } }, 'active', 's', NOW).runState).toBe('queued');
     expect(runLevelFromSnapshot(base, 'active', 's', NOW).runState).toBe('running');
     expect(runLevelFromSnapshot(base, 'cancelled', 's', NOW).runState).toBe('done');
@@ -113,42 +127,33 @@ describe('per-conversation run state', () => {
   });
 
   it('drops a removed run’s prompt on a rewind, and the counters only when asked', () => {
-    const asking = runLevelOf(fold({}, 'A', [{ kind: 'iteration', n: 2, max: 9 }, ask]), 'A');
+    const asking = runLevelOf(fold({}, 'A', [{ kind: 'iteration', n: 2 }, { kind: 'run.review.start', mode: 'alongside' }, ask]), 'A');
     expect(runLevelAfterRewind(asking, new Set(['other']), false)).toBe(asking);
     const removed = runLevelAfterRewind(asking, new Set(['s1']), false);
     expect(removed.pendingApproval).toBeNull();
-    expect(removed.iteration).toEqual({ n: 2, max: 9 });
-    expect(runLevelAfterRewind(asking, new Set(), true)).toMatchObject({ iteration: null });
+    expect(removed.iteration).toEqual({ n: 2 });
+    expect(removed.reviewing).toBe('alongside');
+    expect(runLevelAfterRewind(asking, new Set(), true)).toMatchObject({ iteration: null, reviewing: null });
   });
 
   it('does not stay parked on a prompt a rewind removed', () => {
-    const asking = runLevelOf(fold({}, 'A', [{ kind: 'iteration', n: 2, max: 9 }, ask]), 'A');
+    const asking = runLevelOf(fold({}, 'A', [{ kind: 'iteration', n: 2 }, ask]), 'A');
     // The followed run itself was removed: nothing of it is running.
     expect(runLevelAfterRewind(asking, new Set(['s1']), true)).toMatchObject({ runState: 'done', pendingApproval: null });
     // A retry's run is followed; the removed run's question was never its own.
     expect(runLevelAfterRewind(asking, new Set(['s1']), false).runState).toBe('running');
-    // A check-in goes the same way, by the run it names.
-    const checking = runLevelOf(fold({}, 'A', [{ kind: 'steps.checkin', n: 9, max: 9, reason: 'budget' }]), 'A');
-    expect(checking.pendingCheckin?.streamId).toBe('s1');
-    expect(runLevelAfterRewind(checking, new Set(['s1']), true)).toMatchObject({ runState: 'done', pendingCheckin: null });
-    expect(runLevelAfterRewind(checking, new Set(['s0']), false)).toBe(checking);
-    // A check-in that names no run can only be the followed run's.
-    const unnamed: AgentRunLevel = { ...checking, pendingCheckin: { n: 9, max: 9, reason: 'budget' } };
-    expect(runLevelAfterRewind(unnamed, new Set(['s0']), true).pendingCheckin).toBeNull();
-    expect(runLevelAfterRewind(unnamed, new Set(['s0']), false)).toBe(unnamed);
   });
 
   it('keeps a prompt only from an active run’s snapshot', () => {
     const snapshot: StreamSnapshot = {
       messages: [],
       pending_approval: { call_id: 'call_0', tool: 't', args: {} },
-      pending_checkin: { n: 1, max: 1, reason: 'budget' },
+      reviewing: { mode: 'paused' },
     };
     for (const status of ['complete', 'cancelled', 'error'] as const) {
-      expect(runLevelFromSnapshot(snapshot, status, 's1', NOW)).toMatchObject({ pendingApproval: null, pendingCheckin: null });
+      expect(runLevelFromSnapshot(snapshot, status, 's1', NOW)).toMatchObject({ pendingApproval: null, reviewing: null });
     }
-    expect(runLevelFromSnapshot({ ...snapshot, pending_approval: undefined }, 'active', 's1', NOW).pendingCheckin)
-      .toMatchObject({ n: 1, streamId: 's1' });
+    expect(runLevelFromSnapshot(snapshot, 'active', 's1', NOW).reviewing).toBe('paused');
   });
 
   it('moves a placeholder’s state to the real id, unless the real id has its own', () => {
@@ -167,20 +172,10 @@ describe('per-conversation run state', () => {
   });
 });
 
-describe('a step limit turned off', () => {
-  it('stays off through a loop check-in, which names the step too', () => {
-    const levels = fold({}, 'A', [
-      { kind: 'iteration', n: 3, max: 4, unlimited: true },
-      { kind: 'steps.checkin', n: 3, max: 4, unlimited: true, reason: 'loop' },
-    ]);
-    expect(runLevelOf(levels, 'A').iteration).toEqual({ n: 3, max: 4, unlimited: true });
-  });
-
-  it('follows each step, so turning it back on shows', () => {
-    const off = fold({}, 'A', [{ kind: 'iteration', n: 7, max: 57, unlimited: true }]);
-    expect(runLevelOf(off, 'A').iteration).toEqual({ n: 7, max: 57, unlimited: true });
-    const on = fold(off, 'A', [{ kind: 'iteration', n: 8, max: 57 }]);
-    expect(runLevelOf(on, 'A').iteration).toEqual({ n: 8, max: 57 });
+describe('an older server’s step limit', () => {
+  it('is dropped: only the step number is kept', () => {
+    const levels = fold({}, 'A', [{ kind: 'iteration', n: 7, max: 57, unlimited: true }]);
+    expect(runLevelOf(levels, 'A').iteration).toEqual({ n: 7 });
   });
 });
 

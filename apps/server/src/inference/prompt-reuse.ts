@@ -78,7 +78,7 @@ export function sha(input: string): string {
  * data URI inline, so hashing every message on every tool iteration costs CPU
  * proportional to the entire attachment budget, repeatedly, on the single Node
  * thread. Measured at ~18 ms per 10 MB image per call, against a 32 MB image
- * budget and for as many iterations as a run's check-in window allows — a
+ * budget and for every iteration of a run, however many it takes — a
  * diagnostic that could add seconds of synchronous work and hundreds of MB of
  * transient strings.
  *

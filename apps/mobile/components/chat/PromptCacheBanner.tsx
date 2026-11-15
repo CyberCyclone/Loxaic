@@ -7,8 +7,8 @@ import type { PromptCacheBanner as Banner } from '@/lib/promptCache';
  * Above the composer when a reload took this conversation's prompt cache: the
  * next message will re-read the whole conversation, which on a long one is
  * minutes — said before it is sent rather than discovered after. In the flow,
- * like the step check-in banner, and informational only: sending is still
- * the person's call.
+ * above the composer, and informational only: sending is still the person's
+ * call.
  */
 export function PromptCacheBanner({ banner, onDismiss }: { banner: Banner; onDismiss: () => void }) {
   return (

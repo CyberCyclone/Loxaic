@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS, MIN_WAIT_TIMEOUT_MS } from "@loxaic/types";
 import {
-  clampAutoContinues,
   clampWaitTimeoutMs,
   effectiveTimeoutMs,
   serverDefaultTimeoutMs,
-  unattendedDecision,
 } from "../timeouts.ts";
 
 describe("clampWaitTimeoutMs", () => {
@@ -19,15 +17,6 @@ describe("clampWaitTimeoutMs", () => {
     expect(clampWaitTimeoutMs(1)).toBe(MIN_WAIT_TIMEOUT_MS);
     expect(clampWaitTimeoutMs(10 * MAX_WAIT_TIMEOUT_MS)).toBe(MAX_WAIT_TIMEOUT_MS);
     expect(clampWaitTimeoutMs(60_000)).toBe(60_000);
-  });
-});
-
-describe("clampAutoContinues", () => {
-  it("clamps to 0-3", () => {
-    expect(clampAutoContinues(-2)).toBe(0);
-    expect(clampAutoContinues(99)).toBe(3);
-    expect(clampAutoContinues(2)).toBe(2);
-    expect(clampAutoContinues(null)).toBeNull();
   });
 });
 
@@ -91,24 +80,5 @@ describe("effectiveTimeoutMs", () => {
     expect(effectiveTimeoutMs({ baseMs: 600_000, adaptive: true, slowestTurnMs: MAX_WAIT_TIMEOUT_MS }).ms).toBe(
       MAX_WAIT_TIMEOUT_MS,
     );
-  });
-});
-
-describe("unattendedDecision", () => {
-  it("walks the ladder: keep going twice, then wrap up", () => {
-    expect([0, 1, 2, 3].map((prior) => unattendedDecision(prior, 2, "timeout"))).toEqual([
-      "continue",
-      "continue",
-      "answer",
-      "answer",
-    ]);
-  });
-
-  it("wraps up straight away with no auto-continues", () => {
-    expect(unattendedDecision(0, 0, "timeout")).toBe("answer");
-  });
-
-  it("always wraps up when the run has gone", () => {
-    expect(unattendedDecision(0, 3, "gone")).toBe("answer");
   });
 });

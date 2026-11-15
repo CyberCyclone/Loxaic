@@ -51,31 +51,4 @@ describe("foldSnapshot and the run's mode", () => {
     ]);
     expect(askedAgain.pending_approval).toMatchObject({ call_id: "call_0", mode: "auto" });
   });
-
-  it("keeps a step limit turned off through a loop check-in", () => {
-    const snapshot = broker.foldSnapshot([
-      rec(1, {
-        kind: "steps.checkin",
-        n: 3,
-        max: 4,
-        unlimited: true,
-        reason: "loop",
-      }),
-    ]);
-    expect(snapshot.iteration).toEqual({ n: 3, max: 4, unlimited: true });
-  });
-
-  it("carries a step limit turned off, and drops it once it is back on", () => {
-    expect(broker.foldSnapshot([rec(1, { kind: "iteration", n: 7, max: 107, unlimited: true })]).iteration).toEqual({
-      n: 7,
-      max: 107,
-      unlimited: true,
-    });
-    expect(
-      broker.foldSnapshot([
-        rec(1, { kind: "iteration", n: 7, max: 107, unlimited: true }),
-        rec(2, { kind: "iteration", n: 8, max: 107 }),
-      ]).iteration,
-    ).toEqual({ n: 8, max: 107 });
-  });
 });

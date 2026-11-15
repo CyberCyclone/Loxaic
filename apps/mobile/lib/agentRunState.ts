@@ -1,5 +1,5 @@
-import type { PermissionMode, StreamEventKind, StreamSnapshot } from '@loxaic/api-client';
-import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from './pendingWaits';
+import type { PermissionMode, ReviewMode, StreamEventKind, StreamSnapshot } from '@loxaic/api-client';
+import { toPendingApproval, type PendingApproval } from './pendingWaits';
 
 /**
  * `queued` means the run exists and is waiting for an inference slot —
@@ -12,16 +12,11 @@ import { toPendingApproval, toPendingCheckin, type PendingApproval, type Pending
  * it actually wound up, which for a run mid-tool-call is not instant — so the
  * button read as broken (#113). This is the acknowledgement, not a claim that
  * anything has stopped yet.
- *
- * `awaiting_checkin` is the run asking whether to keep going — the same kind
- * of pause as `awaiting_approval` (slot handed back, waiting on a person),
- * which is why it sits beside it rather than being folded into `running`.
  */
 export type RunState =
   | 'queued'
   | 'running'
   | 'awaiting_approval'
-  | 'awaiting_checkin'
   | 'stopping'
   | 'done'
   | 'error';
@@ -42,8 +37,12 @@ export type RunState =
 export interface AgentRunLevel {
   runState: RunState;
   pendingApproval: PendingApproval | null;
-  pendingCheckin: PendingCheckin | null;
-  iteration: { n: number; max: number; unlimited?: true } | null;
+  /** A progress review of this run is under way, and how (beside it, or with
+   * the run paused for it); null when none is. */
+  reviewing: ReviewMode | null;
+  /** The step the run is on. No limit: an older server also sent one, which
+   * nothing reads now. */
+  iteration: { n: number } | null;
   queuePosition: number | null;
   /** The live run's permission mode, as the server says it is (#311), or
    * null with no run going or from an older server. Never the selector's. */
@@ -53,7 +52,7 @@ export interface AgentRunLevel {
 export const IDLE_RUN: AgentRunLevel = Object.freeze({
   runState: 'done',
   pendingApproval: null,
-  pendingCheckin: null,
+  reviewing: null,
   iteration: null,
   queuePosition: null,
   runMode: null,
@@ -101,25 +100,22 @@ export function runLevelFromSnapshot(
   if (status === 'active') {
     // Order matters: a snapshot can carry both a queue position and a pending
     // approval (a run that yielded its slot to ask, then had to queue to get
-    // it back). The approval is what the user can act on, so it wins — and a
-    // check-in is the same kind of thing, so it outranks the queue too.
+    // it back). The approval is what the user can act on, so it wins.
     if (snapshot.pending_approval) runState = 'awaiting_approval';
-    else if (snapshot.pending_checkin) runState = 'awaiting_checkin';
     else if (snapshot.queued) runState = 'queued';
     else runState = 'running';
   } else runState = status === 'error' ? 'error' : 'done';
   return {
     runState,
-    iteration: snapshot.iteration ?? null,
+    iteration: snapshot.iteration ? { n: snapshot.iteration.n } : null,
     // Only an active run can be waiting on anyone. The server strips a
-    // finished run's question from its snapshot (delivery.ts), but the bar and
-    // the banner render on a prompt's presence alone, and every conversation's
-    // snapshot is kept now — not only the one on screen — so a finished run
-    // must not bring two buttons that can do nothing back on a switch.
+    // finished run's question from its snapshot (delivery.ts), but the bar
+    // renders on a prompt's presence alone, and every conversation's snapshot
+    // is kept now — not only the one on screen — so a finished run must not
+    // bring buttons that can do nothing back on a switch.
     pendingApproval: status === 'active' && snapshot.pending_approval
       ? toPendingApproval(snapshot.pending_approval, now, serverNow, streamId) : null,
-    pendingCheckin: status === 'active' && snapshot.pending_checkin
-      ? toPendingCheckin(snapshot.pending_checkin, now, serverNow, streamId) : null,
+    reviewing: status === 'active' ? (snapshot.reviewing?.mode ?? null) : null,
     queuePosition: snapshot.queued?.position ?? null,
     runMode: status === 'active' ? (snapshot.mode ?? null) : null,
   };
@@ -157,7 +153,7 @@ export function runLevelAfterEvent(
         runState: next.runState === 'awaiting_approval' ? 'running' : next.runState,
       };
     case 'iteration':
-      return { ...next, runState: 'running', iteration: { n: event.n, max: event.max, ...(event.unlimited ? { unlimited: true as const } : {}) } };
+      return { ...next, runState: 'running', iteration: { n: event.n } };
     case 'approval.request':
       return { ...next, runState: 'awaiting_approval', pendingApproval: toPendingApproval(event, now, undefined, streamId) };
     case 'tool.result':
@@ -166,18 +162,10 @@ export function runLevelAfterEvent(
         runState: 'running',
         pendingApproval: next.pendingApproval?.callId === event.call_id ? null : next.pendingApproval,
       };
-    case 'steps.checkin':
-      // The header shows the step count, and this is the moment it matters
-      // most — so it is kept in step with the question.
-      return {
-        ...next,
-        runState: 'awaiting_checkin',
-        pendingCheckin: toPendingCheckin(event, now, undefined, streamId),
-        iteration: { n: event.n, max: event.max, ...(event.unlimited ? { unlimited: true as const } : {}) },
-      };
-    case 'steps.decision':
-      // Someone answered — possibly on another device, possibly the timeout.
-      return { ...next, runState: 'running', pendingCheckin: null };
+    case 'run.review.start':
+      return next.reviewing === event.mode ? next : { ...next, reviewing: event.mode };
+    case 'run.review.end':
+      return next.reviewing === null ? next : { ...next, reviewing: null };
     default:
       return next;
   }
@@ -191,7 +179,7 @@ export function runLevelAfterEnd(prev: AgentRunLevel, status: string): AgentRunL
     iteration: null,
     queuePosition: null,
     pendingApproval: null,
-    pendingCheckin: null,
+    reviewing: null,
     runMode: null,
   };
 }
@@ -216,24 +204,21 @@ export function runLevelAfterRewind(
   clearsLiveRun: boolean,
 ): AgentRunLevel {
   // A prompt that names its run goes when that run went. One that does not
-  // (a check-in from before `streamId`) can only be the followed run's.
+  // (from before `streamId`) can only be the followed run's.
   const removed = (streamId: string | undefined) =>
     streamId ? removedStreams.has(streamId) : clearsLiveRun;
   const pendingApproval = prev.pendingApproval && removed(prev.pendingApproval.streamId) ? null : prev.pendingApproval;
-  const pendingCheckin = prev.pendingCheckin && removed(prev.pendingCheckin.streamId) ? null : prev.pendingCheckin;
-  const dropped = pendingApproval !== prev.pendingApproval || pendingCheckin !== prev.pendingCheckin;
+  const dropped = pendingApproval !== prev.pendingApproval;
   if (!dropped && !clearsLiveRun) return prev;
   let runState = prev.runState;
   if (pendingApproval) runState = 'awaiting_approval';
-  else if (pendingCheckin) runState = 'awaiting_checkin';
   else if (clearsLiveRun) runState = prev.runState === 'error' ? 'error' : 'done';
-  else if (prev.runState === 'awaiting_approval' || prev.runState === 'awaiting_checkin') runState = 'running';
+  else if (prev.runState === 'awaiting_approval') runState = 'running';
   return {
     ...prev,
     runState,
     pendingApproval,
-    pendingCheckin,
-    ...(clearsLiveRun ? { iteration: null, queuePosition: null } : {}),
+    ...(clearsLiveRun ? { iteration: null, queuePosition: null, reviewing: null } : {}),
   };
 }
 

@@ -712,13 +712,13 @@ describe("sub-agents", () => {
     }
   }, 40_000);
 
-  it("keeps a child bounded, whatever its parent's switches say", async () => {
+  it("keeps a child reviewed, whatever its parent's switch says", async () => {
     const sandbox = { mode: process.env.SANDBOX_MODE, root: process.env.SANDBOX_HOST_ROOT };
     process.env.SANDBOX_MODE = "host";
     process.env.SANDBOX_HOST_ROOT = path.join(dir, "sandboxes");
     try {
       const convId = await newConversation();
-      await db.update(conversations).set({ stepLimitOff: true }).where(eq(conversations.id, convId));
+      await db.update(conversations).set({ progressReviewOff: true }).where(eq(conversations.id, convId));
       const streamId = await agentRun(convId, "Use a sub-agent: write a file called notes", "manual");
       await waitFor("the child to wait on an approval", async () =>
         (await snapshotOf(streamId)).subagents?.[0]?.pending_approval !== undefined,
@@ -727,8 +727,8 @@ describe("sub-agents", () => {
       const handle = getRun((child.subagent as SubAgentInfo).streamId);
       expect(handle?.limits).toEqual(LIMITS_ON);
 
-      applyRunLimits(userId, convId, { stepLimitOff: true, loopCheckOff: true });
-      expect(getRunByConversation(convId)?.limits).toEqual({ stepLimitOff: true, loopCheckOff: true });
+      applyRunLimits(userId, convId, { progressReviewOff: true });
+      expect(getRunByConversation(convId)?.limits).toEqual({ progressReviewOff: true });
       expect(handle?.limits).toEqual(LIMITS_ON);
 
       await changeRunMode(userId, convId, "auto");

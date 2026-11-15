@@ -52,6 +52,9 @@ import { PlanReviewBar } from '@/components/agent/PlanReviewBar';
 import { QuestionsPanel } from '@/components/agent/QuestionsPanel';
 import { useReview } from '@/hooks/useReview';
 import { useSubAgents } from '@/hooks/useSubAgents';
+import { useRunReviews } from '@/hooks/useRunReviews';
+import { RunReviewContext } from '@/components/chat/RunReviewContext';
+import { RunReviewPanel } from '@/components/chat/RunReviewPanel';
 import { SubAgentContext } from '@/components/subagents/SubAgentContext';
 import { SubAgentPanel } from '@/components/subagents/SubAgentPanel';
 import { SubAgentsList } from '@/components/subagents/SubAgentsList';
@@ -104,7 +107,7 @@ export default function AgentScreen() {
     promptCache,
     responseStartedAt,
     pendingApproval,
-    pendingCheckin,
+    reviewing,
     iteration,
     queuePosition,
     pendingWorkspace,
@@ -123,7 +126,6 @@ export default function AgentScreen() {
     handleApprove,
     handleAllowAlways,
     handleDeny,
-    handleSteps,
     handleFork,
     handleDelete,
     handleRename,
@@ -136,6 +138,7 @@ export default function AgentScreen() {
     promotion,
     stageCard,
     subAgents: subAgentState,
+    runReviews: runReviewState,
   } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef, pendingStageRef, thinkingRef, runLimitsRef);
   // What the "/" palette offers here, most-used first (#283).
   const { skills, noteUsed: noteSkillUsed } = useSkills(activeId, busy);
@@ -143,6 +146,9 @@ export default function AgentScreen() {
   // panel, and the approval to show when the run itself is not asking.
   // Stopping one and answering it are editor actions, as they are on the run.
   const subAgents = useSubAgents(subAgentState, activeId, Boolean(activeRun && canEdit(activeRun)));
+  // This run's progress reviews: their cards in the thread, the panel one
+  // opens, and those of the sub-agent whose panel is open.
+  const runReviews = useRunReviews(runReviewState, activeId, subAgents.panel.view?.conversation_id ?? null);
   // One approval at a time, the run's own first: it is the one the composer's
   // Stop and the header are already about. A sub-agent's follows, named.
   const childApproval = pendingApproval ? null : subAgents.approvalChild;
@@ -397,7 +403,7 @@ export default function AgentScreen() {
     msgs: activeRun?.msgs ?? NO_MESSAGES,
     busy,
     canDecide: Boolean(activeRun && canEdit(activeRun)) && connection === 'online',
-    blocked: subAgents.sheetOpen,
+    blocked: subAgents.sheetOpen || runReviews.sheetOpen,
     settled: historySettled,
     loaded: historyLoaded,
   });
@@ -590,6 +596,7 @@ export default function AgentScreen() {
             <VStack className="flex-1">
               <PlanReviewContext.Provider value={planContext}>
                 <SubAgentContext.Provider value={subAgents.ui}>
+                <RunReviewContext.Provider value={runReviews.ui}>
                   <AgentStream
                     run={activeRun}
                     state={runState}
@@ -603,7 +610,8 @@ export default function AgentScreen() {
                     pendingApproval={shownApproval}
                     // Who is asking, when it is a sub-agent rather than the run.
                     approvalSource={childApproval?.description}
-                    pendingCheckin={pendingCheckin}
+                    reviewing={reviewing}
+                    reviews={runReviews.list}
                     history={history}
                     stageCard={stageCard}
                     promptCache={promptCache}
@@ -620,10 +628,8 @@ export default function AgentScreen() {
                       if (pendingApproval) handleDeny(pendingApproval.callId);
                       else if (childApproval) subAgents.answer(childApproval.conversation_id, false);
                     }}
-                    onCheckinContinue={() => { handleSteps('continue'); }}
-                    onCheckinAnswer={() => { handleSteps('answer'); }}
-                    onCheckinStop={handleStop}
                   />
+                </RunReviewContext.Provider>
                 </SubAgentContext.Provider>
               </PlanReviewContext.Provider>
               <TerminalPanel
@@ -650,7 +656,7 @@ export default function AgentScreen() {
                   onPress={() => { setChooserOpen(true); }}
                 />
               </HStack>
-              {cacheNotice.banner && !pendingCheckin && !pendingApproval && (
+              {cacheNotice.banner && !pendingApproval && (
                 <PromptCacheBanner banner={cacheNotice.banner} onDismiss={() => { if (cacheNotice.banner) cacheNotice.dismiss(cacheNotice.banner.key); }} />
               )}
               <Composer
@@ -825,6 +831,13 @@ export default function AgentScreen() {
         onDeny={subAgents.panel.deny}
         onClose={subAgents.panel.close}
         selectorMode={mode}
+        reviews={runReviews.childList}
+      />
+      <RunReviewPanel
+        review={runReviews.panel.review}
+        detail={runReviews.panel.detail}
+        onRetry={runReviews.panel.retry}
+        onClose={runReviews.panel.close}
       />
       <QuestionsPanel
         questions={openQuestions?.questions ?? null}

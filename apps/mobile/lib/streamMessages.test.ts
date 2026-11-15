@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHECKIN_ANSWER_NUDGE, type ApiMessage, type StreamSnapshot } from '@loxaic/api-client';
+import { CHECKIN_ANSWER_NUDGE, progressNoteText, type ApiMessage, type StreamSnapshot } from '@loxaic/api-client';
 import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages } from './streamMessages';
 import type { Message } from './types';
 import { compactionCardState } from '@/components/chat/compactionState';
@@ -59,6 +59,16 @@ describe('failed turns carry their reason', () => {
     expect(m.error).toBe(false);
     expect(m.errorText).toBeUndefined();
     expect(m.stopped).toBe(true);
+  });
+
+  it('drops a reply a progress review cut short before anything was written', () => {
+    const msgs: Message[] = [
+      { id: 'u1', role: 'user', text: 'go' },
+      { id: 'a1', role: 'assistant', text: '' },
+    ];
+    expect(applyEventToMsgs(msgs, { kind: 'message.end', message_id: 'a1', status: 'cancelled', discard: true })).toEqual([msgs[0]]);
+    // Without the mark it is a stop like any other, and stays.
+    expect(applyEventToMsgs(msgs, { kind: 'message.end', message_id: 'a1', status: 'cancelled' })).toHaveLength(2);
   });
 
   it('from a stream snapshot', () => {
@@ -160,6 +170,12 @@ describe('check-in provenance', () => {
   it('from history: an ordinary user message carries none', () => {
     const typed = row({ id: 'u2', authorType: 'user', authorUserId: 'u1', content: [{ kind: 'text', text: 'hello' }] });
     expect(reconstructMessages([typed])[0]).not.toHaveProperty('authorUserId');
+    // A progress note's words carry theirs too: null for the server's own,
+    // a name for someone who typed them.
+    const noteText = progressNoteText('answer', 'It has the cause.');
+    const note = (authorUserId: string | null) => row({ id: 'p1', authorType: 'user', authorUserId, model: null, content: [{ kind: 'text', text: noteText }] });
+    expect(reconstructMessages([note(null)])[0]).toHaveProperty('authorUserId', null);
+    expect(reconstructMessages([note('u1')])[0].authorUserId).toBe('u1');
   });
 
   it('from message.start, keeping silence distinct from null', () => {
@@ -182,7 +198,7 @@ describe('check-in provenance', () => {
     expect(silent[0]).not.toHaveProperty('authorUserId');
   });
 
-  it('from a snapshot, with the timed-out decision on its turn', () => {
+  it('from a snapshot', () => {
     const snapshot: StreamSnapshot = {
       messages: [
         {
@@ -193,7 +209,6 @@ describe('check-in provenance', () => {
           thinking: '',
           tool_calls: [],
           status: 'complete',
-          checkin_decision: { decision: 'continue', by: 'timeout', n: 3, unattended: 1, auto_continues: 2 },
         },
         {
           message_id: 'n1',
@@ -208,20 +223,7 @@ describe('check-in provenance', () => {
       ],
     };
     const msgs = applySnapshotToMsgs([], snapshot);
-    expect(msgs[0].checkinDecision).toMatchObject({ decision: 'continue', by: 'timeout', n: 3 });
     expect(msgs[1]).toHaveProperty('authorUserId', null);
-  });
-
-  it('live: a timed-out decision lands on the newest assistant turn, and a person\'s does not', () => {
-    const msgs: Message[] = [
-      { id: 'a1', role: 'assistant', text: '' },
-      { id: 'u1', role: 'user', text: 'x' },
-      { id: 'a2', role: 'assistant', text: '' },
-    ];
-    const timed = applyEventToMsgs(msgs, { kind: 'steps.decision', decision: 'continue', by: 'timeout', n: 4, unattended: 1, auto_continues: 2 });
-    expect(timed[2].checkinDecision).toEqual({ decision: 'continue', by: 'timeout', n: 4, unattended: 1, auto_continues: 2 });
-    expect(timed[0].checkinDecision).toBeUndefined();
-    expect(applyEventToMsgs(msgs, { kind: 'steps.decision', decision: 'continue', by: 'user', n: 4 })).toBe(msgs);
   });
 });
 

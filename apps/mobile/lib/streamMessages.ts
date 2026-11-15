@@ -5,8 +5,8 @@ import type {
   ApiMessage,
 } from '@loxaic/api-client';
 import {
-  CHECKIN_ANSWER_NUDGE,
   SUBAGENT_TOOL_NAME,
+  isNudgeText,
   isStreamErrorCode,
   parseTodoList,
   stripTodoReminder,
@@ -194,9 +194,10 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
       if (skill) msg.skill = skill;
       const skillsUpdate = extractSkillsUpdate(blocks);
       if (skillsUpdate) msg.skillsUpdate = skillsUpdate;
-      // Only the check-in instruction carries provenance worth rendering; a
-      // row is authoritative, so null here really does mean "nobody".
-      if (msg.text === CHECKIN_ANSWER_NUDGE) msg.authorUserId = row.authorUserId;
+      // A note's text carries its provenance: who settled an old check-in,
+      // and whether a progress note is the server's or someone typing its
+      // words. A row is authoritative, so null here really does mean "nobody".
+      if (isNudgeText(msg.text)) msg.authorUserId = row.authorUserId;
       out.push(msg);
       byId.set(row.id, msg);
       continue;
@@ -343,7 +344,6 @@ export function snapshotMessageToMessage(
     compaction: role === 'summary' ? sm.compaction : undefined,
     attachments: role === 'user' ? sm.attachments : undefined,
     ...('author_user_id' in sm ? { authorUserId: sm.author_user_id } : {}),
-    ...(sm.checkin_decision ? { checkinDecision: sm.checkin_decision } : {}),
     ...(role === 'user' && sm.instructions_update ? { instructionsUpdate: sm.instructions_update } : {}),
     ...(role === 'user' && sm.skill ? { skill: sm.skill } : {}),
     ...(role === 'user' && sm.skills_update ? { skillsUpdate: sm.skills_update } : {}),
@@ -430,22 +430,6 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
         },
       ];
     }
-    case 'steps.decision': {
-      // Mirrors the server's fold: a check-in nobody answered is noted on the
-      // assistant turn it followed, so the transcript can say the run kept
-      // going on its own. A person's decision needs no note.
-      if (event.by !== 'timeout') return msgs;
-      let idx = -1;
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === 'assistant') {
-          idx = i;
-          break;
-        }
-      }
-      if (idx < 0) return msgs;
-      const { kind: _kind, ...note } = event;
-      return msgs.map((m, i) => (i === idx ? { ...m, checkinDecision: note } : m));
-    }
     case 'text.delta':
       return msgs.map((m) => (m.id === event.message_id ? { ...m, text: m.text + event.text } : m));
     case 'thinking.delta':
@@ -470,6 +454,9 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
       // ring move during a long turn instead of only after it (#193).
       return msgs.map((m) => (m.id === event.message_id ? { ...m, usage: usageFromTurn(event.usage) } : m));
     case 'message.end':
+      // A reply a progress review cut short before a word of it: nothing to
+      // show, so it goes (see `discard` on the event).
+      if (event.discard) return msgs.filter((m) => m.id !== event.message_id);
       return msgs.map((m) =>
         m.id === event.message_id
           ? {

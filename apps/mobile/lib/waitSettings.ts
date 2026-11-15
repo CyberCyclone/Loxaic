@@ -1,10 +1,17 @@
 /**
- * Formatting for the check-in and approval wait settings, and for the
- * countdown that shows them in use. Pure, so the wording is unit-tested.
+ * Formatting for the approval wait and progress review settings, and for the
+ * countdown that shows an approval wait in use. Pure, so the wording is
+ * unit-tested.
  */
 
 /** The window choices the settings screen offers, beside "server default". */
 export const WAIT_PRESETS_MS = [5 * 60_000, 10 * 60_000, 30 * 60_000, 60 * 60_000] as const;
+
+/** Working time between progress reviews, beside "server default". */
+export const PROGRESS_CHECK_PRESETS_MS = [5 * 60_000, 15 * 60_000, 30 * 60_000, 60 * 60_000] as const;
+
+/** Steps between progress reviews, beside "server default". */
+export const PROGRESS_STEP_PRESETS = [10, 20, 50, 100] as const;
 
 /**
  * A duration a person reads at a glance: "45 s", "10 min", "1 h 30 min".
@@ -31,43 +38,18 @@ export function formatCountdown(ms: number): string {
   return h > 0 ? `${String(h)}:${String(m).padStart(2, '0')}:${ss}` : `${String(m)}:${ss}`;
 }
 
-export type WaitKind = 'checkin' | 'approval';
-
-/** What happens when a wait runs out, in the run's own voice. */
-export function onTimeoutPhrase(
-  kind: WaitKind,
-  onTimeout: 'continue' | 'answer' | undefined,
-  unattended: number | undefined,
-  autoContinues: number | undefined,
-): string {
-  if (kind === 'approval') return "this call won't run";
-  if (onTimeout === 'continue') {
-    const ladder =
-      unattended != null && autoContinues != null && autoContinues > 0
-        ? ` (${String(unattended + 1)} of ${String(autoContinues)})`
-        : '';
-    return `I'll keep going${ladder}`;
-  }
-  return "I'll wrap up with what I have";
-}
-
 /**
- * The whole countdown sentence. `remainingMs` is already corrected for clock
- * skew by the caller. The adaptive clause says *why* the window is longer than
- * the setting — otherwise a 44-minute countdown against a 10-minute setting
- * looks like a bug.
+ * The whole countdown sentence for a tool approval. `remainingMs` is already
+ * corrected for clock skew by the caller. The adaptive clause says *why* the
+ * window is longer than the setting — otherwise a 44-minute countdown against
+ * a 10-minute setting looks like a bug.
  */
 export function deadlineSentence(input: {
-  kind: WaitKind;
   remainingMs: number;
   timeoutMs?: number;
   basis?: 'setting' | 'adaptive';
-  onTimeout?: 'continue' | 'answer';
-  unattended?: number;
-  autoContinues?: number;
 }): string {
-  const what = onTimeoutPhrase(input.kind, input.onTimeout, input.unattended, input.autoContinues);
-  const head = `If nobody answers in ${formatCountdown(input.remainingMs)}, ${what}.`;
+  const head = `If nobody answers in ${formatCountdown(input.remainingMs)}, this call won't run.`;
   if (input.basis === 'adaptive' && input.timeoutMs != null) {
     return `${head} Waiting longer than usual because a step here has taken up to ${formatDuration(input.timeoutMs / 2)}.`;
   }

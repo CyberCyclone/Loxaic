@@ -25,13 +25,17 @@ UI components, including the vendored gluestack primitives in `ui/`. These rules
 - Any modal or sheet with number or URL fields uses `keyboardDismissMode="on-drag"` on its scroll body: iOS number pads and URL keyboards have no close key, and `closeKeyboard()` in e2e relies on the drag.
 - Lists inside a modal with a search field use `keyboardShouldPersistTaps="handled"`, or the first tap only closes the keyboard.
 - Long sheets with text fields near the bottom set `automaticallyAdjustKeyboardInsets`.
-- The permission bar and the step check-in banner dismiss the keyboard on mount, native only (on web it would steal focus from typing). Key them by the question (`approvalKey`/`checkinKey`) so they remount for a new one.
+- The permission bar dismisses the keyboard on mount, native only (on web it would steal focus from typing). Key it by the question (`approvalKey`) so it remounts for a new one.
 
 ## Chat thread and composer
 
-- Nudges and notices nobody typed (compaction nudge `chat.message.compactionNudge`, plan nudge, check-in nudge, a sub-agent's `fromAgent` turns) render as notices, not user bubbles.
+- Nudges and notices nobody typed (compaction nudge `chat.message.compactionNudge`, plan nudge, an old check-in nudge, a progress note `progress.note` via `progressNoteView` (only a row with a null author: its words typed by a person are a user bubble), a sub-agent's `fromAgent` turns) render as notices, not user bubbles.
 
 ## Plan review and sub-agents
+
+- A sub-agent's card and a progress review's card (`review.card.<id>`, `RunReviewCard`) are both drawn by `chat/ThreadCard`; never copy it. The review's card is the review; the `progress.note` under it is what the run was told.
+- A review opens in `RunReviewPanel` on a thread. Inside a sub-agent's panel it replaces that panel's transcript (`subagent.panel.review`, with a way back), never a second sheet; both show `RunReviewDetails`.
+- `ReviewStatus` (`run.review.status`) renders only through `reviewLineMode`: a review with a card has no quiet line.
 
 - Plan and questions panels share `ReviewSheet`; never duplicate it. A panel's draft (and its chosen model) is keyed to its call id, never reset in an effect — panels stay mounted while closed.
 

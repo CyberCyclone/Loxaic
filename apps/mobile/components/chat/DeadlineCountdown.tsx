@@ -1,31 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Text } from '@/components/ui/text';
-import { deadlineSentence, type WaitKind } from '@/lib/waitSettings';
+import { deadlineSentence } from '@/lib/waitSettings';
 import type { WaitDeadline } from '@/lib/pendingWaits';
 
 /**
- * What a parked run will do if nobody answers, and when — ticking down.
- *
- * Without it, a wait's length is a setting nobody can see from the question,
- * and its outcome a surprise: the check-in that answered for someone while
- * they were away is the whole reason this exists. Renders nothing when the
- * server sent no deadline (an older server).
+ * When a tool approval stops waiting, and that the call then won't run —
+ * ticking down. Without it, a wait's length is a setting nobody can see from
+ * the question. Renders nothing when the server sent no deadline (an older
+ * server).
  */
-export function DeadlineCountdown({
-  kind,
-  deadline,
-  onTimeout,
-  unattended,
-  autoContinues,
-  testID,
-}: {
-  kind: WaitKind;
-  deadline: WaitDeadline | undefined;
-  onTimeout?: 'continue' | 'answer';
-  unattended?: number;
-  autoContinues?: number;
-  testID: string;
-}) {
+export function DeadlineCountdown({ deadline, testID }: { deadline: WaitDeadline | undefined; testID: string }) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -38,15 +22,7 @@ export function DeadlineCountdown({
   if (!deadline) return null;
   return (
     <Text testID={testID} size="xs" className="text-muted-foreground">
-      {deadlineSentence({
-        kind,
-        remainingMs: deadline.deadlineAt - now,
-        timeoutMs: deadline.timeoutMs,
-        basis: deadline.basis,
-        onTimeout,
-        unattended,
-        autoContinues,
-      })}
+      {deadlineSentence({ remainingMs: deadline.deadlineAt - now, timeoutMs: deadline.timeoutMs, basis: deadline.basis })}
     </Text>
   );
 }

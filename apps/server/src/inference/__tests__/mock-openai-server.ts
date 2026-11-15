@@ -27,6 +27,7 @@ export interface RecordedRequest {
     reasoning_effort?: unknown;
     reasoning?: unknown;
     chat_template_kwargs?: unknown;
+    response_format?: unknown;
   };
 }
 
@@ -58,6 +59,9 @@ export interface MockOpenAiOptions {
    * backend refuses before streaming — or, with `status: 200`, as an SSE
    * `error` chunk in the middle of a stream, the way llama.cpp does. */
   refuse?: { status: number; body: unknown };
+  /** Answer 400 to a completion that asks for a `response_format`, the way a
+   * backend that has never heard of one does. */
+  refuseResponseFormat?: boolean;
 }
 
 /** What `progress` streams before the reply: llama.cpp's 0% report as the
@@ -122,6 +126,12 @@ export async function startMockOpenAi(options: MockOpenAiOptions = {}): Promise<
       if (req.url?.endsWith("/models")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ data: models.map((m) => ({ object: "model", ...m })) }));
+        return;
+      }
+
+      if (req.url?.endsWith("/chat/completions") && options.refuseResponseFormat && body.response_format !== undefined) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "Unrecognized request argument supplied: response_format" } }));
         return;
       }
 

@@ -111,6 +111,19 @@ describe('a sub-agent\'s transcript', () => {
     expect(applyChildSync(live, sync({ status: 'cancelled' }), NOW).live).toBeNull();
   });
 
+  it('follows a progress review of the child, from a sync and from live events', () => {
+    const live = applyChildSync(EMPTY_TRANSCRIPT, sync(), NOW);
+    expect(live.live?.reviewing).toBeNull();
+    const started = applyChildEvent(live, event({ kind: 'run.review.start', mode: 'alongside' }));
+    expect(started.live?.reviewing).toBe('alongside');
+    const ended = applyChildEvent(started, event({ kind: 'run.review.end', verdict: 'finished', reason: 'done', action: 'answer' }, 5));
+    expect(ended.live?.reviewing).toBeNull();
+    // A reconnect mid-review reads it off the snapshot.
+    const base = sync();
+    const resynced = applyChildSync(EMPTY_TRANSCRIPT, { ...base, snapshot: { ...base.snapshot, reviewing: { mode: 'paused' } } }, NOW);
+    expect(resynced.live?.reviewing).toBe('paused');
+  });
+
   it('ignores events from a stream it is not tracking for its live line', () => {
     const live = applyChildSync(EMPTY_TRANSCRIPT, sync(), NOW);
     const t = applyChildEvent(live, event({ kind: 'model.loading', message_id: 'zz' }, 4, 'other-stream'));

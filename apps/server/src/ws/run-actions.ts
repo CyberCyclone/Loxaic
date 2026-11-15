@@ -8,8 +8,6 @@ import {
   getRunByConversation,
   listChildRuns,
   setRunMode,
-  takeRunCheckin,
-  isStepsDecision,
   type RunHandle,
 } from "../streams/registry.ts";
 
@@ -84,34 +82,6 @@ export async function answerApproval(
     }
     break;
   }
-}
-
-/**
- * Answers a pending step check-in. Shared by both sockets, as `answerApproval`
- * is — chat and agent share one tool loop, and both offer the banner.
- *
- * Keyed by `stream_id`, which is ours and unique, so unlike an approval there
- * is exactly one run it could mean. `decision` is a claim off a socket and is
- * checked; a run that is not parked, not the caller's to act on, or already
- * answered is a silent no-op — the same "no existence oracle" rule as
- * `stream.stop`.
- */
-export async function answerCheckin(
-  userId: string,
-  streamId: unknown,
-  decision: unknown,
-): Promise<void> {
-  if (typeof streamId !== "string" || !isStepsDecision(decision)) return;
-  const run = getRun(streamId);
-  if (!run) return;
-  if (!(await mayActOnRun(userId, run.conversationId))) return;
-  // Taken only once the caller is known to be allowed: a refused answer must
-  // leave the run parked, exactly as it was, for whoever may answer it. The
-  // await above admits a race with a second socket answering first — the
-  // second `takeRunCheckin` finds nothing and no-ops, which is correct.
-  const resolve = takeRunCheckin(run);
-  if (!resolve) return;
-  resolve(decision, userId);
 }
 
 /** Whether a mode off a socket is one of the three words. */

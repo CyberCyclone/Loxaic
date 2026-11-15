@@ -104,11 +104,10 @@ export const conversations = pgTable("conversations", {
    * was sent in, or last picked on its selector since: what the thread opens
    * in after a reload (#311). Null until either happens. */
   permissionMode: text("permission_mode", { enum: ["planning", "manual", "auto"] }),
-  /** Its owner turned off the step limit: `RunLimits` in packages/types. Chat
-   * and agent threads only; a routine's run stays bounded. */
-  stepLimitOff: boolean("step_limit_off").notNull().default(false),
-  /** As `stepLimitOff`, for the loop check. */
-  loopCheckOff: boolean("loop_check_off").notNull().default(false),
+  /** Its owner turned off the progress review for its runs: `RunLimits` in
+   * packages/types. Chat and agent threads only; a routine's run and a
+   * sub-agent's are always reviewed. */
+  progressReviewOff: boolean("progress_review_off").notNull().default(false),
   /**
    * Set only on a `subagent` conversation: the conversation whose run spawned
    * it. No foreign key, like `messages.conversation_id` — erasing a parent
@@ -255,6 +254,60 @@ export const messages = pgTable(
   ],
 );
 
+// ── Progress reviews (streams/runs/progress-review.ts) ──
+/**
+ * One progress review of a run: what the reviewer was shown, what it said and
+ * what the run was told. A record for people, shown as a card in the thread
+ * and never part of the model's prompt: it is not a `messages` row, and no
+ * history loader reads this table.
+ *
+ * No foreign keys, like `messages`: erasing a conversation erases these in
+ * `conversations/delete.ts`, and a rewind removes the ones that followed the
+ * removed rows (`conversations/rewind.ts`), stamping `deleted_at` instead
+ * where removed messages are kept for an audit.
+ */
+export const runReviews = pgTable(
+  "run_reviews",
+  {
+    id: uuid("id").primaryKey(),
+    conversationId: uuid("conversation_id").notNull(),
+    /** The stream id of the run it reviewed. */
+    runId: uuid("run_id").notNull(),
+    /** Its place in the thread: the lamport of the newest row the run had
+     * written when the review started. Ordered with messages by
+     * `(lamport, started_at)`. */
+    lamport: bigint("lamport", { mode: "number" }).notNull(),
+    /** The steps the run had finished, and its working time, at the start. */
+    step: integer("step").notNull(),
+    workedMs: bigint("worked_ms", { mode: "number" }).notNull(),
+    /** Null for the working-time ceiling, which is no review call. */
+    mode: text("mode", { enum: ["alongside", "paused"] }),
+    trigger: text("trigger", { enum: ["steps", "time", "in-reply", "limit"] }).notNull(),
+    /** Null when the reviewer gave none in time or could not be read. */
+    verdict: text("verdict", { enum: ["progressing", "stuck", "finished"] }),
+    reason: text("reason").notNull().default(""),
+    action: text("action", { enum: ["none", "steer", "answer"] }).notNull(),
+    /** The ceiling of an unattended run, not a verdict. */
+    forced: boolean("forced").notNull().default(false),
+    /** The digest the reviewer was shown; empty for the ceiling. */
+    digest: text("digest").notNull().default(""),
+    /** Null for the ceiling, which asked no model. */
+    model: text("model"),
+    /** Null when the request never finished (a deadline, a failure). */
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    promptMs: integer("prompt_ms"),
+    generationMs: integer("generation_ms"),
+    /** Start to end on the server's clock, whatever the backend reported. */
+    totalMs: integer("total_ms").notNull(),
+    /** The app's clock, like `messages.created_at`: a rewind compares them. */
+    startedAt: timestamp("started_at").notNull(),
+    endedAt: timestamp("ended_at").notNull(),
+    deletedAt: timestamp("deleted_at"),
+  },
+  (t) => [index("run_reviews_conversation_lamport_idx").on(t.conversationId, t.lamport)],
+);
+
 // ── File checkpoints (agent/checkpoints.ts) ──
 /**
  * What a file was before a turn's first `fs_write` or `fs_edit` of it, so a
@@ -384,9 +437,10 @@ export const usageRecords = pgTable("usage_records", {
   /**
    * Null for a turn's own request. `permission_check` for the request the tool
    * loop makes to decide whether an auto-mode command may run
-   * (apps/server/src/permissions/check.ts): real tokens, so they count, but
-   * never "the last turn" — the context figures and compaction read that.
-   * Its `message_id` is null for the same reason.
+   * (apps/server/src/permissions/check.ts), `progress_review` for a review of
+   * the run (apps/server/src/streams/runs/progress-review.ts): real tokens, so
+   * they count, but never "the last turn" — the context figures and compaction
+   * read that. Their `message_id` is null for the same reason.
    */
   purpose: text("purpose"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -767,36 +821,25 @@ export const userPrefs = pgTable("user_prefs", {
    * manual mode alike). MCP tools have their own per-server toolPolicies
    * allowlist instead. */
   toolAllowlist: jsonb("tool_allowlist").notNull().default([]),
-  /**
-   * How many tool round-trips the agent takes for one message before it pauses
-   * and asks whether to keep going — a cadence, not a ceiling. It used to be a
-   * ceiling and the run simply died there (#157); now the loop hands its
-   * inference slot back and waits for an answer, exactly as it does at a tool
-   * approval. Bounded by the route, not just the column: a zero would make the
-   * agent unable to act at all, and an unbounded value is a way for one run to
-   * hold a shared backend for a very long time without anyone being asked.
-   */
-  maxIterations: integer("max_iterations").notNull().default(100),
-  /**
-   * How long a step check-in waits for an answer, in ms. **Null means "the
+  /** How long a tool approval waits for an answer, in ms. **Null means "the
    * server's default"** (`APPROVAL_TIMEOUT_MS`, else ten minutes), and the
    * nullability is load-bearing: a NOT NULL default here would override the
-   * operator's env for every user who has ever changed any other preference —
-   * and every test that pins a short window through the env for a user with a
-   * prefs row would then wait ten real minutes.
-   */
-  checkinTimeoutMs: integer("checkin_timeout_ms"),
-  /** The same, for a tool approval. Separate because an unanswered approval
-   * blocks the model mid-turn, which is a different thing to wait on. */
+   * operator's env for every user who has ever changed any other preference. */
   approvalTimeoutMs: integer("approval_timeout_ms"),
-  /** Stretch either window to twice the run's slowest model request, so a slow
-   * backend is not held to a deadline shorter than one of its own steps. */
+  /** Stretch the approval window to twice the run's slowest model request, so a
+   * slow backend is not held to a deadline shorter than one of its own steps. */
   adaptiveTimeout: boolean("adaptive_timeout").notNull().default(true),
-  /** How many unanswered check-ins in a row carry on by themselves before the
-   * run wraps up. Each is another full step window of unattended work. */
-  checkinAutoContinues: integer("checkin_auto_continues").notNull().default(2),
-  /** `off` | `relaxed` | `normal` — how eagerly the loop detector asks. */
-  loopSensitivity: text("loop_sensitivity").notNull().default("normal"),
+  /** Whether runs get a progress review at all (streams/runs/progress-review.ts):
+   * a second model call every so often that decides whether a run is stuck. */
+  progressReview: boolean("progress_review").notNull().default(true),
+  /** Working time between reviews, in ms. Null means the server's default, for
+   * the reason `approvalTimeoutMs` is nullable: `PROGRESS_CHECK_MS`. */
+  progressCheckMs: integer("progress_check_ms"),
+  /** Steps between reviews; null means the default. Whichever comes first. */
+  progressCheckSteps: integer("progress_check_steps"),
+  /** The user's own instructions for the reviewer; null means the built-in
+   * ones. The digest and the output format are always the server's. */
+  progressReviewPrompt: text("progress_review_prompt"),
   /**
    * Model references this user most recently *sent* with, newest first, capped
    * at RECENT_MODELS_MAX. Stored rather than derived from `usage_records`,

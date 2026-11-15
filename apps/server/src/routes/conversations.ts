@@ -43,6 +43,7 @@ function publicConversation<T extends { instructions: unknown }>(row: T): Omit<T
 import { applyRunLimits, runLimitColumns } from "../conversations/run-limits.ts";
 import { getRun, getRunByConversation } from "../streams/registry.ts";
 import { listSubagents } from "../streams/runs/subagentRun.ts";
+import { getRunReview, listRunReviews } from "../streams/runs/run-reviews.ts";
 import { latestTodos } from "../conversations/latest-todos.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
 
@@ -260,11 +261,10 @@ export function conversationRoutes(app: FastifyInstance) {
   // Update conversation (per-conversation model preference / MCP overrides)
   app.patch<{ Params: { id: string } }>("/v1/conversations/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const { model_pref, mcp_overrides, step_limit_off, loop_check_off } = request.body as {
+    const { model_pref, mcp_overrides, progress_review_off } = request.body as {
       model_pref?: { model?: string };
       mcp_overrides?: unknown;
-      step_limit_off?: unknown;
-      loop_check_off?: unknown;
+      progress_review_off?: unknown;
     };
     // Anything that is not an object clears both lists, as a malformed body
     // always has; a server named in both lists is kept only as disabled.
@@ -280,15 +280,15 @@ export function conversationRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "Not found" };
     }
-    // Either one malformed refuses the whole request, rather than applying the
-    // other and answering as if both had been.
-    if ([step_limit_off, loop_check_off].some((v) => v !== undefined && typeof v !== "boolean")) {
+    // Malformed refuses the whole request, rather than applying the rest and
+    // answering as if all of it had been.
+    if (progress_review_off !== undefined && typeof progress_review_off !== "boolean") {
       reply.code(400);
-      return { error: "step_limit_off and loop_check_off are true or false" };
+      return { error: "progress_review_off is true or false" };
     }
-    const limits = normalizeRunLimits({ step_limit_off, loop_check_off });
+    const limits = normalizeRunLimits({ progress_review_off });
     // What keeps an unattended routine bounded is not its owner's to turn off
-    // from a chat, and a sub-agent always runs bounded: the kind is checked in
+    // from a chat, and a sub-agent is always reviewed: the kind is checked in
     // the write itself, so nothing can change it between a check and the write.
     const idMatches = eq(conversations.id, request.params.id);
     const [row] = (await db
@@ -308,9 +308,9 @@ export function conversationRoutes(app: FastifyInstance) {
     if (!row) {
       // The owner check above found it, so with limits asked for, it is the kind.
       reply.code(limits ? 400 : 404);
-      return { error: limits ? "only chats and agent threads have run limits to turn off" : "Not found" };
+      return { error: limits ? "only chats and agent threads can turn the progress review off" : "Not found" };
     }
-    if (limits) applyRunLimits(userId, row.id, { stepLimitOff: row.stepLimitOff, loopCheckOff: row.loopCheckOff });
+    if (limits) applyRunLimits(userId, row.id, { progressReviewOff: row.progressReviewOff });
     return publicConversation(row);
   });
 
@@ -512,6 +512,35 @@ export function conversationRoutes(app: FastifyInstance) {
       subagents: await listSubagents(request.params.id, (streamId) => getRun(streamId) !== undefined),
       server_now: Date.now(),
     };
+  });
+
+  /**
+   * A conversation's progress reviews, in thread order: what its cards are
+   * drawn from after a reload. Without their digests, which one read of a
+   * review returns. A sub-agent's are its own conversation's, read by whoever
+   * can read its parent (`hasRole` resolves a child through it).
+   */
+  app.get<{ Params: { id: string } }>("/v1/conversations/:id/reviews", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    if (!(await hasRole(userId, request.params.id, "viewer"))) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    return { reviews: await listRunReviews(request.params.id) };
+  });
+
+  /** One review in full, digest included, for its panel. The same 404 for a
+   * review that is not this conversation's as for one that does not exist. */
+  app.get<{ Params: { id: string; reviewId: string } }>("/v1/conversations/:id/reviews/:reviewId", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const review = (await hasRole(userId, request.params.id, "viewer"))
+      ? await getRunReview(request.params.id, request.params.reviewId)
+      : null;
+    if (!review) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    return review;
   });
 
   // Get messages for conversation

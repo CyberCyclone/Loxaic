@@ -13,6 +13,7 @@ import {
   SUBAGENT_SYSTEM_ADDENDUM,
   offersModelChoice,
   subagentOutcome,
+  unansweredReport,
   subagentModelFor,
   subagentResultText,
   type SubagentModelPolicy,
@@ -142,6 +143,23 @@ describe("a child's ending, as the parent's tool result", () => {
     expect(subagentOutcome({ description: "Audit", status: "cancelled", text: null })).toMatchObject({ ok: false });
     expect(subagentOutcome({ description: "Audit", status: "error", text: null, error: "boom" }).output).toContain("boom");
     expect(subagentOutcome({ description: "Audit", status: "complete", text: "found it" })).toMatchObject({ ok: true });
+  });
+
+  it("fails a child that was told to answer and never did, with its closing note as the report", () => {
+    const bare = unansweredReport({ reason: "It has the cause and keeps re-checking it." });
+    expect(bare).toBe(
+      "This sub-agent was told to give its final answer and never wrote one, so it was ended. The check that ended it said: It has the cause and keeps re-checking it.",
+    );
+    const carried = "Your reply was interrupted. Its thinking ended with:\nThe cap is 80%.";
+    const full = unansweredReport({ reason: "Why.", carried });
+    expect(full).toContain("The check that ended it said: Why.");
+    expect(full.endsWith(`shows where its work had got to:\n\n${carried}`)).toBe(true);
+    // The run itself ended complete; the call still fails, and says why.
+    const outcome = subagentOutcome({ description: "Audit", status: "complete", text: full, unanswered: true });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.output).toContain("never wrote one");
+    expect(outcome.output).toContain("The cap is 80%.");
+    expect(subagentOutcome({ description: "Audit", status: "complete", text: "found it", unanswered: false }).ok).toBe(true);
   });
 });
 

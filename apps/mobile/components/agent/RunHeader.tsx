@@ -17,7 +17,7 @@ interface RunHeaderProps {
   /** Choosing a mode from the header (#266) — the row above the composer used
    * to be the only control, and it is gone now. */
   onModeChange: (mode: AgentMode) => void;
-  iteration: { n: number; max: number; unlimited?: true } | null;
+  iteration: { n: number } | null;
   /** Place in the inference queue, when this run is waiting for one. */
   queuePosition?: number | null;
 }
@@ -39,9 +39,7 @@ export function RunHeader({ title, state, mode, onModeChange, iteration, queuePo
         <Box className={`h-1.5 w-1.5 rounded-full ${STATE_DOT[state]}`} />
         <Text testID="agent.run.status" size="xs" className="text-muted-foreground">
           {STATE_LABEL[state]}
-          {/* Shown while parked too: the step count is what the check-in is
-              *about*, so hiding it at exactly that moment is backwards. */}
-          {(state === 'running' || state === 'awaiting_checkin') && iteration
+          {state === 'running' && iteration
             ? ` · ${stepCount(iteration)}`
             : ''}
           {state === 'queued' && queuePosition ? ` · #${String(queuePosition)}` : ''}

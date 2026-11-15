@@ -572,6 +572,13 @@ async function ensureServer(): Promise<void> {
       // A load that takes a moment, as a real one does, so a context-stage
       // switch can be watched reloading (context-stages.spec.ts).
       LOXAIC_FAKE_LOAD_MS: '4000',
+      // A run told to answer may think this much before it has written a word
+      // (24,000 characters in production, apps/server/src/streams/runs/
+      // progress-review.ts). Small, so progress-review.spec.ts sees a run that
+      // never answers ended in a second, and so the note that carries its
+      // thinking on fits the mock model's 4K window. Only the mock's "think it
+      // over" prompt thinks at all.
+      ANSWER_THINKING_CHARS: '800',
       // A saved KV cache read back over three seconds, so the "Loading cached
       // context" pill can be watched (prompt-cache.spec.ts).
       LOXAIC_FAKE_RESTORE_MS: '3000',

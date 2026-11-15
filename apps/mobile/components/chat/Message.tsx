@@ -19,7 +19,8 @@ import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
 import { promptReuse } from '@/lib/usage';
 import { describeMtpAcceptance } from '@/lib/mtp';
-import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
+import { answerNowNotice } from '@/lib/checkinNotice';
+import { progressNoteView } from '@/lib/progressReview';
 import { instructionsUpdateLine } from '@/lib/projectInstructions';
 import { COMPACTION_CONTINUE_NUDGE, PLAN_REQUIRED_NUDGE } from '@loxaic/types';
 import { CONTEXT_OVERFLOW_HINT } from '@/lib/rewind';
@@ -48,6 +49,9 @@ interface MessageProps {
   onRetry?: () => void;
   /** On a reply that could not fit: put its message back to edit. */
   onEdit?: () => void;
+  /** A progress note whose review card, above it in the thread, already says
+   * what the run was told: the note shows the reviewer's reason alone. */
+  noteOnCard?: boolean;
 }
 
 /** "photo.png" when the server knew a name, "An image"/"A file" when it didn't
@@ -65,7 +69,7 @@ function listOmitted(atts: { mime: string; name?: string }[], max = 4): string {
   return rest > 0 ? `${shown} and ${String(rest)} more` : shown;
 }
 
-function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveCompaction, onRewind, onRetry, onEdit }: MessageProps) {
+function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveCompaction, onRewind, onRetry, onEdit, noteOnCard }: MessageProps) {
   // Hoisted above the summary early-return below: hooks can't be called
   // conditionally, and a summary card renders no attachments anyway.
   const { token, user } = useSession();
@@ -74,7 +78,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
   const reuse = msg.usage ? promptReuse(msg.usage) : null;
   const mtp = msg.usage ? describeMtpAcceptance(msg.usage.draftTokens, msg.usage.draftAcceptedTokens) : null;
   const omitted = msg.usage?.omittedAttachments ?? [];
-  const keptGoing = msg.role === 'assistant' ? autoContinueNotice(msg.checkinDecision) : null;
+  const progressNote = msg.role === 'user' ? progressNoteView(msg) : null;
 
   // A compaction summary isn't a conversational turn from either party — it
   // renders as a divider card, not a bubble, and skips everything below
@@ -91,9 +95,29 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
     );
   }
 
-  // The instruction the server writes when a check-in is answered with
-  // "answer now". It is stored as a user message because that is what replays
-  // identically into the next prompt (see engine.ts) — but nobody typed it, so
+  // What a progress review wrote into the run: the reviewer's reason, and
+  // whether the run was told to change approach or to answer, unless the
+  // review's card above already says which. Persisted as a user row so the
+  // next turn replays it, but nobody typed it.
+  if (progressNote) {
+    return (
+      <VStack testID="progress.note" className="items-center px-4 py-2">
+        <Text testID="progress.note.reason" size="xs" className="text-center italic text-muted-foreground">
+          {progressNote.reason}
+        </Text>
+        {noteOnCard ? null : (
+          <Text testID="progress.note.outcome" size="2xs" className="text-center text-muted-foreground">
+            {progressNote.outcome}
+          </Text>
+        )}
+      </VStack>
+    );
+  }
+
+  // The instruction the server wrote when an old step check-in was answered
+  // with "answer now" (check-ins are gone; their rows stay). It is stored as
+  // a user message because that is what replays identically into the next
+  // prompt (see engine.ts) — but nobody typed it, so
   // rendering it as the user's own words would be a small lie in the
   // transcript, and a confusing one: it reads as the user interrupting.
   //
@@ -282,12 +306,6 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
               </HStack>
             )}
 
-            {keptGoing && (
-              <Text testID="chat.message.autoContinued" size="xs" className="pt-1 italic text-muted-foreground">
-                {keptGoing}
-              </Text>
-            )}
-
             {/* While reasoning is live, ThinkingBlock already shows this same
                 elapsed readout next to its spinner — this row is for the
                 phase after that (generating the answer text, before usage
@@ -462,5 +480,8 @@ export const Message = memo(
     // them, and a newer reply moves Retry off this one.
     prev.onRewind === next.onRewind &&
     prev.onRetry === next.onRetry &&
-    prev.onEdit === next.onEdit,
+    prev.onEdit === next.onEdit &&
+    // The reviews are read apart from the messages: after a reload the note
+    // is drawn first, and its card arrives a moment later.
+    prev.noteOnCard === next.noteOnCard,
 );

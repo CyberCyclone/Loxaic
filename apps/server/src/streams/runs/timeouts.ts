@@ -1,24 +1,17 @@
 /**
- * How long a parked run waits for a person, and what it does when nobody comes.
+ * How long a run parked at a tool approval waits for a person.
  *
  * Pure, so every rule here is asserted directly (timeouts.test.ts) rather than
  * by waiting out real timers. The engine owns the timers; this owns the
  * numbers and the decisions.
  */
-import {
-  DEFAULT_WAIT_TIMEOUT_MS,
-  MAX_CHECKIN_AUTO_CONTINUES,
-  MAX_WAIT_TIMEOUT_MS,
-  MIN_WAIT_TIMEOUT_MS,
-  type StepsDecision,
-  type TimeoutBasis,
-} from "@loxaic/types";
+import { DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS, MIN_WAIT_TIMEOUT_MS, type TimeoutBasis } from "@loxaic/types";
 
 /**
  * A stored window, made safe to use.
  *
- * Clamped on read as well as validated on write, for the same reason
- * `clampMaxIterations` is: the column is plain data, and a value that arrived
+ * Clamped on read as well as validated on write: the column is plain data,
+ * and a value that arrived
  * some other way (a hand-edited row, a future admin tool) must not be able to
  * expire every wait instantly or park a run for weeks. Null stays null — it
  * means "use the server default", which is a choice, not a missing value.
@@ -26,11 +19,6 @@ import {
 export function clampWaitTimeoutMs(value: number | null | undefined): number | null {
   if (value == null || !Number.isFinite(value)) return null;
   return Math.min(MAX_WAIT_TIMEOUT_MS, Math.max(MIN_WAIT_TIMEOUT_MS, Math.round(value)));
-}
-
-export function clampAutoContinues(value: number | null | undefined): number | null {
-  if (value == null || !Number.isFinite(value)) return null;
-  return Math.min(MAX_CHECKIN_AUTO_CONTINUES, Math.max(0, Math.floor(value)));
 }
 
 /**
@@ -81,30 +69,4 @@ export function effectiveTimeoutMs(input: {
     ms: Math.min(MAX_WAIT_TIMEOUT_MS, stretched ? floor : input.baseMs),
     basis: stretched ? "adaptive" : "setting",
   };
-}
-
-/**
- * What an unanswered step check-in resolves to.
- *
- * A ladder rather than one fixed answer: the first `autoContinues` unanswered
- * check-ins in a row carry on by themselves, and the next one wraps up with
- * what the run has. A person answering resets the streak — that is the
- * caller's job, since only it knows who answered.
- *
- * There is no third rung that stops the run, and none is needed: "answer"
- * sends the final request with `tool_choice: "none"`, and the engine ends the
- * run after that request whether or not the model obeys. So the worst an
- * abandoned run can do is `autoContinues` extra step windows of work, then one
- * answer — bounded, which is what makes auto-continue safe to offer at all.
- *
- * `gone` — the run fell out of the registry while parked — always answers:
- * there is nothing coherent to keep going with.
- */
-export function unattendedDecision(
-  priorUnattended: number,
-  autoContinues: number,
-  outcome: "timeout" | "gone",
-): StepsDecision {
-  if (outcome === "gone") return "answer";
-  return priorUnattended < autoContinues ? "continue" : "answer";
 }

@@ -3,14 +3,13 @@ import { db, eq } from "@loxaic/db";
 import { userPrefs } from "@loxaic/db/schema";
 import { isAllowlistableTool } from "@loxaic/agent";
 import {
-  DEFAULT_CHECKIN_AUTO_CONTINUES,
-  DEFAULT_LOOP_SENSITIVITY,
-  LOOP_SENSITIVITIES,
-  MAX_CHECKIN_AUTO_CONTINUES,
+  MAX_PROGRESS_CHECK_MS,
+  MAX_PROGRESS_CHECK_STEPS,
+  MAX_PROGRESS_REVIEW_PROMPT_CHARS,
   MAX_WAIT_TIMEOUT_MS,
+  MIN_PROGRESS_CHECK_MS,
+  MIN_PROGRESS_CHECK_STEPS,
   MIN_WAIT_TIMEOUT_MS,
-  isLoopSensitivity,
-  type LoopSensitivity,
   DEFAULT_SUBAGENT_MODEL_MODE,
   SUBAGENT_MODEL_MODES,
   isSubAgentModelMode,
@@ -19,13 +18,15 @@ import {
 import { assertModelResolvable } from "../inference/providers.ts";
 import { authenticate } from "../auth/middleware";
 import { normalizeRecentModels } from "../inference/recent-models.ts";
+import { clampWaitTimeoutMs, serverDefaultTimeoutMs } from "../streams/runs/timeouts.ts";
 import {
-  clampMaxIterations,
-  DEFAULT_MAX_ITERATIONS,
-  MAX_MAX_ITERATIONS,
-  MIN_MAX_ITERATIONS,
-} from "../streams/runs/engine.ts";
-import { clampAutoContinues, clampWaitTimeoutMs, serverDefaultTimeoutMs } from "../streams/runs/timeouts.ts";
+  clampProgressCheckMs,
+  clampProgressCheckSteps,
+  DEFAULT_REVIEW_PROMPT,
+  serverDefaultProgressCheckMs,
+  serverDefaultProgressCheckSteps,
+  usableReviewPrompt,
+} from "../streams/runs/progress-review.ts";
 import {
   addCommandRules,
   CommandRuleError,
@@ -38,13 +39,13 @@ import {
  * their own per-server toolPolicies allowlist (PATCH /v1/mcp/servers/:id). */
 function toApi(row: {
   toolAllowlist: unknown;
-  maxIterations?: number;
   recentModels?: unknown;
-  checkinTimeoutMs?: number | null;
   approvalTimeoutMs?: number | null;
   adaptiveTimeout?: boolean;
-  checkinAutoContinues?: number;
-  loopSensitivity?: string;
+  progressReview?: boolean;
+  progressCheckMs?: number | null;
+  progressCheckSteps?: number | null;
+  progressReviewPrompt?: string | null;
   subagentModelMode?: string;
   subagentModel?: string | null;
   bashGrantRetiredAt?: Date | null;
@@ -56,13 +57,6 @@ function toApi(row: {
     // An old "allow always" for every bash command was retired for command
     // rules (migration 0043); the permissions screen says so until dismissed.
     bashGrantRetired: row.bashGrantRetiredAt != null,
-    // Clamped with the *same* function the engine enforces with, not a
-    // parallel one. `?? DEFAULT` covers a missing value but not an
-    // out-of-range one, and the "plain data" argument cuts both ways: if the
-    // column can't be trusted to be in range for the loop, it can't be
-    // trusted for the response either — otherwise the settings screen shows
-    // one number while the agent enforces another.
-    maxIterations: clampMaxIterations(row.maxIterations ?? DEFAULT_MAX_ITERATIONS),
     // Read-only: written by the run starters when a model is actually sent
     // with, and deliberately absent from the PATCH below. A client that could
     // write it could put a model at the top of everyone's picker without
@@ -72,11 +66,17 @@ function toApi(row: {
     // Null is a real value here — "use the server's default" — not a missing
     // one, and is sent as null rather than omitted: a client reads an absent
     // key as "this server has no such setting" and hides the row.
-    checkinTimeoutMs: clampWaitTimeoutMs(row.checkinTimeoutMs),
     approvalTimeoutMs: clampWaitTimeoutMs(row.approvalTimeoutMs),
     adaptiveTimeout: row.adaptiveTimeout ?? true,
-    checkinAutoContinues: clampAutoContinues(row.checkinAutoContinues) ?? DEFAULT_CHECKIN_AUTO_CONTINUES,
-    loopSensitivity: isLoopSensitivity(row.loopSensitivity) ? row.loopSensitivity : DEFAULT_LOOP_SENSITIVITY,
+    // Clamped with the *same* functions the engine reads with, not parallel
+    // ones: a column that can't be trusted to be in range for a run can't be
+    // trusted for the response either — otherwise the settings screen shows
+    // one value while runs use another. A stored prompt the engine would not
+    // use reads as null (the built-in one) for the same reason.
+    progressReview: row.progressReview ?? true,
+    progressCheckMs: clampProgressCheckMs(row.progressCheckMs),
+    progressCheckSteps: clampProgressCheckSteps(row.progressCheckSteps),
+    progressReviewPrompt: usableReviewPrompt(row.progressReviewPrompt),
     // Which model a sub-agent runs on (streams/runs/subagent-policy.ts). The
     // model is sent even when the mode is not `fixed`: it is what the screen
     // offers back if the person returns to that choice, and null — not an
@@ -84,11 +84,14 @@ function toApi(row: {
     subagentModelMode: isSubAgentModelMode(row.subagentModelMode) ? row.subagentModelMode : DEFAULT_SUBAGENT_MODEL_MODE,
     subagentModel: row.subagentModel ?? null,
     // What "server default" currently means, so the settings screen can label
-    // that choice with a real number. Read-only and live: it is the operator's
-    // APPROVAL_TIMEOUT_MS if set, and moves with it.
+    // that choice with a real value — and show the built-in reviewer
+    // instructions to start editing from. Read-only and live: the operator's
+    // env where it has one, and moves with it.
     serverDefaults: {
-      checkinTimeoutMs: serverDefaultTimeoutMs(),
       approvalTimeoutMs: serverDefaultTimeoutMs(),
+      progressCheckMs: serverDefaultProgressCheckMs(),
+      progressCheckSteps: serverDefaultProgressCheckSteps(),
+      progressReviewPrompt: DEFAULT_REVIEW_PROMPT,
     },
   };
 }
@@ -132,13 +135,13 @@ export function prefsRoutes(app: FastifyInstance) {
     const body = (request.body ?? {}) as {
       toolAllowlist?: unknown;
       autoCompact?: unknown;
-      maxIterations?: unknown;
       recentModels?: unknown;
-      checkinTimeoutMs?: unknown;
       approvalTimeoutMs?: unknown;
       adaptiveTimeout?: unknown;
-      checkinAutoContinues?: unknown;
-      loopSensitivity?: unknown;
+      progressReview?: unknown;
+      progressCheckMs?: unknown;
+      progressCheckSteps?: unknown;
+      progressReviewPrompt?: unknown;
       serverDefaults?: unknown;
       subagentModelMode?: unknown;
       subagentModel?: unknown;
@@ -162,15 +165,24 @@ export function prefsRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "autoCompact is no longer a setting: a full conversation is always compacted or its context extended" };
     }
+    // The same for the step check-in's settings, which the progress review
+    // replaced: a client from before would believe it had set a limit.
+    const retired = ["maxIterations", "checkinTimeoutMs", "checkinAutoContinues", "loopSensitivity"].filter(
+      (key) => (request.body as Record<string, unknown> | null)?.[key] !== undefined,
+    );
+    if (retired.length > 0) {
+      reply.code(400);
+      return { error: `${retired.join(", ")} ${retired.length === 1 ? "is" : "are"} no longer a setting: runs are bounded by the progress review` };
+    }
 
     const patch: {
       toolAllowlist?: string[];
-      maxIterations?: number;
-      checkinTimeoutMs?: number | null;
       approvalTimeoutMs?: number | null;
       adaptiveTimeout?: boolean;
-      checkinAutoContinues?: number;
-      loopSensitivity?: LoopSensitivity;
+      progressReview?: boolean;
+      progressCheckMs?: number | null;
+      progressCheckSteps?: number | null;
+      progressReviewPrompt?: string | null;
       subagentModelMode?: SubAgentModelMode;
       subagentModel?: string | null;
       bashGrantRetiredAt?: null;
@@ -198,36 +210,18 @@ export function prefsRoutes(app: FastifyInstance) {
       }
       patch.bashGrantRetiredAt = null;
     }
-    if (body.maxIterations !== undefined) {
-      const n = body.maxIterations;
-      // Bounded here as well as clamped on read. Rejecting rather than
-      // silently clamping tells a client its value was not what it asked for;
-      // the read-side clamp is the belt for values that never came through
-      // this route at all.
-      if (
-        typeof n !== "number" ||
-        !Number.isInteger(n) ||
-        n < MIN_MAX_ITERATIONS ||
-        n > MAX_MAX_ITERATIONS
-      ) {
-        reply.code(400);
-        return {
-          error: `maxIterations must be a whole number between ${String(MIN_MAX_ITERATIONS)} and ${String(MAX_MAX_ITERATIONS)}`,
-        };
-      }
-      patch.maxIterations = n;
-    }
-    // Both waits: rejected out of range rather than clamped, same as
-    // maxIterations. The 5-second floor is not a product choice — it is what
-    // lets an end-to-end test wait a window out.
-    for (const key of ["checkinTimeoutMs", "approvalTimeoutMs"] as const) {
-      if (body[key] === undefined) continue;
-      const parsed = parseWaitTimeout(key, body[key]);
+    // Rejected out of range rather than clamped: telling a client its value
+    // was not what it asked for beats storing something else. The read-side
+    // clamp is the belt for values that never came through this route. The
+    // 5-second floor is not a product choice — it is what lets an end-to-end
+    // test wait a window out.
+    if (body.approvalTimeoutMs !== undefined) {
+      const parsed = parseWaitTimeout("approvalTimeoutMs", body.approvalTimeoutMs);
       if (parsed !== null && typeof parsed === "object") {
         reply.code(400);
         return parsed;
       }
-      patch[key] = parsed;
+      patch.approvalTimeoutMs = parsed;
     }
     if (body.adaptiveTimeout !== undefined) {
       if (typeof body.adaptiveTimeout !== "boolean") {
@@ -236,24 +230,46 @@ export function prefsRoutes(app: FastifyInstance) {
       }
       patch.adaptiveTimeout = body.adaptiveTimeout;
     }
-    if (body.checkinAutoContinues !== undefined) {
-      const n = body.checkinAutoContinues;
-      // Capped low on purpose: each one is another full step window of work
-      // with nobody watching, and the cap is what bounds an abandoned run.
-      if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > MAX_CHECKIN_AUTO_CONTINUES) {
+    if (body.progressReview !== undefined) {
+      if (typeof body.progressReview !== "boolean") {
+        reply.code(400);
+        return { error: "progressReview must be a boolean" };
+      }
+      patch.progressReview = body.progressReview;
+    }
+    if (body.progressCheckMs !== undefined) {
+      const n = body.progressCheckMs;
+      if (n !== null && (typeof n !== "number" || !Number.isInteger(n) || n < MIN_PROGRESS_CHECK_MS || n > MAX_PROGRESS_CHECK_MS)) {
         reply.code(400);
         return {
-          error: `checkinAutoContinues must be a whole number between 0 and ${String(MAX_CHECKIN_AUTO_CONTINUES)}`,
+          error:
+            `progressCheckMs must be a whole number of milliseconds between ${String(MIN_PROGRESS_CHECK_MS)} and ` +
+            `${String(MAX_PROGRESS_CHECK_MS)}, or null for the server default`,
         };
       }
-      patch.checkinAutoContinues = n;
+      patch.progressCheckMs = n;
     }
-    if (body.loopSensitivity !== undefined) {
-      if (!isLoopSensitivity(body.loopSensitivity)) {
+    if (body.progressCheckSteps !== undefined) {
+      const n = body.progressCheckSteps;
+      if (n !== null && (typeof n !== "number" || !Number.isInteger(n) || n < MIN_PROGRESS_CHECK_STEPS || n > MAX_PROGRESS_CHECK_STEPS)) {
         reply.code(400);
-        return { error: `loopSensitivity must be one of ${LOOP_SENSITIVITIES.join(", ")}` };
+        return {
+          error: `progressCheckSteps must be a whole number between ${String(MIN_PROGRESS_CHECK_STEPS)} and ${String(MAX_PROGRESS_CHECK_STEPS)}, or null for the server default`,
+        };
       }
-      patch.loopSensitivity = body.loopSensitivity;
+      patch.progressCheckSteps = n;
+    }
+    if (body.progressReviewPrompt !== undefined) {
+      const text = body.progressReviewPrompt;
+      // Blank is refused rather than read as "the default": null says that,
+      // and a cleared editor saved by accident should not quietly reset.
+      if (text !== null && (typeof text !== "string" || !text.trim() || text.length > MAX_PROGRESS_REVIEW_PROMPT_CHARS)) {
+        reply.code(400);
+        return {
+          error: `progressReviewPrompt must be text of 1 to ${String(MAX_PROGRESS_REVIEW_PROMPT_CHARS)} characters, or null for the built-in instructions`,
+        };
+      }
+      patch.progressReviewPrompt = text;
     }
     if (body.subagentModel !== undefined) {
       if (body.subagentModel !== null) {

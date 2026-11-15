@@ -23,6 +23,7 @@ import { closeConversationBrowser } from "../browser/manager.ts";
 import { getConversationSettings } from "../settings.ts";
 import { getRunByConversation, waitForRunEnd } from "../streams/registry.ts";
 import { getStreamBroker, hasStreamBroker } from "../streams/index.ts";
+import { eraseRunReviews } from "../streams/runs/run-reviews.ts";
 
 /** Just enough of a logger to not depend on fastify's type here. */
 export interface DeleteLogger {
@@ -309,6 +310,9 @@ async function eraseRows(id: string, knownChildIds: Iterable<string> = []): Prom
       await tx.delete(conversations).where(inArray(conversations.id, childIds));
     }
     await tx.delete(messages).where(eq(messages.conversationId, id));
+    // Its progress reviews, and its sub-agents': each holds a digest of the
+    // run's steps, which is the conversation's content.
+    await eraseRunReviews(tx, [id, ...childIds]);
     // The file checkpoints' manifest. Their copies live in the workspace,
     // which this delete destroys (or, for a folder on someone's own machine,
     // in their home directory, which nothing here can reach).

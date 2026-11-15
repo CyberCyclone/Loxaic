@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHECKIN_ANSWER_NUDGE } from '@loxaic/api-client';
+import { CHECKIN_ANSWER_NUDGE, progressNoteText } from '@loxaic/api-client';
 import { applyRewound, canRewind, filesMessage, isContextFailure, PendingSeeds, rewindClearsLiveRun, restoreReportLine, retryIndex, rewindMessage, type Rewound } from './rewind';
 import type { Message } from './types';
 
@@ -47,6 +47,11 @@ describe('canRewind and retryIndex', () => {
     expect(canRewind(reply(2))).toBe(false);
     expect(canRewind({ id: 'local-1', role: 'user', text: 'waiting' })).toBe(false);
     expect(canRewind({ ...user(3), text: CHECKIN_ANSWER_NUDGE })).toBe(false);
+    // A progress note is the server's only with no author. Its words typed by
+    // a person are that person's message, and theirs to rewind to.
+    const noteText = progressNoteText('steer', 'It keeps rereading the same file.');
+    expect(canRewind({ ...user(5), text: noteText, authorUserId: null })).toBe(false);
+    expect(canRewind({ ...user(6), text: noteText, authorUserId: 'u1' })).toBe(true);
     expect(canRewind({ ...user(4), fromAgent: true })).toBe(false);
   });
 
