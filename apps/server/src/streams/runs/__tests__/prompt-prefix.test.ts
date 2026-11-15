@@ -10,6 +10,7 @@ import { db, eq } from "@loxaic/db";
 import { attachments, conversations, messages, sandboxes, usageRecords, user, userPrefs } from "@loxaic/db/schema";
 import { PLAN_ACCEPTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX, parseProgressNote, type ContentBlock, type ThinkingLevel } from "@loxaic/types";
 import type { ChatMessage } from "../../../inference/provider.ts";
+import { SUMMARY_PREAMBLE } from "../../../inference/context.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 import { REVIEW_OUTPUT_CONTRACT } from "../review-marker.ts";
 import { managedExecutable } from "../../../browser/install.ts";
@@ -1080,8 +1081,10 @@ describe("a change to the project's instructions keeps the prefix", () => {
     await run("say hello three");
     const folded = requests[0];
     expect(system(folded)).toContain("Use pnpm, never npm.");
-    // And it moved on a request whose front was already new: the summary rides second.
-    expect((JSON.parse(folded[1]) as { role: string }).role).toBe("system");
+    // And it moved on a request whose front was already new: the summary rides
+    // in the same system message, after the rules, and no second one follows.
+    expect(system(folded).indexOf(SUMMARY_PREAMBLE)).toBeGreaterThan(system(folded).indexOf("Use pnpm, never npm."));
+    expect((JSON.parse(folded[1]) as { role: string }).role).not.toBe("system");
   });
 });
 

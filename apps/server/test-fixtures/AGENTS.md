@@ -7,6 +7,7 @@ Fixtures for server tests and the e2e lane: the fake llama.cpp router (`fake-lla
 - The fake is only coverage while it is as untidy as the real router. Never make it tidier than b11342.
 - Keep the ":"-name rewrite (quant uppercased, `UD-` dropped); mock HF must keep a non-canonical `UD-` quant, or the `routerModelName` path loses coverage.
 - Refuse unknown preset keys like the real router (fatal at boot, 500 on reload). Its key list is tested against `LOAD_SETTINGS` plus the YaRN keys; add every new setting there.
+- Refuse a system message anywhere but first with b11342's 500, as a Qwen3.5-or-later template does.
 - `--help` comes from `PRESET_KEYS` plus `keep`/`metrics`/`cont-batching`; a non-integer `keep` fails the load. `parseHelp` is held to `llama-help-b11342.txt` (real output); do not edit that file.
 - Slots imitate a hybrid model (b11457): a slot ending in a generated reply is reused up to its prompt only while live, never after a restore. Never let a restored slot match a request that does not extend it exactly; that is what proves the warm-up before a save.
 
