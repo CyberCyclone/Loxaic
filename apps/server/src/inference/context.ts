@@ -84,9 +84,9 @@ export function promptFront(
   system: string | null | undefined,
   summaryText: string | null | undefined,
 ): Extract<ChatMessage, { role: "system" }>[] {
-  const summary = summaryText ? SUMMARY_PREAMBLE + summaryText : "";
-  const content = system && summary ? system + SUMMARY_JOIN + summary : system || summary;
-  return content ? [{ role: "system", content }] : [];
+  // An empty system prompt or summary is left out, never joined as "".
+  const parts = [system, summaryText ? SUMMARY_PREAMBLE + summaryText : null].filter((p): p is string => !!p);
+  return parts.length ? [{ role: "system", content: parts.join(SUMMARY_JOIN) }] : [];
 }
 
 /**
