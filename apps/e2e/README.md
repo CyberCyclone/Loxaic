@@ -424,7 +424,7 @@ GPU-bound) inference endpoint CI doesn't have, takes minutes rather than seconds
 model's output isn't deterministic the way the mock's is — it's a manual, on-demand suite you run
 before a release or when touching the tool loop, not a check that gates every push.
 
-### The three tasks
+### The specs
 
 - **`real-model-build.spec.ts`** clones `fixtures/seeded-app/` — a minimal Vite + React +
   TypeScript app — through the same GitHub-workspace path the mock lane's specs use (repo id 3 in
@@ -445,8 +445,12 @@ before a release or when touching the tool loop, not a check that gates every pu
   natural-language instruction to build a small Node project (a `package.json` with a `test`
   script, a source file, a test file) and get its own tests passing. The prompt pins the test
   command so the pass bar is checkable; file names and content are the model's own decision.
+- **`real-model-compaction.spec.ts`** is not a coding task: two short turns, `/compact`, then a
+  question only the summary can answer. It passes when the reply after the summary is complete and
+  names both facts. Run it against `llama.cpp` serving a Qwen3.5-or-later model: their templates
+  refuse any system message but the first, which is how a summary sent as a second one failed.
 
-All three run the agent in **auto** mode (no per-tool approval prompt — see
+The three coding tasks run the agent in **auto** mode (no per-tool approval prompt — see
 `toolRequiresApproval()` in `packages/agent`, required for an autonomous multi-step task to finish
 unattended). The two GitHub-workspace tasks get the network access (`SANDBOX_ALLOW_NETWORK=1`, set
 automatically by `standup.ts` under `E2E_REAL_MODEL=1`) that cloning and `npm install` need and
