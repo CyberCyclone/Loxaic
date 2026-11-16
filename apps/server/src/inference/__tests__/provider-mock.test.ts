@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { streamCompletion } from "../provider.ts";
+import { MOCK_SYSTEM_NOT_FIRST_MESSAGE, streamCompletion, type ChatMessage } from "../provider.ts";
 
 /**
  * MOCK_MODE in provider.ts is read at call time (`() =>
@@ -55,6 +55,26 @@ describe("mockStream (via streamCompletion, MOCK_INFERENCE=true)", () => {
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(Date.now() - started).toBeLessThan(3_000);
     expect(events).not.toContain("done");
+  });
+
+  it("refuses a system message anywhere but first, as a Qwen3.5-or-later template on llama.cpp does", async () => {
+    const drain = async (messages: ChatMessage[]): Promise<string[]> => {
+      const events: string[] = [];
+      for await (const event of streamCompletion("mock-model", messages, {})) events.push(event.type);
+      return events;
+    };
+    await expect(
+      drain([
+        { role: "system", content: "You are Loxaic." },
+        { role: "system", content: "Summary of the conversation so far." },
+        { role: "user", content: "hello" },
+      ]),
+    ).rejects.toThrow(MOCK_SYSTEM_NOT_FIRST_MESSAGE);
+    await expect(
+      drain([{ role: "user", content: "hello" }, { role: "system", content: "late" }, { role: "user", content: "again" }]),
+    ).rejects.toThrow(MOCK_SYSTEM_NOT_FIRST_MESSAGE);
+    // One system message, first, is what every request should be.
+    expect(await drain([{ role: "system", content: "You are Loxaic." }, { role: "user", content: "hello" }])).toContain("done");
   });
 
   it("says nothing about images for a plain text-only message", async () => {

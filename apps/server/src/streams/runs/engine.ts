@@ -45,11 +45,12 @@ import {
 import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
 import { modelSupportsImages, resolveModelRef } from "../../inference/providers.ts";
 import {
-  addChars,
   apportion,
   estimateTallyTokens,
-  summaryMessage,
+  promptFront,
+  promptFrontLength,
   tallyChatMessages,
+  tallyFrontedPrompt,
   tallyToolSources,
   type ContextTally,
 } from "../../inference/context.ts";
@@ -730,12 +731,12 @@ export async function runToolLoop(ctx: {
     // (skills/session.ts), so the system prompt does not move between turns.
     const hasSkills = tools.some((t) => t.function.name === SKILL_TOOL_NAME);
     const systemPrompt = assembleSystemPrompt(basePrompt, toolset.systemPromptAddendum, hasDocuments, hasSubagents, hasSkills);
-    // The compaction summary rides as a second system message, after the real
-    // system prompt and before the replayed turns — everything older than it
-    // stays in Postgres and on screen but is no longer sent. Replaced when the
-    // run compacts in the middle of its work (`compactWithinRun`).
+    // The compaction summary rides in the system message, after the real
+    // system prompt and before the replayed turns (`promptFront`) — everything
+    // older than it stays in Postgres and on screen but is no longer sent.
+    // Replaced when the run compacts in the middle of its work
+    // (`compactWithinRun`).
     let summaryText = history.summaryText;
-    let summaryMsg = summaryText ? summaryMessage(summaryText) : null;
     // Fixed for the run, and what a compaction of this conversation needs to
     // send the same front of the prompt (request-shape.ts).
     // The thinking level as body fields, fixed for the run like the tools: on
@@ -756,13 +757,9 @@ export async function runToolLoop(ctx: {
       .where(eq(conversations.id, convId))
       .catch((err: unknown) => { console.warn(`recording the thinking level of ${convId} failed: ${(err as Error).message}`); });
     // Appended to as the run goes; rebuilt only by a compaction inside it.
-    let chatMessages: ChatMessage[] = [
-      ...(systemPrompt ? [{ role: "system", content: systemPrompt } as ChatMessage] : []),
-      ...(summaryMsg ? [summaryMsg] : []),
-      ...history.messages,
-    ];
-    /** The messages before the replayed history: the system prompt and the summary. */
-    const frontLength = (): number => (systemPrompt ? 1 : 0) + (summaryMsg ? 1 : 0);
+    let chatMessages: ChatMessage[] = [...promptFront(systemPrompt, summaryText), ...history.messages];
+    /** The messages before the replayed history: the one carrying the system prompt and the summary. */
+    const frontLength = (): number => promptFrontLength(systemPrompt, summaryText);
     // What the context breakdown reports as replayed, and the attachments this
     // prompt left out — both describe the loaded history until a compaction
     // inside the run replaces it.
@@ -1085,9 +1082,9 @@ export async function runToolLoop(ctx: {
       // as tool calls and results are appended, so it has to be measured here
       // rather than once per run — and `tools` is measured with it, since the
       // schemas ride in `body.tools` and appear nowhere in the message list.
-      // The summary message is tallied separately: tallyChatMessages would
-      // classify its system role as `system` and silently fold the compacted
-      // history into the system-prompt row.
+      // The summary is tallied separately (`tallyFrontedPrompt`): it shares the
+      // system message, and counted as that message the compacted history
+      // would fold silently into the system-prompt row.
       //
       // The fingerprint is of the exact payload about to go out, for the same
       // reason. Hashes from the previous iteration are carried forward:
@@ -1096,11 +1093,7 @@ export async function runToolLoop(ctx: {
       // inlined image data URI on every iteration. See fingerprintPrompt for
       // the guarantee this relies on.
       const measureRequest = () => {
-        const tally = tallyChatMessages(
-          summaryMsg ? chatMessages.filter((m) => m !== summaryMsg) : chatMessages,
-          tools,
-        );
-        if (summaryMsg) addChars(tally, "summary", summaryMsg.content);
+        const tally = tallyFrontedPrompt(chatMessages, tools, systemPrompt, summaryText);
         const fingerprint = fingerprintPrompt(model, chatMessages, tools, carriedHashes);
         return { tally, fingerprint, reuse: measureReuse(convId, fingerprint) };
       };
@@ -1175,12 +1168,7 @@ export async function runToolLoop(ctx: {
             // to answer — kept as it was — or the persisted nudge. Key order
             // matches loadHistory's own `{ role, content }`.
             summaryText = compacted.summaryText;
-            summaryMsg = summaryMessage(summaryText);
-            chatMessages = [
-              ...(systemPrompt ? [{ role: "system", content: systemPrompt } as ChatMessage] : []),
-              summaryMsg,
-              compacted.continueFrom.message,
-            ];
+            chatMessages = [...promptFront(systemPrompt, summaryText), compacted.continueFrom.message];
             parentId = compacted.continueFrom.id;
             unanswered = { id: compacted.continueFrom.id, lamport: compacted.continueFrom.lamport };
             carriedHashes = undefined;

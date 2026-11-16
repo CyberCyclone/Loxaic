@@ -118,6 +118,21 @@ describe("a completion through an added provider", () => {
     expect(mock.completions[0].headers["x-title"]).toBe("Loxaic");
   });
 
+  it("sends one system message, first, whatever the caller built", async () => {
+    // Qwen3.5-and-later templates answer a second system message with a 500.
+    const row = await makeProvider();
+    const sent: ChatMessage[] = [
+      { role: "system", content: "You are Loxaic." },
+      { role: "user", content: "hello" },
+      { role: "system", content: "A late notice." },
+    ];
+    for await (const ev of streamCompletion(`${row.slug}::mock-remote-model`, sent)) expect(ev.type).not.toBe("error");
+    expect(mock.completions[0].body.messages).toEqual([
+      { role: "system", content: "You are Loxaic.\n\nA late notice." },
+      { role: "user", content: "hello" },
+    ]);
+  });
+
   it("reports the provider's own cached-token figure", async () => {
     // llama.cpp calls it `timings.cache_n`; a hosted provider reports
     // `usage.prompt_tokens_details.cached_tokens`. Either is ground truth.

@@ -56,6 +56,7 @@ Model requests, providers, the run scheduler, prompt-reuse and progress figures,
 ## Mock backend
 
 - Keyword triggers (`MOCK_QUESTIONS`, `MOCK_PROGRESS_MATCH`, `classifier-*`, "fill/overflow/exceed the context") live in `provider.ts`.
+- The mock refuses a system message anywhere but first; never relax it. `oneSystemMessageFirst` merges them for real backends only.
 
 ## Tests
 

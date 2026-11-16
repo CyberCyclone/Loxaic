@@ -39,7 +39,7 @@ const userId = `test-fill-midrun-${uuid()}`;
 const convIds: string[] = [];
 const HW_GPU = { platform: "linux" as const, arch: "x64", gpus: [], flavour: "vulkan" as const, reason: null, ramBytes: 16 * 1024 ** 3 };
 
-interface Logged { event: string; model: string; ctx_size?: number; prompt_tokens?: number; last_role?: string; section?: Record<string, string> }
+interface Logged { event: string; model: string; ctx_size?: number; prompt_tokens?: number; last_role?: string; last_user?: string; section?: Record<string, string> }
 function logged(): Logged[] {
   if (!existsSync(loadLog)) return [];
   return readFileSync(loadLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l) as Logged);
@@ -187,6 +187,11 @@ describe("a conversation that fills up in the middle of a run", () => {
     // from the summary and the nudge, so small again.
     expect(chats[0].prompt_tokens).toBe(Math.round(16384 * 0.9));
     expect(chats.at(-1)?.prompt_tokens).toBe(10);
+    // That last request is the run's own, from the nudge, and the router took
+    // it: it refuses a system message anywhere but first, as a Qwen3.5-or-later
+    // template does, and the summary used to ride as a second one.
+    expect(chats.at(-1)?.last_user).toBe(COMPACTION_CONTINUE_NUDGE.slice(0, 200));
+    expect(rows.slice(at + 2).some((r) => r.authorType === "assistant" && r.status === "complete")).toBe(true);
     expect(await activeStage()).toBe(1);
   });
 });

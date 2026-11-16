@@ -384,6 +384,8 @@ const MOCK_PROVIDER_OVERFLOW_BODY = {
   },
 };
 let mockAnswerCount = 0;
+/** The end of llama.cpp's own refusal (b11342, a Qwen3.5 template). */
+export const MOCK_SYSTEM_NOT_FIRST_MESSAGE = "Jinja Exception: System message must be at the beginning.";
 const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
 
 /**
@@ -578,6 +580,12 @@ async function* mockStream(
   messages: ChatMessage[],
   options: StreamOptions,
 ): AsyncGenerator<StreamEvent, void, unknown> {
+  // Chat templates from Qwen3.5 on raise on a system message anywhere but
+  // first, and llama.cpp answers HTTP 500 before anything streams. A real
+  // backend never sees one (`oneSystemMessageFirst` merges them), but that
+  // rewrites the cached prefix, so the mock refuses instead: a caller that
+  // builds its prompt without `promptFront` fails its tests.
+  if (messages.some((m, i) => m.role === "system" && i > 0)) throw new Error(MOCK_SYSTEM_NOT_FIRST_MESSAGE);
   const startTime = Date.now();
   const toolNames = new Set((options.tools ?? []).map((t) => t.function.name));
   // Only the *current* turn counts: earlier turns in the conversation have
@@ -1003,6 +1011,23 @@ function secretsOf(provider: ResolvedProvider): (string | null)[] {
   return [provider.apiKey, ...Object.values(provider.headers)];
 }
 
+/**
+ * The messages with every system message merged, in order, into one at the
+ * front. Chat templates from Qwen3.5 on refuse a system message anywhere but
+ * first (llama.cpp answers HTTP 500), so no request to a real backend carries
+ * one, whoever built it. A last resort only: moving a later system message to
+ * the front rewrites the prefix the backend cached, so callers build their
+ * prompts with `promptFront` (context.ts) and the mock still refuses what this
+ * would have fixed, to catch them. Returns `messages` itself when it already
+ * conforms.
+ */
+export function oneSystemMessageFirst(messages: ChatMessage[]): ChatMessage[] {
+  if (!messages.some((m, i) => m.role === "system" && i > 0)) return messages;
+  const system = messages.filter((m) => m.role === "system").map((m) => m.content);
+  console.warn(`merged ${String(system.length)} system messages into the first: a prompt was built without promptFront`);
+  return [{ role: "system", content: system.join("\n\n") }, ...messages.filter((m) => m.role !== "system")];
+}
+
 async function* liveStream(
   provider: ResolvedProvider,
   model: string,
@@ -1016,7 +1041,7 @@ async function* liveStream(
 
   const body: Record<string, unknown> = {
     model,
-    messages,
+    messages: oneSystemMessageFirst(messages),
     stream: true,
     stream_options: { include_usage: true },
   };
