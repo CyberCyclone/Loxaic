@@ -84,9 +84,12 @@ async function runGui() {
 
   const PROBE_TIMEOUT_MS = 1500;
   const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
-  /** Development only: the window shown while pnpm dev's server starts. Set
-   * from its creation until the real window is constructed, and only then —
-   * which is exactly when closing every window means "stop waiting", not quit. */
+  /** The window shown before the real one exists: in a packaged app, the
+   * launch splash while the embedded stack starts (launch-splash.js); under
+   * pnpm dev, the page saying it waits for the dev server. Set from its
+   * creation until the real window is constructed, and only then — which is
+   * exactly when closing every window means "stop waiting", not quit, in
+   * production as much as in dev. */
   let startupSplash = null;
   /** Whether the launch has settled which server the window talks to. Until
    * then there is no window to reopen from the dock: it is still coming. */

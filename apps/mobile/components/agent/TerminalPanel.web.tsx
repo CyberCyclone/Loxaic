@@ -13,6 +13,7 @@ import { Icon } from '@/components/ui/icon';
 import { useSandboxTerminal } from '@/hooks/useSandboxTerminal';
 import { terminalStatusLine } from '@/lib/terminal';
 import type { TerminalPanelProps } from './TerminalPanel';
+import { monoFont } from '@/lib/fonts';
 
 /**
  * The real terminal, for web and Electron: xterm.js over `/ws/sandbox/:id`.
@@ -53,7 +54,7 @@ export function TerminalPanel({ conversationId, token, open, onClose }: Terminal
       // first would start where the previous one ended.
       convertEol: true,
       fontSize: 12,
-      fontFamily: 'JetBrainsMono_400Regular, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontFamily: monoFont(),
       cursorBlink: true,
       theme: { background: '#0a0a0a', foreground: '#e4e4e7', cursor: '#e4e4e7' },
     });

@@ -1,3 +1,4 @@
+import { monoFont } from '@/lib/fonts';
 // Every className the renderer emits, in one place. All colors are global.css
 // tokens, so both themes come from the class names — never hardcode a color
 // here.
@@ -40,4 +41,5 @@ export const md = {
 // RN needs an explicit monospace family (no font-stack fallback). Size and
 // line height go through classes — on web the Gluestack Text is a raw <span>,
 // where a numeric inline lineHeight is a unitless multiplier, not px.
-export const monoStyle = { fontFamily: 'JetBrainsMono_400Regular' } as const;
+/** Inline code's font: JetBrains Mono, or the platform monospace if it failed to load. */
+export const monoStyle = () => ({ fontFamily: monoFont() });

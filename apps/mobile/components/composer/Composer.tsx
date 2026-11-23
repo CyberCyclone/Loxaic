@@ -406,7 +406,7 @@ export function Composer({
               onPress={onStop}
               isDisabled={stopping || !connected}
             >
-              <ButtonIcon as={Square} className="text-white" />
+              <ButtonIcon as={Square} className="text-on-status" />
             </Button>
           ) : (
             <Button

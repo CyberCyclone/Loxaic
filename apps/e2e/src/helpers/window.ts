@@ -51,3 +51,29 @@ export async function setWindowSize(width: number, height: number): Promise<void
     () => new Promise<void>((resolve) => { requestAnimationFrame(() => { requestAnimationFrame(() => { resolve(); }); }); }),
   );
 }
+
+/**
+ * Electron: moves the session to the app's own window (the `app://` page).
+ *
+ * A packaged launch shows a splash window first (apps/desktop/src/launch-splash.js),
+ * and chromedriver may attach to it; once the real window exists the splash is
+ * destroyed, and every command on its handle fails with "no such window". The
+ * closed window's handle can linger in the list for a moment, so each handle
+ * is tried in turn until one answers with the app's URL.
+ */
+export async function focusAppWindow(timeoutMs = 60_000): Promise<void> {
+  await browser.waitUntil(
+    async () => {
+      for (const handle of await browser.getWindowHandles()) {
+        try {
+          await browser.switchToWindow(handle);
+          if ((await browser.getUrl()).startsWith('app://')) return true;
+        } catch {
+          // The splash, closed since the handles were listed.
+        }
+      }
+      return false;
+    },
+    { timeout: timeoutMs, interval: 250, timeoutMsg: 'the app window never replaced the launch splash' },
+  );
+}

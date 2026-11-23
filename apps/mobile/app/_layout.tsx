@@ -18,9 +18,11 @@ import { SessionProvider, useSession } from '@/lib/session';
 import { useThemePreference } from '@/hooks/useTheme';
 import { useLocalExecutorSync } from '@/hooks/useLocalExecutor';
 import { startUpdateChecks } from '@/lib/expo-updates';
+import { setMonoLoaded } from '@/lib/fonts';
 
 // Keep the native splash (the mark on the dark background) up until the fonts
-// are ready, so the first frame is the app rather than a blank screen.
+// have settled and the session has hydrated (ThemedApp hides it), so what
+// follows the splash is the first screen rather than a blank frame.
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 function ThemedApp() {
@@ -38,6 +40,9 @@ function ThemedApp() {
   // read a stored channel preference before hydration had finished. The
   // channel is a property of the build now, so there is nothing to wait for.
   useEffect(() => startUpdateChecks(), []);
+  useEffect(() => {
+    if (ready) void SplashScreen.hideAsync().catch(() => undefined);
+  }, [ready]);
   if (!ready) return null;
   return (
     <GluestackUIProvider mode={themePref}>
@@ -54,12 +59,11 @@ export default function RootLayout() {
     InstrumentSans_700Bold,
     JetBrainsMono_400Regular,
   });
-  const fontsSettled = fontsLoaded || fontError != null;
-  useEffect(() => {
-    if (fontsSettled) void SplashScreen.hideAsync().catch(() => undefined);
-  }, [fontsSettled]);
   // Render on error too — system fonts beat a permanently blank app.
-  if (!fontsSettled) return null;
+  if (!fontsLoaded && !fontError) return null;
+  // Before anything that reads monoFont() renders: without JetBrains Mono,
+  // code falls back to the platform's monospace rather than a proportional font.
+  setMonoLoaded(fontsLoaded && !fontError);
 
   return (
     <SafeAreaListener
