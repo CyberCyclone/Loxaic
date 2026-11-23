@@ -184,4 +184,10 @@
   --font-semibold: InstrumentSans_600SemiBold;
   --font-bold: InstrumentSans_700Bold;
   --font-mono: JetBrainsMono_400Regular;
+  /* gluestack's Text and Heading ask for `font-body` and `font-heading`. Web
+     also gets `font-sans` from their web-only base class, but on native these
+     two are the only family a Text receives: undefined, iOS and Android fell
+     back to the system font and the app's own face never showed there. */
+  --font-body: InstrumentSans_400Regular;
+  --font-heading: InstrumentSans_600SemiBold;
 }

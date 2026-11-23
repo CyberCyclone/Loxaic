@@ -1,8 +1,11 @@
 import { tva } from '@gluestack-ui/utils/nativewind-utils';
 import { isWeb } from '@gluestack-ui/utils/nativewind-utils';
 
+// No `font-sans` here: `font-body` sets the family on every platform, and on
+// web `font-sans` sorted after `font-medium`/`font-bold` in the CSS, so those
+// weights silently rendered in the Regular face.
 const baseStyle = isWeb
-  ? 'font-sans tracking-sm my-0 bg-transparent border-0 box-border display-inline list-none margin-0 padding-0 position-relative text-start no-underline whitespace-pre-wrap word-wrap-break-word'
+  ? 'tracking-sm my-0 bg-transparent border-0 box-border display-inline list-none margin-0 padding-0 position-relative text-start no-underline whitespace-pre-wrap word-wrap-break-word'
   : '';
 
 export const textStyle = tva({

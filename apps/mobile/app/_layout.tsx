@@ -2,7 +2,8 @@ import '@/global.css';
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider';
 import { SafeAreaListener } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Uniwind } from 'uniwind';
+import { Uniwind, useUniwind } from 'uniwind';
+import { StatusBar } from 'react-native';
 import { Slot } from 'expo-router';
 import {
   useFonts,
@@ -19,11 +20,18 @@ import { useThemePreference } from '@/hooks/useTheme';
 import { useLocalExecutorSync } from '@/hooks/useLocalExecutor';
 import { startUpdateChecks } from '@/lib/expo-updates';
 import { setMonoLoaded } from '@/lib/fonts';
+import { statusBarStyle } from '@/lib/statusBar';
 
 // Keep the native splash (the mark on the dark background) up until the fonts
 // have settled and the session has hydrated (ThemedApp hides it), so what
 // follows the splash is the first screen rather than a blank frame.
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
+
+/** Status bar icons in the applied theme's contrast (lib/statusBar.ts). */
+function ThemedStatusBar() {
+  const { theme } = useUniwind();
+  return <StatusBar barStyle={statusBarStyle(theme)} />;
+}
 
 function ThemedApp() {
   const [themePref] = useThemePreference();
@@ -46,6 +54,7 @@ function ThemedApp() {
   if (!ready) return null;
   return (
     <GluestackUIProvider mode={themePref}>
+      <ThemedStatusBar />
       <Slot />
     </GluestackUIProvider>
   );

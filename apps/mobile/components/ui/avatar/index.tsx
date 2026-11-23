@@ -19,7 +19,7 @@ const avatarStyle = tva({
 });
 
 const avatarFallbackTextStyle = tva({
-  base: 'text-foreground text-xs font-medium text-transform:uppercase',
+  base: 'font-body text-foreground text-xs font-medium text-transform:uppercase',
 });
 
 const avatarGroupStyle = tva({
