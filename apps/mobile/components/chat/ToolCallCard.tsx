@@ -236,7 +236,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
                         ? 'bg-destructive/10 text-destructive'
                         : 'text-muted-foreground'
                   }
-                  style={{ fontFamily: 'monospace', fontSize: 12, paddingHorizontal: 12, paddingVertical: 1 }}
+                  style={{ fontFamily: 'JetBrainsMono_400Regular', fontSize: 12, paddingHorizontal: 12, paddingVertical: 1 }}
                 >
                   {line.text}
                 </Text>
@@ -256,7 +256,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
                 // <span>, where the number is a multiplier — 216px a line, taller
                 // than the box, so the output sat centred in it and cut off.
                 className="p-3 text-[12px] leading-[18px] text-muted-foreground"
-                style={{ fontFamily: 'monospace', ...WRAP_ANYWHERE }}
+                style={{ fontFamily: 'JetBrainsMono_400Regular', ...WRAP_ANYWHERE }}
               >
                 {tool.result}
               </Text>

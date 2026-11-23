@@ -1,12 +1,9 @@
 import Svg, { Circle } from 'react-native-svg';
+import { useSvgColors } from '@/lib/designTokens';
 
 // react-native-svg can't resolve CSS custom properties (no var() support on
-// native), so colors are literal here rather than theme tokens. --primary is
-// the same #0096ff in both light and dark, and --destructive is likewise
-// theme-stable; the track uses a neutral alpha gray that reads fine against
-// either background.
-const PRIMARY = '#0096ff';
-const DANGER = '#dc2626';
+// native), so colours come from lib/designTokens.ts for the current theme;
+// the track uses a neutral alpha gray that reads fine against either background.
 const TRACK = 'rgba(128,128,128,0.3)';
 
 /** Past this, the window is close enough to full that the next turn may start
@@ -17,6 +14,7 @@ const DANGER_THRESHOLD = 90;
 // RN has no CSS clip-path; this replaces the web version's clipped-circle
 // hack with a real SVG stroke-dashoffset ring.
 export function ContextRing({ percent, size = 16 }: { percent: number; size?: number }) {
+  const colors = useSvgColors();
   const strokeWidth = 2.5;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -31,7 +29,7 @@ export function ContextRing({ percent, size = 16 }: { percent: number; size?: nu
         cx={size / 2}
         cy={size / 2}
         r={radius}
-        stroke={percent >= DANGER_THRESHOLD ? DANGER : PRIMARY}
+        stroke={percent >= DANGER_THRESHOLD ? colors.destructive : colors.primary}
         strokeWidth={strokeWidth}
         fill="none"
         strokeDasharray={circumference}

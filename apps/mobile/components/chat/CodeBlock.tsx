@@ -44,7 +44,7 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
             numeric inline lineHeight is a unitless multiplier, not px. */}
         <Text
           className="p-3 text-card-foreground text-[13px] leading-[19.5px]"
-          style={{ fontFamily: 'monospace' }}
+          style={{ fontFamily: 'JetBrainsMono_400Regular' }}
         >
           {code}
         </Text>

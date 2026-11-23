@@ -40,4 +40,4 @@ export const md = {
 // RN needs an explicit monospace family (no font-stack fallback). Size and
 // line height go through classes — on web the Gluestack Text is a raw <span>,
 // where a numeric inline lineHeight is a unitless multiplier, not px.
-export const monoStyle = { fontFamily: 'monospace' } as const;
+export const monoStyle = { fontFamily: 'JetBrainsMono_400Regular' } as const;

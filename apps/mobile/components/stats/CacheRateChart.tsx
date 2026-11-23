@@ -3,8 +3,8 @@ import Svg, { Polyline, Polygon, Line, Circle } from 'react-native-svg';
 import { Box } from '@/components/ui/box';
 import { Text } from '@/components/ui/text';
 import type { CacheRatePoint } from '@loxaic/api-client';
+import { useSvgColors } from '@/lib/designTokens';
 
-const COLOR = '#0096ff';
 
 interface CacheRateChartProps {
   points: CacheRatePoint[];
@@ -12,6 +12,7 @@ interface CacheRateChartProps {
 }
 
 export function CacheRateChart({ points, height = 180 }: CacheRateChartProps) {
+  const COLOR = useSvgColors()['chart-1'];
   // A bucket with no measured reuse figure is a gap, not a zero — plotting it
   // as 0% is exactly the kind of fabricated data point this whole change is
   // about. Drop those buckets and keep their x position, so a run of

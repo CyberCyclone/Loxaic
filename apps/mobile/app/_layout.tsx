@@ -6,16 +6,22 @@ import { Uniwind } from 'uniwind';
 import { Slot } from 'expo-router';
 import {
   useFonts,
-  PublicSans_400Regular,
-  PublicSans_500Medium,
-  PublicSans_600SemiBold,
-  PublicSans_700Bold,
-} from '@expo-google-fonts/public-sans';
+  InstrumentSans_400Regular,
+  InstrumentSans_500Medium,
+  InstrumentSans_600SemiBold,
+  InstrumentSans_700Bold,
+} from '@expo-google-fonts/instrument-sans';
+import { JetBrainsMono_400Regular } from '@expo-google-fonts/jetbrains-mono';
 import { useEffect } from 'react';
+import * as SplashScreen from 'expo-splash-screen';
 import { SessionProvider, useSession } from '@/lib/session';
 import { useThemePreference } from '@/hooks/useTheme';
 import { useLocalExecutorSync } from '@/hooks/useLocalExecutor';
 import { startUpdateChecks } from '@/lib/expo-updates';
+
+// Keep the native splash (the mark on the dark background) up until the fonts
+// are ready, so the first frame is the app rather than a blank screen.
+void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 
 function ThemedApp() {
   const [themePref] = useThemePreference();
@@ -42,13 +48,18 @@ function ThemedApp() {
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
-    PublicSans_400Regular,
-    PublicSans_500Medium,
-    PublicSans_600SemiBold,
-    PublicSans_700Bold,
+    InstrumentSans_400Regular,
+    InstrumentSans_500Medium,
+    InstrumentSans_600SemiBold,
+    InstrumentSans_700Bold,
+    JetBrainsMono_400Regular,
   });
+  const fontsSettled = fontsLoaded || fontError != null;
+  useEffect(() => {
+    if (fontsSettled) void SplashScreen.hideAsync().catch(() => undefined);
+  }, [fontsSettled]);
   // Render on error too — system fonts beat a permanently blank app.
-  if (!fontsLoaded && !fontError) return null;
+  if (!fontsSettled) return null;
 
   return (
     <SafeAreaListener

@@ -53,7 +53,7 @@ export function TerminalPanel({ conversationId, token, open, onClose }: Terminal
       // first would start where the previous one ended.
       convertEol: true,
       fontSize: 12,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontFamily: 'JetBrainsMono_400Regular, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       cursorBlink: true,
       theme: { background: '#0a0a0a', foreground: '#e4e4e7', cursor: '#e4e4e7' },
     });

@@ -15,6 +15,7 @@ import { disconnectedCopy, useSettledConnection } from '@/lib/connection';
 import { hostOf } from '@/lib/serverHost';
 import { desktopServerAddress } from '@/lib/instanceAddress';
 import { useServerEndpoint } from '@/hooks/useServerEndpoint';
+import { LoxaicMark } from '@/components/brand/LoxaicMark';
 
 interface SidebarProps {
   activeSurface: SurfaceId;
@@ -105,12 +106,8 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
   return (
     <VStack className="h-full w-[260px] border-r border-border bg-background">
       <HStack space="sm" className="items-center px-4 py-4">
-        <Box className="h-8 w-8 items-center justify-center rounded-sm bg-primary">
-          <Text size="xs" className="font-bold text-primary-foreground">
-            L
-          </Text>
-        </Box>
-        <Text className="font-semibold text-foreground">Loxaic</Text>
+        <LoxaicMark size={28} />
+        <Text className="font-semibold tracking-tight text-foreground">Loxaic</Text>
       </HStack>
 
       <Box className="px-3 pb-2">
