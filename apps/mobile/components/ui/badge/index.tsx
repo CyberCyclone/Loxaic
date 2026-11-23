@@ -23,12 +23,12 @@ const badgeStyle = tva({
 });
 
 const badgeTextStyle = tva({
-  base: 'text-xs font-medium tracking-normal uppercase',
+  base: 'font-body text-xs font-medium tracking-normal uppercase',
   parentVariants: {
     variant: {
       default: 'text-primary-foreground',
       secondary: 'text-secondary-foreground',
-      destructive: 'text-white',
+      destructive: 'text-on-status',
       outline: 'text-foreground',
     },
   },
@@ -40,7 +40,7 @@ const badgeIconStyle = tva({
     variant: {
       default: 'text-primary-foreground',
       secondary: 'text-secondary-foreground',
-      destructive: 'text-white',
+      destructive: 'text-on-status',
       outline: 'text-foreground',
     },
   },

@@ -157,6 +157,9 @@ export interface DesktopUpdateState {
 
 export interface LoxaicBridge {
   platform: 'electron';
+  /** `process.platform` of the desktop app. Optional: older desktop builds
+   * do not send it. */
+  os?: string;
   apiBaseUrl: string | null;
   /** The machine sleeping or locking, and waking or unlocking. Optional: a
    * renderer served by Metro can meet an older desktop build. */

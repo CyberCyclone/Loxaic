@@ -10,6 +10,12 @@ UI components, including the vendored gluestack primitives in `ui/`. These rules
 - On web a raw RN `Text` inside a gluestack `Text` does not inherit its style (the gluestack web `Text` is a `<span>`); wrap the inlines in one RN `Text` styled `inherit`, as `renderInlineRun` does.
 - Overlays animate with reanimated `entering`/`exiting` layout animations (`ui/modal`, `menu`, `popover`, `actionsheet/animated.tsx`). On web `entering` must be a built-in animation, never `.withInitialValues(...)`: a custom one writes inline position and size that freezes the modal at its loading size. `ModalContent`/`Menu` use `FadeIn` on web, zoom on native.
 
+- Every font family a vendored component asks for must exist in `global.css` (`font-body`, `font-heading`): an undefined one silently drops native text to the system font. Never put a bold weight on a single-weight face; Android then draws Roboto.
+
+## Desktop title bar (`shell/`)
+
+- A row along the window's top edge pads its left by `useTitleBarInset()` (the macOS window buttons sit over the page) and is `web:app-drag`; anything clickable inside it is `web:app-no-drag` or it never receives the click.
+
 ## Modals and sheets
 
 - Any modal that can grow past a handful of rows needs both `max-h-[85%]` on `ModalContent` and `scrollEnabled` on `<ModalBody>` — the vendored `ModalBody` hardcodes `scrollEnabled={false}` (a caller prop wins). Check both halves whenever you add a row.

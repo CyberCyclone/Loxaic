@@ -2,7 +2,6 @@ import { useCallback, useRef, useState } from 'react';
 import { Redirect, useRouter } from 'expo-router';
 import { KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Eye, EyeOff } from 'lucide-react-native';
-import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
 import { HStack } from '@/components/ui/hstack';
 import { Heading } from '@/components/ui/heading';
@@ -17,6 +16,7 @@ import { ServerPicker, serverPickerKind } from '@/components/auth/ServerPicker';
 import { tailnetHint } from '@/lib/server-address';
 import { unreachableServerName } from '@/lib/instanceAddress';
 import { useInstanceState } from '@/hooks/useInstanceState';
+import { LoxaicMark } from '@/components/brand/LoxaicMark';
 
 export default function LoginScreen() {
   const { token, needsOnboarding, signIn, signUp } = useSession();
@@ -123,9 +123,7 @@ export default function LoginScreen() {
       >
         <VStack space="xl" className="w-full max-w-[380px]">
           <VStack space="xs" className="items-center">
-            <Box className="h-12 w-12 items-center justify-center rounded-md bg-primary">
-              <Text className="text-lg font-bold text-primary-foreground">L</Text>
-            </Box>
+            <LoxaicMark size={48} />
             <Heading size="xl" className="text-foreground">
               Loxaic
             </Heading>

@@ -5,6 +5,8 @@ import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { useTitleBarInset } from '@/hooks/useTitleBarInset';
+import { useOverlaySidebar } from './AppShell';
 
 interface MainHeaderProps {
   title: string;
@@ -22,8 +24,17 @@ interface MainHeaderProps {
 }
 
 export function MainHeader({ title, subtitle, onOpenMenu, onBack, backTestID, right }: MainHeaderProps) {
+  const titleBarInset = useTitleBarInset();
+  // With the sidebar a slide-over, this header starts at the window's left
+  // edge, under the macOS window buttons in the desktop app.
+  const overlaySidebar = useOverlaySidebar();
+  const padLeft = titleBarInset && overlaySidebar ? titleBarInset : 0;
   return (
-    <HStack className="h-14 items-center justify-between border-b border-border bg-background px-4">
+    <HStack
+      testID="shell.header"
+      className={`h-14 items-center justify-between border-b border-border bg-background px-4 ${titleBarInset ? 'web:app-drag' : ''}`}
+      style={padLeft ? { paddingLeft: padLeft } : undefined}
+    >
       {/* Both halves of the shrink fix, and both are needed. React Native
           defaults every view to `flexShrink: 0`, so a title as wide as its
           text pushed the buttons on the right off the edge of the header —
@@ -38,7 +49,7 @@ export function MainHeader({ title, subtitle, onOpenMenu, onBack, backTestID, ri
             testID={backTestID ?? 'shell.backButton'}
             accessibilityLabel="Back"
             onPress={onBack}
-            className="shrink-0 rounded-sm p-1.5 web:hover:bg-muted/50"
+            className="shrink-0 rounded-sm p-1.5 web:app-no-drag web:hover:bg-muted/50"
           >
             <Icon as={ArrowLeft} size="md" className="text-foreground" />
           </Pressable>
@@ -46,7 +57,7 @@ export function MainHeader({ title, subtitle, onOpenMenu, onBack, backTestID, ri
           <Pressable
             testID="shell.menuButton"
             onPress={onOpenMenu}
-            className="shrink-0 rounded-sm p-1.5 web:hover:bg-muted/50"
+            className="shrink-0 rounded-sm p-1.5 web:app-no-drag web:hover:bg-muted/50"
           >
             <Icon as={MenuIcon} size="md" className="text-foreground" />
           </Pressable>
@@ -70,7 +81,7 @@ export function MainHeader({ title, subtitle, onOpenMenu, onBack, backTestID, ri
           ) : null}
         </VStack>
       </HStack>
-      {right ? <HStack className="shrink-0 items-center">{right}</HStack> : null}
+      {right ? <HStack className="shrink-0 items-center web:app-no-drag">{right}</HStack> : null}
     </HStack>
   );
 }

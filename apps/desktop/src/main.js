@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeFetchError } from "./fetch-error.js";
 import { forwardPowerEvents } from "./power.js";
+import { launchSplashPageUrl, SPLASH_BACKGROUND } from "./launch-splash.js";
 import { DEV_SERVER_WAIT_MS, devUrls, isMetroStatus, loadDevRenderer, serverWaitingPageUrl, waitUntil } from "./dev-launch.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -83,10 +84,13 @@ async function runGui() {
 
   const PROBE_TIMEOUT_MS = 1500;
   const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
-  /** Development only: the window shown while pnpm dev's server starts. Set
-   * from its creation until the real window is constructed, and only then —
-   * which is exactly when closing every window means "stop waiting", not quit. */
-  let devSplash = null;
+  /** The window shown before the real one exists: in a packaged app, the
+   * launch splash while the embedded stack starts (launch-splash.js); under
+   * pnpm dev, the page saying it waits for the dev server. Set from its
+   * creation until the real window is constructed, and only then — which is
+   * exactly when closing every window means "stop waiting", not quit, in
+   * production as much as in dev. */
+  let startupSplash = null;
   /** Whether the launch has settled which server the window talks to. Until
    * then there is no window to reopen from the dock: it is still coming. */
   let apiResolved = false;
@@ -451,18 +455,18 @@ async function runGui() {
         // it cannot open yet — this one says what is being waited for. It is
         // closed the moment the real window is constructed (createWindow), not
         // once that window has loaded, which can be minutes more of Metro.
-        devSplash = new BrowserWindow({
+        startupSplash = new BrowserWindow({
           width: 560,
           height: 320,
           resizable: false,
-          backgroundColor: "#18181b",
+          backgroundColor: SPLASH_BACKGROUND,
           titleBarStyle: "hiddenInset",
           webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
         });
         // Caught: closing the splash while it loads rejects this, and an
         // unhandled rejection is an uncaught exception in the main process.
-        void devSplash.loadURL(serverWaitingPageUrl(devServerUrl, DEV_SERVER_WAIT_MS / 1000)).catch(() => undefined);
-        const splash = devSplash;
+        void startupSplash.loadURL(serverWaitingPageUrl(devServerUrl, DEV_SERVER_WAIT_MS / 1000)).catch(() => undefined);
+        const splash = startupSplash;
         up = await waitUntil(() => probeHealth(devServerUrl), {
           timeoutMs: DEV_SERVER_WAIT_MS,
           sleep,
@@ -996,8 +1000,11 @@ async function runGui() {
       height: 800,
       minWidth: 900,
       minHeight: 600,
-      backgroundColor: "#18181b",
+      backgroundColor: SPLASH_BACKGROUND,
       titleBarStyle: "hiddenInset",
+      // Centred on the sidebar's logo row (30px down). The page pads that row
+      // and the header past them: apps/mobile/lib/titleBar.ts, same numbers.
+      trafficLightPosition: { x: 16, y: 23 },
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
         nodeIntegration: false,
@@ -1017,9 +1024,9 @@ async function runGui() {
     // while, still saying it waits for a server that has answered.
     const win = mainWindow;
     win.on("closed", () => { if (mainWindow === win) mainWindow = null; });
-    if (devSplash) {
-      if (!devSplash.isDestroyed()) devSplash.destroy();
-      devSplash = null;
+    if (startupSplash) {
+      if (!startupSplash.isDestroyed()) startupSplash.destroy();
+      startupSplash = null;
     }
 
     if (isDev) {
@@ -1042,6 +1049,21 @@ async function runGui() {
     registerIpc();
     // powerMonitor may only be used once the app is ready.
     forwardPowerEvents(powerMonitor, (state) => { mainWindow?.webContents.send("loxaic:power", state); });
+    if (!isDev) {
+      // Starting the embedded stack takes seconds and the real window cannot
+      // open until it answers, so show the mark meanwhile. It shares
+      // `startupSplash` with the dev-server waiting window: createWindow
+      // destroys it, and window-all-closed ignores it being closed.
+      startupSplash = new BrowserWindow({
+        width: 420,
+        height: 300,
+        resizable: false,
+        frame: false,
+        backgroundColor: SPLASH_BACKGROUND,
+        webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
+      });
+      void startupSplash.loadURL(launchSplashPageUrl()).catch(() => undefined);
+    }
     try {
       ({ apiBaseUrl, stack, mode: instanceMode } = await resolveApi());
     } catch (err) {
@@ -1066,9 +1088,9 @@ async function runGui() {
   });
   app.on("window-all-closed", () => {
     // Someone closing the dev-server waiting window is not quitting: the real
-    // window is about to open. `devSplash` is cleared when it does, so this
+    // window is about to open. `startupSplash` is cleared when it does, so this
     // never holds once there is a real window to close.
-    if (devSplash) return;
+    if (startupSplash) return;
     if (process.platform !== "darwin") app.quit();
   });
   app.on("activate", () => {

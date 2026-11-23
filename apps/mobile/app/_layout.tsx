@@ -2,20 +2,36 @@ import '@/global.css';
 import { GluestackUIProvider } from '@/components/ui/gluestack-ui-provider';
 import { SafeAreaListener } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Uniwind } from 'uniwind';
+import { Uniwind, useUniwind } from 'uniwind';
+import { StatusBar } from 'react-native';
 import { Slot } from 'expo-router';
 import {
   useFonts,
-  PublicSans_400Regular,
-  PublicSans_500Medium,
-  PublicSans_600SemiBold,
-  PublicSans_700Bold,
-} from '@expo-google-fonts/public-sans';
+  InstrumentSans_400Regular,
+  InstrumentSans_500Medium,
+  InstrumentSans_600SemiBold,
+  InstrumentSans_700Bold,
+} from '@expo-google-fonts/instrument-sans';
+import { JetBrainsMono_400Regular } from '@expo-google-fonts/jetbrains-mono';
 import { useEffect } from 'react';
+import * as SplashScreen from 'expo-splash-screen';
 import { SessionProvider, useSession } from '@/lib/session';
 import { useThemePreference } from '@/hooks/useTheme';
 import { useLocalExecutorSync } from '@/hooks/useLocalExecutor';
 import { startUpdateChecks } from '@/lib/expo-updates';
+import { setMonoLoaded } from '@/lib/fonts';
+import { statusBarStyle } from '@/lib/statusBar';
+
+// Keep the native splash (the mark on the dark background) up until the fonts
+// have settled and the session has hydrated (ThemedApp hides it), so what
+// follows the splash is the first screen rather than a blank frame.
+void SplashScreen.preventAutoHideAsync().catch(() => undefined);
+
+/** Status bar icons in the applied theme's contrast (lib/statusBar.ts). */
+function ThemedStatusBar() {
+  const { theme } = useUniwind();
+  return <StatusBar barStyle={statusBarStyle(theme)} />;
+}
 
 function ThemedApp() {
   const [themePref] = useThemePreference();
@@ -32,9 +48,13 @@ function ThemedApp() {
   // read a stored channel preference before hydration had finished. The
   // channel is a property of the build now, so there is nothing to wait for.
   useEffect(() => startUpdateChecks(), []);
+  useEffect(() => {
+    if (ready) void SplashScreen.hideAsync().catch(() => undefined);
+  }, [ready]);
   if (!ready) return null;
   return (
     <GluestackUIProvider mode={themePref}>
+      <ThemedStatusBar />
       <Slot />
     </GluestackUIProvider>
   );
@@ -42,13 +62,17 @@ function ThemedApp() {
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
-    PublicSans_400Regular,
-    PublicSans_500Medium,
-    PublicSans_600SemiBold,
-    PublicSans_700Bold,
+    InstrumentSans_400Regular,
+    InstrumentSans_500Medium,
+    InstrumentSans_600SemiBold,
+    InstrumentSans_700Bold,
+    JetBrainsMono_400Regular,
   });
   // Render on error too — system fonts beat a permanently blank app.
   if (!fontsLoaded && !fontError) return null;
+  // Before anything that reads monoFont() renders: without JetBrains Mono,
+  // code falls back to the platform's monospace rather than a proportional font.
+  setMonoLoaded(fontsLoaded && !fontError);
 
   return (
     <SafeAreaListener

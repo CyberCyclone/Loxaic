@@ -6,9 +6,8 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import type { ModelStats } from '@loxaic/api-client';
 import { displayModelRef } from '@loxaic/types';
+import { useSvgColors, chartSeries } from '@/lib/designTokens';
 
-const PP_COLOR = '#0096ff';
-const TG_COLOR = '#22c55e';
 
 interface ModelSpeedChartProps {
   models: ModelStats[];
@@ -19,6 +18,7 @@ interface ModelSpeedChartProps {
 // model — a snapshot comparison across models, not a trend over time (the
 // design mockup's "Inference Speed by Model" chart is the same shape).
 export function ModelSpeedChart({ models, height = 200 }: ModelSpeedChartProps) {
+  const [PP_COLOR, TG_COLOR] = chartSeries(useSvgColors());
   const withSpeed = models.filter((m) => m.ppSpeed != null || m.tgSpeed != null);
 
   if (withSpeed.length === 0) {

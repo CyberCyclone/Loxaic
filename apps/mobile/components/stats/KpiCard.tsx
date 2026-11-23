@@ -2,6 +2,7 @@ import Svg, { Polyline } from 'react-native-svg';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
+import { useSvgColors } from '@/lib/designTokens';
 
 export interface KpiDelta { text: string; dir: 'up' | 'down' }
 
@@ -50,6 +51,7 @@ export function KpiCard({ label, value, delta, hint, spark }: KpiCardProps) {
 }
 
 function Sparkline({ data, height = 32 }: { data: (number | null)[]; height?: number }) {
+  const stroke = useSvgColors().primary;
   const width = 160;
   const known = data.filter((v): v is number => v != null);
   const max = Math.max(...known, 0);
@@ -72,7 +74,7 @@ function Sparkline({ data, height = 32 }: { data: (number | null)[]; height?: nu
       <Polyline
         points={points.map(([x, y]) => `${String(x)},${String(y)}`).join(' ')}
         fill="none"
-        stroke="#0096ff"
+        stroke={stroke}
         strokeWidth={1.5}
       />
     </Svg>

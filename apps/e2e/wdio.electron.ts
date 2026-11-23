@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { SELF_CONTAINED, appDataDir, stopSelfContainedLeftovers } from './scripts/electron-env.ts';
 import { BASE_URL, teardown } from './scripts/standup.ts';
 import { sharedConfig } from './wdio.shared.ts';
+import { focusAppWindow } from './src/helpers/window.ts';
 
 process.env.E2E_PLATFORM = 'electron';
 
@@ -121,6 +122,11 @@ export const config: WebdriverIO.Config = {
   // only make sense for a desktop build.
   specs: ['./src/specs/*.spec.ts', './src/specs/browser/*.spec.ts', './src/specs/electron/*.spec.ts'],
   services: ['electron'],
+  // The packaged app opens a launch splash before its real window; the session
+  // may have attached to the splash, which is destroyed moments later.
+  before: async function before() {
+    await focusAppWindow();
+  },
   // The shared teardown, plus the one thing only this suite leaks: the
   // embedded stack a self-contained run's app was killed out from under.
   onComplete: async function onComplete() {

@@ -5,7 +5,9 @@
     "version": "0.0.0",
     "orientation": "portrait",
     "scheme": "loxaic",
+    "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "automatic",
+    "backgroundColor": "#13161a",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.loxaic.app",
@@ -15,18 +17,29 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#18181b"
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#13161a"
       },
       "package": "com.loxaic.app"
     },
     "web": {
       "bundler": "metro",
-      "output": "single"
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
       "expo-router",
       "expo-secure-store",
       "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 120,
+          "resizeMode": "contain",
+          "backgroundColor": "#13161a"
+        }
+      ],
       [
         "expo-build-properties",
         {

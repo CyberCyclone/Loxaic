@@ -2,63 +2,110 @@
 @import 'uniwind';
 
 /* ─── UniWind theme variants ─────────────────────────────────────
-   Loxaic design tokens, ported from apps/web/src/loxaic.css
-   (zinc neutrals + #0096ff accent, Public Sans; dark is the design default).
+   Loxaic design tokens, from the Loxaic design system (tokens.json):
+   neutrals, one leaf-green signal (primary), amber for "a person is needed",
+   Instrument Sans + JetBrains Mono; dark is the default.
    Switched at runtime via Uniwind.setTheme('light' | 'dark' | 'system')
    through GluestackUIProvider. Values are RGB triples so alpha
-   utilities work (bg-primary/15 etc).                                   */
+   utilities work (bg-primary/15 etc). SVG hex lives in lib/designTokens.ts. */
 @layer theme {
   :root {
     @variant light {
-      --background: 255 255 255;
-      --foreground: 24 24 27;
-      --card: 244 244 245;
-      --card-foreground: 24 24 27;
-      --popover: 244 244 245;
-      --popover-foreground: 24 24 27;
-      --secondary: 244 244 245;
-      --secondary-foreground: 56 56 62;
-      --muted: 228 228 231;
-      --muted-foreground: 113 113 122;
-      --accent: 228 228 231;
-      --accent-foreground: 24 24 27;
-      --border: 214 214 218;
-      --input: 214 214 218;
-      --primary: 0 150 255;
+      --background: 249 250 252;
+      --surface: 255 255 255;
+      --surface-sunken: 238 240 243;
+      --surface-raised: 255 255 255;
+      --border: 221 224 227;
+      --border-strong: 135 141 147;
+      --foreground: 21 27 34;
+      --foreground-secondary: 76 83 91;
+      --foreground-muted: 101 109 117;
+      --foreground-faint: 141 147 153;
+      --primary: 71 116 14;
+      --primary-hover: 58 95 11;
+      --primary-soft: 236 245 217;
+      --primary-tint: 246 250 236;
+      --on-primary: 255 255 255;
+      --link: 71 116 14;
+      --ring: 71 116 14;
+      --success: 0 120 52;
+      --success-soft: 220 249 225;
+      --warning: 154 91 0;
+      --warning-soft: 255 236 201;
+      --destructive: 194 39 45;
+      --destructive-soft: 255 226 222;
+      --on-status: 255 255 255;
+      --code: 238 240 243;
+      --selection: 236 245 217;
+      --chart-1: 71 116 14;
+      --chart-2: 145 99 213;
+      --chart-3: 215 118 0;
+      --chart-4: 31 95 209;
+      --chart-5: 191 42 130;
+      --chart-6: 107 119 133;
+      /* Legacy names, kept as aliases until the components move to the names above. */
+      --card: 255 255 255;
+      --card-foreground: 21 27 34;
+      --popover: 255 255 255;
+      --popover-foreground: 21 27 34;
+      --secondary: 255 255 255;
+      --secondary-foreground: 76 83 91;
+      --muted: 238 240 243;
+      --muted-foreground: 101 109 117;
+      --accent: 238 240 243;
+      --accent-foreground: 21 27 34;
+      --input: 221 224 227;
       --primary-foreground: 255 255 255;
-      --primary-hover: 29 161 242;
-      --link: 10 99 166;
-      --ring: 0 150 255;
-      --destructive: 220 38 38;
-      --success: 22 163 74;
-      --warning: 180 106 10;
-      --code: 244 244 245;
+      --scrim: rgb(15 19 26 / 0.5);
     }
 
     @variant dark {
-      --background: 24 24 27;
-      --foreground: 244 244 245;
-      --card: 39 39 42;
-      --card-foreground: 244 244 245;
-      --popover: 39 39 42;
-      --popover-foreground: 244 244 245;
-      --secondary: 39 39 42;
-      --secondary-foreground: 161 161 170;
-      --muted: 63 63 70;
-      --muted-foreground: 113 113 122;
-      --accent: 63 63 70;
-      --accent-foreground: 244 244 245;
-      --border: 63 63 70;
-      --input: 63 63 70;
-      --primary: 0 150 255;
-      --primary-foreground: 255 255 255;
-      --primary-hover: 29 161 242;
-      --link: 0 150 255;
-      --ring: 0 150 255;
-      --destructive: 220 38 38;
-      --success: 22 163 74;
-      --warning: 232 155 60;
-      --code: 24 24 27;
+      --background: 19 22 26;
+      --surface: 27 30 34;
+      --surface-sunken: 12 16 19;
+      --surface-raised: 36 40 44;
+      --border: 45 49 53;
+      --border-strong: 94 100 106;
+      --foreground: 236 239 242;
+      --foreground-secondary: 172 178 183;
+      --foreground-muted: 141 147 153;
+      --foreground-faint: 108 114 120;
+      --primary: 163 230 53;
+      --primary-hover: 190 242 100;
+      --primary-soft: 35 48 15;
+      --primary-tint: 22 28 16;
+      --on-primary: 18 26 6;
+      --link: 163 230 53;
+      --ring: 163 230 53;
+      --success: 103 210 131;
+      --success-soft: 21 48 27;
+      --warning: 243 185 76;
+      --warning-soft: 59 43 13;
+      --destructive: 253 115 109;
+      --destructive-soft: 75 29 27;
+      --on-status: 18 26 6;
+      --code: 12 16 19;
+      --selection: 35 48 15;
+      --chart-1: 163 230 53;
+      --chart-2: 189 150 254;
+      --chart-3: 250 171 63;
+      --chart-4: 90 143 240;
+      --chart-5: 248 106 181;
+      --chart-6: 167 177 188;
+      /* Legacy names, kept as aliases until the components move to the names above. */
+      --card: 27 30 34;
+      --card-foreground: 236 239 242;
+      --popover: 36 40 44;
+      --popover-foreground: 236 239 242;
+      --secondary: 27 30 34;
+      --secondary-foreground: 172 178 183;
+      --muted: 12 16 19;
+      --muted-foreground: 141 147 153;
+      --accent: 12 16 19;
+      --accent-foreground: 236 239 242;
+      --input: 45 49 53;
+      --primary-foreground: 18 26 6;
+      --scrim: rgb(5 7 10 / 0.6);
     }
   }
 }
@@ -68,7 +115,37 @@
    bg-primary → rgb(var(--primary)), text-foreground → rgb(var(--foreground)), etc. */
 @theme inline {
   --color-background: rgb(var(--background));
+  --color-surface: rgb(var(--surface));
+  --color-surface-sunken: rgb(var(--surface-sunken));
+  --color-surface-raised: rgb(var(--surface-raised));
+  --color-border: rgb(var(--border));
+  --color-border-strong: rgb(var(--border-strong));
   --color-foreground: rgb(var(--foreground));
+  --color-foreground-secondary: rgb(var(--foreground-secondary));
+  --color-foreground-muted: rgb(var(--foreground-muted));
+  --color-foreground-faint: rgb(var(--foreground-faint));
+  --color-primary: rgb(var(--primary));
+  --color-primary-hover: rgb(var(--primary-hover));
+  --color-primary-soft: rgb(var(--primary-soft));
+  --color-primary-tint: rgb(var(--primary-tint));
+  --color-on-primary: rgb(var(--on-primary));
+  --color-link: rgb(var(--link));
+  --color-ring: rgb(var(--ring));
+  --color-success: rgb(var(--success));
+  --color-success-soft: rgb(var(--success-soft));
+  --color-warning: rgb(var(--warning));
+  --color-warning-soft: rgb(var(--warning-soft));
+  --color-destructive: rgb(var(--destructive));
+  --color-destructive-soft: rgb(var(--destructive-soft));
+  --color-on-status: rgb(var(--on-status));
+  --color-code: rgb(var(--code));
+  --color-selection: rgb(var(--selection));
+  --color-chart-1: rgb(var(--chart-1));
+  --color-chart-2: rgb(var(--chart-2));
+  --color-chart-3: rgb(var(--chart-3));
+  --color-chart-4: rgb(var(--chart-4));
+  --color-chart-5: rgb(var(--chart-5));
+  --color-chart-6: rgb(var(--chart-6));
   --color-card: rgb(var(--card));
   --color-card-foreground: rgb(var(--card-foreground));
   --color-popover: rgb(var(--popover));
@@ -79,21 +156,15 @@
   --color-muted-foreground: rgb(var(--muted-foreground));
   --color-accent: rgb(var(--accent));
   --color-accent-foreground: rgb(var(--accent-foreground));
-  --color-border: rgb(var(--border));
   --color-input: rgb(var(--input));
-  --color-primary: rgb(var(--primary));
   --color-primary-foreground: rgb(var(--primary-foreground));
-  --color-primary-hover: rgb(var(--primary-hover));
-  --color-link: rgb(var(--link));
-  --color-ring: rgb(var(--ring));
-  --color-destructive: rgb(var(--destructive));
-  --color-success: rgb(var(--success));
-  --color-warning: rgb(var(--warning));
-  --color-code: rgb(var(--code));
+  --color-scrim: var(--scrim);
 
+  --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 10px;
-  --radius-lg: 16px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
 
   /* Tailwind's built-in type scale starts at `text-xs`; `2xs` is ours, so it
      only exists if defined here. It was not, and the consequence was the
@@ -108,8 +179,26 @@
      and expo-font registers each weight under its own name. Weight utilities
      (font-medium/semibold/bold) therefore synthesize on native rather than
      swapping family — see the font-* families below if exact weights matter. */
-  --font-sans: PublicSans_400Regular;
-  --font-medium: PublicSans_500Medium;
-  --font-semibold: PublicSans_600SemiBold;
-  --font-bold: PublicSans_700Bold;
+  --font-sans: InstrumentSans_400Regular;
+  --font-medium: InstrumentSans_500Medium;
+  --font-semibold: InstrumentSans_600SemiBold;
+  --font-bold: InstrumentSans_700Bold;
+  --font-mono: JetBrainsMono_400Regular;
+  /* gluestack's Text and Heading ask for `font-body` and `font-heading`. Web
+     also gets `font-sans` from their web-only base class, but on native these
+     two are the only family a Text receives: undefined, iOS and Android fell
+     back to the system font and the app's own face never showed there. */
+  --font-body: InstrumentSans_400Regular;
+  --font-heading: InstrumentSans_600SemiBold;
+}
+
+/* ─── Desktop title bar ──────────────────────────────────────────
+   The macOS window has no title bar of its own (`hiddenInset`), so the rows
+   along its top edge are where it is dragged from. Used with `web:` only;
+   anything clickable inside a drag region must opt out or it eats the click. */
+@utility app-drag {
+  -webkit-app-region: drag;
+}
+@utility app-no-drag {
+  -webkit-app-region: no-drag;
 }

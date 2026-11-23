@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Redirect, useRouter } from 'expo-router';
 import { KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Boxes, Laptop, Server, TriangleAlert } from 'lucide-react-native';
-import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
 import { HStack } from '@/components/ui/hstack';
 import { Heading } from '@/components/ui/heading';
@@ -16,6 +15,7 @@ import { electronBridge, type InstanceConfigInput, type InstanceState } from '@/
 import { EMPTY_TAILNET, HostConfigFields, tailnetInputFrom, type HostConfigValues } from '@/components/settings/HostConfigFields';
 import { TailnetStatusCard } from '@/components/settings/TailnetStatusCard';
 import { Switch } from '@/components/ui/switch';
+import { LoxaicMark } from '@/components/brand/LoxaicMark';
 
 type Step = 'choose' | 'solo' | 'host' | 'client';
 
@@ -151,9 +151,7 @@ export default function OnboardingScreen() {
       >
         <VStack space="xl" className="w-full max-w-[520px]">
           <VStack space="xs" className="items-center">
-            <Box className="h-12 w-12 items-center justify-center rounded-md bg-primary">
-              <Text className="text-lg font-bold text-primary-foreground">L</Text>
-            </Box>
+            <LoxaicMark size={48} />
             <Heading size="xl" className="text-foreground">
               Set up Loxaic
             </Heading>

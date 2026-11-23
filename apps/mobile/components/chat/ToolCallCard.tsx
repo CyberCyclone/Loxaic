@@ -32,6 +32,7 @@ import { TRUNCATE_TEXT, WRAP_ANYWHERE } from '@/lib/truncate';
 import { revealHidden } from '@/lib/toolDetails';
 import { Button, ButtonText } from '@/components/ui/button';
 import { toolNoticeText } from '@/lib/sandboxAllocation';
+import { monoFont } from '@/lib/fonts';
 
 const TOOL_ICONS: Record<string, typeof FileText> = {
   fs_read: FileText,
@@ -236,7 +237,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
                         ? 'bg-destructive/10 text-destructive'
                         : 'text-muted-foreground'
                   }
-                  style={{ fontFamily: 'monospace', fontSize: 12, paddingHorizontal: 12, paddingVertical: 1 }}
+                  style={{ fontFamily: monoFont(), fontSize: 12, paddingHorizontal: 12, paddingVertical: 1 }}
                 >
                   {line.text}
                 </Text>
@@ -256,7 +257,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
                 // <span>, where the number is a multiplier — 216px a line, taller
                 // than the box, so the output sat centred in it and cut off.
                 className="p-3 text-[12px] leading-[18px] text-muted-foreground"
-                style={{ fontFamily: 'monospace', ...WRAP_ANYWHERE }}
+                style={{ fontFamily: monoFont(), ...WRAP_ANYWHERE }}
               >
                 {tool.result}
               </Text>

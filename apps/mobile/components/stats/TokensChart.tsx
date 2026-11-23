@@ -4,10 +4,10 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import type { StatsSeriesPoint } from '@loxaic/api-client';
+import { useSvgColors, chartSeries } from '@/lib/designTokens';
 
-// react-native-svg can't resolve CSS custom properties, so the palette is
-// literal here rather than theme tokens (same constraint as ContextRing).
-const COLORS = ['#0096ff', '#22c55e', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6'];
+// react-native-svg can't resolve CSS custom properties, so the series come
+// from lib/designTokens.ts (chart-1…6) for the current theme.
 
 interface TokensChartProps {
   points: StatsSeriesPoint[];
@@ -15,6 +15,7 @@ interface TokensChartProps {
 }
 
 export function TokensChart({ points, height = 180 }: TokensChartProps) {
+  const COLORS = chartSeries(useSvgColors());
   if (points.length === 0) {
     return (
       <Box className="items-center justify-center" style={{ height }}>

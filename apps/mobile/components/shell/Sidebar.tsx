@@ -14,7 +14,9 @@ import { useSession } from '@/lib/session';
 import { disconnectedCopy, useSettledConnection } from '@/lib/connection';
 import { hostOf } from '@/lib/serverHost';
 import { desktopServerAddress } from '@/lib/instanceAddress';
+import { useTitleBarInset } from '@/hooks/useTitleBarInset';
 import { useServerEndpoint } from '@/hooks/useServerEndpoint';
+import { LoxaicMark } from '@/components/brand/LoxaicMark';
 
 interface SidebarProps {
   activeSurface: SurfaceId;
@@ -77,6 +79,7 @@ function NavItem({
 }
 
 export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }: SidebarProps) {
+  const titleBarInset = useTitleBarInset();
   const [settings] = useSettings();
   const instance = useInstanceState();
   // Where this app is actually talking to, by host name. On the desktop the
@@ -104,13 +107,16 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
 
   return (
     <VStack className="h-full w-[260px] border-r border-border bg-background">
-      <HStack space="sm" className="items-center px-4 py-4">
-        <Box className="h-8 w-8 items-center justify-center rounded-sm bg-primary">
-          <Text size="xs" className="font-bold text-primary-foreground">
-            L
-          </Text>
-        </Box>
-        <Text className="font-semibold text-foreground">Loxaic</Text>
+      {/* The window's top-left corner in the desktop app on macOS: clear of the
+          window buttons, and where the window is dragged from. */}
+      <HStack
+        testID="sidebar.header"
+        space="sm"
+        className={`items-center px-4 py-4 ${titleBarInset ? 'web:app-drag' : ''}`}
+        style={titleBarInset ? { paddingLeft: titleBarInset } : undefined}
+      >
+        <LoxaicMark size={28} />
+        <Text className="font-semibold tracking-tight text-foreground">Loxaic</Text>
       </HStack>
 
       <Box className="px-3 pb-2">

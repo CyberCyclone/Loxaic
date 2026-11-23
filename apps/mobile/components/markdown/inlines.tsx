@@ -76,7 +76,7 @@ export function renderInlines(tokens: Token[] | undefined): ReactNode {
       case 'codespan':
         // CommonMark doesn't process entities inside code, so no decode here.
         return (
-          <RNText key={i} className={md.codespan} style={monoStyle}>
+          <RNText key={i} className={md.codespan} style={monoStyle()}>
             {(token as Tokens.Codespan).text}
           </RNText>
         );

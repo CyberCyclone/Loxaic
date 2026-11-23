@@ -7,6 +7,7 @@ import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
+import { monoFont } from '@/lib/fonts';
 
 interface CodeBlockProps {
   code: string;
@@ -44,7 +45,7 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
             numeric inline lineHeight is a unitless multiplier, not px. */}
         <Text
           className="p-3 text-card-foreground text-[13px] leading-[19.5px]"
-          style={{ fontFamily: 'monospace' }}
+          style={{ fontFamily: monoFont() }}
         >
           {code}
         </Text>
