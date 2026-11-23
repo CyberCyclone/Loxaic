@@ -43,11 +43,11 @@ const modalStyle = tva({
 });
 
 const modalBackdropStyle = tva({
-  base: 'absolute left-0 top-0 right-0 bottom-0 bg-[#000]/50 web:cursor-default',
+  base: 'absolute left-0 top-0 right-0 bottom-0 bg-scrim web:cursor-default',
 });
 
 const modalContentStyle = tva({
-  base: 'bg-background rounded-md overflow-hidden border border-border/80 shadow-hard-2 p-6',
+  base: 'bg-surface-raised rounded-lg overflow-hidden border border-border shadow-lg p-6',
   parentVariants: {
     size: {
       xs: 'w-[60%] max-w-[360px]',

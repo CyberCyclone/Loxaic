@@ -11,7 +11,7 @@ import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 const AnimatedView = Animated.createAnimatedComponent(ScrollView);
 
 const menuStyle = tva({
-  base: 'rounded-md bg-popover text-popover-foreground border border-border p-1 shadow-hard-5 max-h-[300px] overflow-y-auto',
+  base: 'rounded-lg bg-popover text-popover-foreground border border-border p-1 shadow-lg max-h-[300px] overflow-y-auto',
 });
 
 const menuItemStyle = tva({

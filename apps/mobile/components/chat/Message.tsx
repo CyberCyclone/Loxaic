@@ -201,7 +201,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
       )}
       <Box
         testID={`chat.message.${msg.role}`}
-        className={`px-4 py-2 ${isUser ? 'bg-primary/5' : ''}`}
+        className={`px-4 py-2 ${isUser ? 'bg-primary-tint' : ''}`}
       >
         <HStack space="sm" className="items-start">
           <Box
