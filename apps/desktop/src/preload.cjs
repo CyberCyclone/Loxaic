@@ -24,6 +24,8 @@ const launchApiBaseUrl = readArg("loxaic-api-base-url") || null;
 
 contextBridge.exposeInMainWorld("loxaic", {
   platform: "electron",
+  // Plain data: the page pads its title-bar row past the macOS window buttons.
+  os: process.platform,
   apiBaseUrl: launchApiBaseUrl,
 
   /**

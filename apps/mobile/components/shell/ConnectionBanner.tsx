@@ -5,6 +5,7 @@ import { Text } from '@/components/ui/text';
 import { Icon } from '@/components/ui/icon';
 import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
 import { retryNow } from '@/lib/connectionMonitor';
+import { useTitleBarInset } from '@/hooks/useTitleBarInset';
 
 /**
  * Tells the user the server is unreachable — once, for the whole app.
@@ -22,6 +23,7 @@ import { retryNow } from '@/lib/connectionMonitor';
  * one visual language for "something is wrong but the app still works".
  */
 export function ConnectionBanner() {
+  const titleBarInset = useTitleBarInset();
   const connection = useConnection();
   if (!showsDisconnected(connection)) return null;
 
@@ -30,6 +32,9 @@ export function ConnectionBanner() {
     <Box
       testID="shell.offlineBanner"
       className="flex-row items-center gap-2 border-b border-border bg-destructive/10 px-3 py-2"
+      // Above everything, so in the desktop app on macOS it is what the window
+      // buttons sit on.
+      style={titleBarInset ? { paddingLeft: titleBarInset } : undefined}
     >
       <Icon as={offline ? CloudOff : RefreshCw} size="xs" className="text-destructive" />
       <Text size="xs" className="flex-1 text-destructive">

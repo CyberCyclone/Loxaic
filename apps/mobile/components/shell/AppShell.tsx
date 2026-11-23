@@ -27,6 +27,11 @@ interface ShellState {
 
 const ShellContext = createContext<ShellState | null>(null);
 
+/** Whether the sidebar is a slide-over, outside AppShell too (then false). */
+export function useOverlaySidebar(): boolean {
+  return useContext(ShellContext)?.overlaySidebar ?? false;
+}
+
 export function useShell(): ShellState {
   const ctx = useContext(ShellContext);
   if (!ctx) throw new Error('useShell must be used within AppShell');
@@ -139,7 +144,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Pressable
                 testID="shell.sidebarScrim"
                 onPress={() => { setSidebarOpen(false); }}
-                className="absolute inset-0 bg-black/40"
+                className="absolute inset-0 bg-scrim"
               />
               <Box className="absolute bottom-0 left-0 top-0 shadow-lg">{sidebar}</Box>
             </>

@@ -1002,6 +1002,9 @@ async function runGui() {
       minHeight: 600,
       backgroundColor: SPLASH_BACKGROUND,
       titleBarStyle: "hiddenInset",
+      // Centred on the sidebar's logo row (30px down). The page pads that row
+      // and the header past them: apps/mobile/lib/titleBar.ts, same numbers.
+      trafficLightPosition: { x: 16, y: 23 },
       webPreferences: {
         preload: path.join(__dirname, "preload.cjs"),
         nodeIntegration: false,
