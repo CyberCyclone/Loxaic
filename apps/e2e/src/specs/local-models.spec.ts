@@ -286,7 +286,7 @@ describe('local models', () => {
                 [...e.childNodes].some((n) => n.nodeType === 3 && (n.textContent ?? '').trim().startsWith(words)),
               )
             : undefined;
-          const block = leaf?.closest('span.font-sans');
+          const block = leaf?.closest('span.font-body');
           if (!leaf || !block) return null;
           const l = getComputedStyle(leaf);
           const b = getComputedStyle(block);
