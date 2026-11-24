@@ -96,12 +96,14 @@ describe("favourite questions", () => {
     expect((await add("x".repeat(FAVOURITE_QUESTION_MAX_CHARS))).statusCode).toBe(200);
   });
 
-  it("stops at the cap, even when the last places are raced for", async () => {
+  // The prefs-row lock in addFavouriteQuestion is for two devices adding at
+  // the same moment; requests here never interleave, so no test drives it.
+  it("stops at the cap", async () => {
     await freshUser();
     const room = MAX_FAVOURITE_QUESTIONS - DEFAULT_FAVOURITE_QUESTIONS.length;
     for (let i = 0; i < room - 1; i++) expect((await add(`Question ${String(i)}`)).statusCode).toBe(200);
-    const raced = await Promise.all([add("Last A"), add("Last B"), add("Last C")]);
-    expect(raced.map((r) => r.statusCode).sort()).toEqual([200, 400, 400]);
+    const last = await Promise.all([add("Last A"), add("Last B"), add("Last C")]);
+    expect(last.map((r) => r.statusCode).sort()).toEqual([200, 400, 400]);
     expect(await list()).toHaveLength(MAX_FAVOURITE_QUESTIONS);
     // A question already there is still no change rather than "full".
     expect((await add("Question 0")).statusCode).toBe(200);
