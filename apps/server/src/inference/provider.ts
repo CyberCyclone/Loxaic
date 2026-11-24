@@ -513,6 +513,8 @@ const MOCK_TOOL_TRIGGERS: {
   name: string;
   /** Fixed arguments, or arguments built from the prompt. */
   args: Record<string, unknown> | ((prompt: string) => Record<string, unknown>);
+  /** Fires only when this holds for the tools offered, as well as `match`. */
+  when?: (tools: ReadonlySet<string>) => boolean;
 }[] = [
   // MCP entries first — a trigger only fires when the tool is actually in
   // options.tools, so these double as a wiring test of the MCP registry.
@@ -546,6 +548,15 @@ const MOCK_TOOL_TRIGGERS: {
     match: /\buse the [a-z0-9-]+ skill\b/i,
     name: "skill",
     args: (prompt) => ({ name: /\buse the ([a-z0-9-]+) skill\b/i.exec(prompt)?.[1]?.toLowerCase() ?? "" }),
+  },
+  // The person's location (streams/runs/location.ts): the weather and news
+  // favourites. Not in planning mode (propose_plan offered), where those same
+  // words are the plan specs' stock prompt.
+  {
+    match: /\bweather\b|\bmy area\b|\bwhere am i\b|\bnear me\b/i,
+    name: "get_location",
+    args: { reason: "To answer for where you are." },
+    when: (tools) => !tools.has("propose_plan"),
   },
   // Planning mode's hand-off. Before the `plan` trigger below, which would
   // otherwise take the same prompt for todo_write; only planning mode offers
@@ -775,7 +786,7 @@ async function* mockStream(
             // Answers are what the plan was waiting for, and they mention
             // "questions" — which would otherwise ask the same ones again.
             if (planning && prompt.startsWith(QUESTIONS_ANSWERED_PREFIX)) return planningFinish();
-            const t = MOCK_TOOL_TRIGGERS.find((x) => toolNames.has(x.name) && x.match.test(prompt));
+            const t = MOCK_TOOL_TRIGGERS.find((x) => toolNames.has(x.name) && x.match.test(prompt) && (x.when?.(toolNames) ?? true));
             return t ? [{ name: t.name, args: typeof t.args === "function" ? t.args(prompt) : t.args }] : planningFinish();
           })();
 

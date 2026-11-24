@@ -7,7 +7,8 @@ import { resolveCommandSkill } from "../skills/resolve.ts";
 import { recordSkillUse } from "../skills/usage.ts";
 import { createDelivery } from "./delivery.ts";
 import { assertConversationAccess } from "../streams/authz.ts";
-import { answerApproval, mayActOnRun } from "./run-actions.ts";
+import { capsFromQuery, registerDeviceSocket } from "../streams/device-presence.ts";
+import { answerApproval, answerDeviceRequest, mayActOnRun } from "./run-actions.ts";
 import { getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
 import { beginSendFor, sendErrorFor, sendOutcomeFor } from "./send-outcomes.ts";
@@ -54,7 +55,13 @@ export function chatWsHandler(app: FastifyInstance) {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
     };
     const delivery = createDelivery(userId, safeSend, () => socket.bufferedAmount);
-    socket.on("close", () => { delivery.close(); });
+    // A device that can share its location says so in `caps`: a get_location
+    // call waits only when one of the person's is connected.
+    const releaseDevice = registerDeviceSocket(userId, capsFromQuery(url.searchParams.get("caps")));
+    socket.on("close", () => {
+      releaseDevice();
+      delivery.close();
+    });
 
     const handleMessage = async (raw: Buffer): Promise<void> => {
       let msg: ClientMessage;
@@ -241,6 +248,9 @@ export function chatWsHandler(app: FastifyInstance) {
             msg.stream_id,
             msg.type === "agent.approve" && msg.always === true,
           );
+        } else if (msg.type === "device.answer") {
+          // The sender's own device only; see answerDeviceRequest.
+          await answerDeviceRequest(userId, msg);
         }
       } catch (err) {
         // A no-op when the run already settled it: only the first counts.

@@ -133,6 +133,7 @@ export class StreamBroker {
     let iteration: StreamSnapshot["iteration"];
     let todos: StreamSnapshot["todos"];
     let pendingApproval: StreamSnapshot["pending_approval"];
+    let pendingDevice: StreamSnapshot["pending_device_request"];
     let reviewing: StreamSnapshot["reviewing"];
     let reviews: NonNullable<StreamSnapshot["reviews"]> = [];
     let promptStats: StreamSnapshot["prompt_stats"];
@@ -292,6 +293,11 @@ export class StreamBroker {
           pendingApproval = request;
           break;
         }
+        case "device.request": {
+          const { kind: _kind, ...request } = event;
+          pendingDevice = request;
+          break;
+        }
         case "tool.result": {
           const m = ensure(event.message_id);
           const call = m.tool_calls.find((t) => t.call_id === event.call_id);
@@ -303,8 +309,10 @@ export class StreamBroker {
             if (event.images) call.images = event.images;
             if (event.browser) call.browser = true;
             if (event.notice) call.notice = event.notice;
+            if (event.device) call.device = event.device;
           }
           if (pendingApproval?.call_id === event.call_id) pendingApproval = undefined;
+          if (pendingDevice?.call_id === event.call_id) pendingDevice = undefined;
           break;
         }
         case "todos":
@@ -334,6 +342,7 @@ export class StreamBroker {
       ...(iteration ? { iteration } : {}),
       ...(todos ? { todos } : {}),
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),
+      ...(pendingDevice ? { pending_device_request: pendingDevice } : {}),
       ...(reviewing ? { reviewing } : {}),
       ...(reviews.length ? { reviews } : {}),
       ...(promptStats ? { prompt_stats: promptStats } : {}),

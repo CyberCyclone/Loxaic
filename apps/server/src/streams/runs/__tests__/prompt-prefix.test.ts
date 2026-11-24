@@ -397,6 +397,26 @@ describe("the time each message was sent", () => {
   });
 });
 
+describe("the location setting", () => {
+  it("never changes the tools: get_location is offered whatever it says", async () => {
+    const setSharing = (value: "off" | "ask" | "always") =>
+      db
+        .insert(userPrefs)
+        .values({ userId, locationSharing: value })
+        .onConflictDoUpdate({ target: userPrefs.userId, set: { locationSharing: value } });
+    await setSharing("ask");
+    const convId = await turn("first question");
+    await setSharing("off");
+    await turn("second question", convId);
+    await setSharing("always");
+    await turn("third question", convId);
+    await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
+    expectEachRequestExtendsTheLast();
+    expect(new Set(requestOptions.map((o) => o.tools)).size).toBe(1);
+    expect(requestOptions[0].tools).toContain('"get_location"');
+  });
+});
+
 describe("every prompt extends the previous one", () => {
   it("holds across a plain two-turn conversation", async () => {
     const convId = await turn("first question");

@@ -3,6 +3,7 @@ import type { RunLimitChoices, TimeoutBasis } from "./waits";
 import type { McpOverrides } from "./mcp-state";
 import type { ThinkingLevel } from "./thinking";
 import type { ClientLocalTime } from "./local-time";
+import type { DeviceAnswer, ToolDeviceInfo } from "./location";
 import type { SubAgentEvent, SubAgentLive } from "./subagents";
 import { parseProgressNote, type ReviewAction, type ReviewMode, type ReviewVerdict, type RunReview } from "./progress-review";
 
@@ -686,6 +687,16 @@ export type StreamEventKind =
   | { kind: "tool.call"; message_id: string; call_id: string; tool: string; args: Record<string, unknown> }
   | ({ kind: "approval.request"; call_id: string; tool: string; args: Record<string, unknown> } & ApprovalContext &
       WaitDeadlineFields)
+  /**
+   * The run needs something only the sender's device has: its location, for
+   * `get_location`. `ask`: the device shows "Share your location?"; false:
+   * the person chose "Always allow", and the device answers without asking.
+   * Only `user_id` (the run's sender) answers, with `device.answer`; anyone
+   * else following the run is shown that the run waits on them. Ends with the
+   * call's `tool.result`.
+   */
+  | ({ kind: "device.request"; call_id: string; request: "location"; ask: boolean; user_id: string; reason?: string } &
+      WaitDeadlineFields)
   | {
       kind: "tool.result";
       message_id: string;
@@ -700,6 +711,8 @@ export type StreamEventKind =
       /** web_fetch used the conversation's browser (#281). */
       browser?: true;
       notice?: ToolNotice;
+      /** A `get_location` call: how it ended. */
+      device?: ToolDeviceInfo;
     }
   /** Kept for app builds that read the live list from it; a current client
    * reads the list from the `todo_write` call (apps/mobile/lib/todos.ts). */
@@ -758,6 +771,7 @@ export interface StreamSnapshotMessage {
     images?: AttachmentRef[];
     browser?: true;
     notice?: ToolNotice;
+    device?: ToolDeviceInfo;
   }[];
   status: "streaming" | "complete" | "error" | "cancelled";
   usage?: TurnUsage;
@@ -923,6 +937,10 @@ export interface StreamSnapshot {
   /** For older app builds only, like the `todos` event. */
   todos?: Todo[];
   pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> } & ApprovalContext &
+    WaitDeadlineFields;
+  /** A `device.request` still waiting for the sender's device. Absent from a
+   * finished run's snapshot, and from an older server. */
+  pending_device_request?: { call_id: string; request: "location"; ask: boolean; user_id: string; reason?: string } &
     WaitDeadlineFields;
   /** Present from just before a model request until its first output — so a
    * client reconnecting fifteen minutes into prompt evaluation is told what
@@ -1226,4 +1244,8 @@ export type ClientMessage =
    * approving this call. Honoured only from the approval's `granter_user_id`;
    * from anyone else it approves the one call. */
   | { type: "agent.approve"; call_id: string; stream_id?: string; always?: boolean }
+  /** The sender's device answering a `device.request` of the run `stream_id`
+   * (required: call ids repeat across runs). From anyone but the run's
+   * sender, or for a request no longer waiting, it does nothing. */
+  | ({ type: "device.answer"; stream_id: string; call_id: string } & DeviceAnswer)
   | { type: "agent.deny"; call_id: string; stream_id?: string };

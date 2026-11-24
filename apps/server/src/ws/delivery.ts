@@ -119,6 +119,7 @@ export function createDelivery(
     const folded = broker.foldSnapshot(records);
     currentSeq = records.length ? records[records.length - 1].seq : 0;
     // A finished run holds no questions and runs no review. `pending_approval`
+    // (and `pending_device_request`, a location request)
     // describes a run parked on a person, which cannot be answered once the
     // stream has ended — so advertising one to a client catching up is
     // offering a button that does nothing. `reviewing` is the same: a run that
@@ -136,7 +137,7 @@ export function createDelivery(
     const snapshot: StreamSnapshot =
       status === "active"
         ? folded
-        : (({ pending_approval: _a, reviewing: _r, subagents, reviews, ...rest }) => ({
+        : (({ pending_approval: _a, pending_device_request: _d, reviewing: _r, subagents, reviews, ...rest }) => ({
             ...rest,
             // A review the run ended under never finished: no card for it.
             ...(reviews && settledRunReviews(reviews).length ? { reviews: settledRunReviews(reviews) } : {}),

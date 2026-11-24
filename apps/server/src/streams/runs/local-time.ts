@@ -170,6 +170,11 @@ export async function sentAtBlock(
   );
 }
 
+/** The zone kept for routines; null for a person who does not share it. */
+export async function storedTimeZone(userId: string): Promise<string | null> {
+  return (await timeZonePrefs(userId)).stored;
+}
+
 /** Whether this person shares their zone, and the one kept for routines.
  * A failed read shares nothing: the time zone is a convenience, privacy is
  * not. */

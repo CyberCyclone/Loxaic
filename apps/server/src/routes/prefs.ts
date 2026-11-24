@@ -14,6 +14,10 @@ import {
   SUBAGENT_MODEL_MODES,
   isSubAgentModelMode,
   type SubAgentModelMode,
+  DEFAULT_LOCATION_SHARING,
+  LOCATION_SHARING_VALUES,
+  isLocationSharing,
+  type LocationSharing,
 } from "@loxaic/types";
 import { assertModelResolvable } from "../inference/providers.ts";
 import { authenticate } from "../auth/middleware";
@@ -53,6 +57,7 @@ function toApi(row: {
   progressCheckSteps?: number | null;
   progressReviewPrompt?: string | null;
   subagentModelMode?: string;
+  locationSharing?: string;
   subagentModel?: string | null;
   bashGrantRetiredAt?: Date | null;
   shareTimeZone?: boolean;
@@ -89,6 +94,7 @@ function toApi(row: {
     // offers back if the person returns to that choice, and null — not an
     // absent key — when none was ever picked.
     subagentModelMode: isSubAgentModelMode(row.subagentModelMode) ? row.subagentModelMode : DEFAULT_SUBAGENT_MODEL_MODE,
+    locationSharing: isLocationSharing(row.locationSharing) ? row.locationSharing : DEFAULT_LOCATION_SHARING,
     subagentModel: row.subagentModel ?? null,
     // Whether messages carry this person's time zone (streams/runs/local-time.ts).
     shareTimeZone: row.shareTimeZone ?? true,
@@ -153,6 +159,7 @@ export function prefsRoutes(app: FastifyInstance) {
       progressReviewPrompt?: unknown;
       serverDefaults?: unknown;
       subagentModelMode?: unknown;
+      locationSharing?: unknown;
       subagentModel?: unknown;
       bashGrantNoticeSeen?: unknown;
       shareTimeZone?: unknown;
@@ -194,6 +201,7 @@ export function prefsRoutes(app: FastifyInstance) {
       progressCheckSteps?: number | null;
       progressReviewPrompt?: string | null;
       subagentModelMode?: SubAgentModelMode;
+      locationSharing?: LocationSharing;
       subagentModel?: string | null;
       bashGrantRetiredAt?: null;
       shareTimeZone?: boolean;
@@ -310,6 +318,13 @@ export function prefsRoutes(app: FastifyInstance) {
         }
       }
       patch.subagentModel = body.subagentModel;
+    }
+    if (body.locationSharing !== undefined) {
+      if (!isLocationSharing(body.locationSharing)) {
+        reply.code(400);
+        return { error: `locationSharing must be one of ${LOCATION_SHARING_VALUES.join(", ")}` };
+      }
+      patch.locationSharing = body.locationSharing;
     }
     if (body.subagentModelMode !== undefined) {
       if (!isSubAgentModelMode(body.subagentModelMode)) {

@@ -35,6 +35,7 @@ interface PrefsBody {
   progressReviewPrompt: string | null;
   subagentModelMode: string;
   subagentModel: string | null;
+  locationSharing: string;
   serverDefaults: {
     approvalTimeoutMs: number;
     progressCheckMs: number;
@@ -310,6 +311,22 @@ describe("the sub-agent model setting", () => {
     await patch({ progressCheckSteps: 42 });
     await patch({ subagentModelMode: "parent" });
     expect(await get()).toMatchObject({ progressCheckSteps: 42, subagentModelMode: "parent" });
+  });
+});
+
+describe("location sharing", () => {
+  it("is Ask each time until changed, takes the three settings, and refuses anything else", async () => {
+    await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
+    expect((await get()).locationSharing).toBe("ask");
+    for (const value of ["off", "always", "ask"]) {
+      expect((await patch({ locationSharing: value })).statusCode).toBe(200);
+      expect((await get()).locationSharing).toBe(value);
+    }
+    for (const bad of ["never", "", null, 1, true, ["ask"]]) {
+      const res = await patch({ locationSharing: bad });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toContain("off, ask, always");
+    }
   });
 });
 

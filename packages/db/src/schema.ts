@@ -894,6 +894,13 @@ export const userPrefs = pgTable("user_prefs", {
    * are dated in UTC too (streams/runs/local-time.ts).
    */
   shareTimeZone: boolean("share_time_zone").notNull().default(true),
+  /**
+   * Whether the model may learn where this person is (`get_location`,
+   * streams/runs/location.ts): `off`, `ask` each time, or `always` (their
+   * device answers without asking). Read when the tool is called, never at
+   * run start, so a change reaches a run already going.
+   */
+  locationSharing: text("location_sharing").notNull().default("ask"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

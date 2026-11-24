@@ -1,4 +1,4 @@
-import type { PermissionMode, RunActivity, RunLimits } from "@loxaic/types";
+import type { DeviceAnswer, PermissionMode, RunActivity, RunLimits } from "@loxaic/types";
 import { announceRunActivity } from "./watchers.ts";
 
 /**
@@ -15,6 +15,10 @@ import { announceRunActivity } from "./watchers.ts";
  */
 export type ApprovalResolver = (approved: boolean, answer?: { userId: string; always: boolean }) => void;
 
+/** Settles a waiting device request (`get_location`) with the sender's
+ * device's answer. */
+export type DeviceRequestResolver = (answer: DeviceAnswer) => void;
+
 export interface RunHandle {
   streamId: string;
   conversationId: string;
@@ -27,6 +31,11 @@ export interface RunHandle {
   /** call_id -> resolver. Approvals are run-scoped, not connection-scoped: a
    * different device/socket than the one that started the run can approve. */
   approvals: Map<string, ApprovalResolver>;
+  /** call_id -> a request waiting on the sender's device (`get_location`).
+   * `ask`: the device is asking the person, which makes the run wait on a
+   * person as an approval does. Written only by `setRunDeviceRequest` and
+   * `clearRunDeviceRequest`. */
+  deviceRequests?: Map<string, { ask: boolean; resolve: DeviceRequestResolver }>;
   /** A sub-agent's run names the conversation that spawned it, so a question
    * about "other conversations" can tell a thread's own children from them. */
   parentConversationId?: string;
@@ -140,6 +149,9 @@ export function setRunLimits(handle: RunHandle, limits: RunLimits): void {
  */
 export function runActivityOf(handle: RunHandle): RunActivity {
   if (handle.approvals.size > 0) return "awaiting_approval";
+  // A device answering on its own is the run still working; one asking its
+  // person is the run waiting on them.
+  for (const request of handle.deviceRequests?.values() ?? []) if (request.ask) return "awaiting_approval";
   if (handle.queuePosition !== null && handle.queuePosition !== undefined) return "queued";
   return "running";
 }
@@ -176,6 +188,23 @@ export function setRunApproval(handle: RunHandle, callId: string, resolver: Appr
  * *later* call's prompt from the row. */
 export function clearRunApproval(handle: RunHandle, callId: string): void {
   if (!handle.approvals.delete(callId)) return;
+  announceActivity(handle);
+}
+
+/** Wait for the sender's device to answer one call. */
+export function setRunDeviceRequest(
+  handle: RunHandle,
+  callId: string,
+  request: { ask: boolean; resolve: DeviceRequestResolver },
+): void {
+  (handle.deviceRequests ??= new Map()).set(callId, request);
+  announceActivity(handle);
+}
+
+/** Withdraw it — answered, timed out, or stopped. Idempotent, as
+ * `clearRunApproval` is. */
+export function clearRunDeviceRequest(handle: RunHandle, callId: string): void {
+  if (!handle.deviceRequests?.delete(callId)) return;
   announceActivity(handle);
 }
 
