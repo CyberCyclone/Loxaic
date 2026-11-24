@@ -2739,6 +2739,32 @@ export async function deleteCommandRule(id: string): Promise<CommandRule[]> {
   return ((await res.json()) as { rules: CommandRule[] }).rules;
 }
 
+// ── Favourite questions ───────────────────────────────────
+export type { FavouriteQuestion } from "@loxaic/types";
+
+/** This person's favourite questions, oldest first; the server gives the
+ * defaults on the first ask. A 404 means a server that predates them. */
+export async function getFavouriteQuestions(): Promise<FavouriteQuestion[]> {
+  const res = await authedFetch("/v1/prefs/favourite-questions");
+  return ((await res.json()) as { questions: FavouriteQuestion[] }).questions;
+}
+
+/** Returns the whole list after the add. Throws `ApiError` with the server's
+ * reason for a question it refuses (blank, too long, list full). */
+export async function addFavouriteQuestion(text: string): Promise<FavouriteQuestion[]> {
+  const res = await authedFetch("/v1/prefs/favourite-questions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return ((await res.json()) as { questions: FavouriteQuestion[] }).questions;
+}
+
+export async function deleteFavouriteQuestion(id: string): Promise<FavouriteQuestion[]> {
+  const res = await authedFetch(`/v1/prefs/favourite-questions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return ((await res.json()) as { questions: FavouriteQuestion[] }).questions;
+}
+
 // ── Stats ─────────────────────────────────────────────────
 export type StatsRange = "session" | "today" | "week" | "month" | "year";
 
@@ -2885,7 +2911,7 @@ export type {
   PermissionCheckNote,
   ToolPermission,
 } from "@loxaic/types";
-import type { MySkills, PaletteSkill, PromptCacheView, RunReview, RunReviewDetail, ServerMessage, SkillInput, SubAgentLive, UserSkill } from "@loxaic/types";
+import type { FavouriteQuestion, MySkills, PaletteSkill, PromptCacheView, RunReview, RunReviewDetail, ServerMessage, SkillInput, SubAgentLive, UserSkill } from "@loxaic/types";
 export {
   commandQuery, parseCommand, isValidSkillName, SKILL_NAME_MAX,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,

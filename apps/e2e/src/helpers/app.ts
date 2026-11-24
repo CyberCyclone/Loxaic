@@ -1322,6 +1322,25 @@ export async function listMySkills(
   return (await res.json()) as Awaited<ReturnType<typeof listMySkills>>;
 }
 
+/** This person's favourite questions as the server holds them, oldest first. */
+export async function listFavouriteQuestions(
+  creds: Pick<Credentials, 'email' | 'password'>,
+): Promise<{ id: string; text: string }[]> {
+  const res = await fetch(`${BASE_URL}/v1/prefs/favourite-questions`, { headers: { authorization: `Bearer ${await apiToken(creds)}` } });
+  if (!res.ok) throw new Error(`[e2e] listing favourite questions failed (${String(res.status)})`);
+  return ((await res.json()) as { questions: { id: string; text: string }[] }).questions;
+}
+
+/** Adds a favourite question through the API: another device doing it. */
+export async function addFavouriteQuestionViaApi(creds: Pick<Credentials, 'email' | 'password'>, text: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/v1/prefs/favourite-questions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${await apiToken(creds)}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(`[e2e] adding a favourite question failed (${String(res.status)})`);
+}
+
 /** Every content block a conversation has stored, in order. */
 export async function getStoredBlocks(
   creds: Pick<Credentials, 'email' | 'password'>,

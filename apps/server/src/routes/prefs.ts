@@ -17,6 +17,12 @@ import {
 } from "@loxaic/types";
 import { assertModelResolvable } from "../inference/providers.ts";
 import { authenticate } from "../auth/middleware";
+import {
+  FavouriteQuestionError,
+  addFavouriteQuestion,
+  deleteFavouriteQuestion,
+  listFavouriteQuestions,
+} from "../favourites/store.ts";
 import { normalizeRecentModels } from "../inference/recent-models.ts";
 import { clampWaitTimeoutMs, serverDefaultTimeoutMs } from "../streams/runs/timeouts.ts";
 import {
@@ -371,6 +377,38 @@ export function prefsRoutes(app: FastifyInstance) {
       return { error: "Not found" };
     }
     return { rules: (await loadCommandRules(userId)).map(ruleToApi) };
+  });
+
+  // ── Favourite questions (favourites/store.ts) ──────────────
+  // One row per question, for the reason command rules are. Every answer is
+  // the whole list, so a client shows what the server holds after its change.
+
+  app.get("/v1/prefs/favourite-questions", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    return { questions: await listFavouriteQuestions(userId) };
+  });
+
+  app.post("/v1/prefs/favourite-questions", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const body = (request.body ?? {}) as { text?: unknown };
+    try {
+      await addFavouriteQuestion(userId, body.text);
+    } catch (err) {
+      if (!(err instanceof FavouriteQuestionError)) throw err;
+      reply.code(400);
+      return { error: err.message };
+    }
+    return { questions: await listFavouriteQuestions(userId) };
+  });
+
+  app.delete<{ Params: { id: string } }>("/v1/prefs/favourite-questions/:id", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const ok = /^[0-9a-f-]{36}$/i.test(request.params.id) && (await deleteFavouriteQuestion(userId, request.params.id));
+    if (!ok) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    return { questions: await listFavouriteQuestions(userId) };
   });
 }
 
