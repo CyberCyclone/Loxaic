@@ -18,8 +18,8 @@ const without = (prev: ByConv, convId: string): ByConv =>
 
 /**
  * Location requests (`get_location`) waiting on this person's device, per
- * conversation, for the chat and agent session hooks alike. They feed it the
- * stream; it keeps what waits, answers a request the person chose "Always
+ * conversation. The server offers the tool to chat runs only, so the chat
+ * session hook feeds it the stream; it keeps what waits, answers a request the person chose "Always
  * allow" for without asking, and sends the person's choice at the prompt.
  *
  * An answer names the run it arrived on: call ids repeat across runs.

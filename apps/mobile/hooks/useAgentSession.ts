@@ -53,9 +53,6 @@ import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { foldPromptCache } from '@/lib/promptCache';
 import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
-import { useSession } from '@/lib/session';
-import { useDeviceRequests } from './useDeviceRequests';
-import type { LocationChoice } from '@/lib/deviceRequest';
 import { useToastHelper } from './useToastHelper';
 import { localRunStart } from '@/lib/runStart';
 import { ConversationWatches } from '@/lib/conversationWatch';
@@ -242,11 +239,6 @@ export function useAgentSession(
   // open. A child's own stream arrives on this socket under a conversation id
   // that is not a run's, so the handler below asks this first — see the hook.
   const subAgents = useSubAgentState({ wsRef, cursorsRef, showToast });
-  // Location requests (`get_location`) waiting on this person's device.
-  const { user } = useSession();
-  const device = useDeviceRequests({ wsRef, me: user?.id, showToast });
-  const deviceRef = useRef(device);
-  deviceRef.current = device;
   // Every review's card, a thread's and a sub-agent's alike — see the hook.
   const runReviews = useRunReviewState();
   const { loadFor: loadRunReviews, onSync: onReviewSync, onEvent: onReviewEvent, onEnd: onReviewEnd } = runReviews;
@@ -582,13 +574,6 @@ export function useAgentSession(
           applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now, now: arrivedAt }),
         );
         applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
-        {
-          // As the approval in applyRunLevelState: only the run being followed.
-          const tracked = streamingByConvRef.current[convId];
-          if (!tracked || tracked.streamId === event.stream_id) {
-            deviceRef.current.onSync(convId, event.stream_id, event.snapshot, event.server_now, arrivedAt);
-          }
-        }
         const stageSnapshot = event.snapshot.context_stage;
         if (stageSnapshot) {
           setStageCardByConv((prev) => {
@@ -650,7 +635,6 @@ export function useAgentSession(
         // prompt line or touch the thread's messages — so it stops here.
         if (isSubAgentEvent(event.event)) {
           onSubAgentEvent(convId, event.event, arrivedAt);
-          deviceRef.current.onEvent(convId, event.stream_id, event.event, arrivedAt);
           return;
         }
         if (event.event.kind === 'message.start' && event.event.author_type === 'user') {
@@ -714,7 +698,6 @@ export function useAgentSession(
         });
         clearStream(event.conversation_id);
         updateRunLevel(event.conversation_id, (prev) => runLevelAfterEnd(prev, event.status));
-        deviceRef.current.onStreamEnd(event.conversation_id);
         // The run-level reason, which no message carries. Most failures also
         // mark their message, and the bubble says it better — so this speaks
         // only when nothing else will (#157).
@@ -760,7 +743,6 @@ export function useAgentSession(
         if (tracked && removedStreams.has(tracked.streamId)) clearStream(convId);
         const clearsLiveRun = rewindClearsLiveRun(tracked?.streamId, event.removed_stream_ids);
         updateRunLevel(convId, (prev) => runLevelAfterRewind(prev, removedStreams, clearsLiveRun));
-        deviceRef.current.onRewound(convId, removedStreams);
         setStageCardByConv((prev) => {
           const card = prev[convId];
           if (!card || !removedStreams.has(card.streamId)) return prev;
@@ -1280,10 +1262,6 @@ export function useAgentSession(
     promptCache: activeStream?.promptCache ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
-    /** See useChatSession. */
-    pendingDevice: activeId ? (device.pendingByConv[activeId] ?? null) : null,
-    locationAction: device.actionFor(activeId),
-    answerLocation: (choice: LocationChoice) => (activeId ? device.answer(activeId, choice) : Promise.resolve()),
     /** How a progress review of the open run is going, or null. */
     reviewing,
     /** Every conversation's progress-review cards — see useRunReviews. */
