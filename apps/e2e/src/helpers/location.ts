@@ -41,12 +41,16 @@ export async function placeDeviceAt(pos: { lat: number; lon: number }): Promise<
     execFileSync('xcrun', ['simctl', 'privacy', udid, 'grant', 'location', APP_ID]);
     return;
   }
-  // Appium's settings app becomes a mock location provider, which keeps
-  // reporting the position as a phone's GPS would. (The emulator console's
-  // `geo fix` is not reachable through adb on every setup, and sends one fix.)
-  // Allowed to mock first: without it the call succeeds and changes nothing.
+  // Appium's settings app becomes the mock provider for gps, network and
+  // fused alike, and keeps reporting the position as a phone would. (The
+  // emulator console's `geo fix` is not reachable through adb on every setup,
+  // and sends one fix.) Allowed to mock first: without it the service starts
+  // and changes nothing.
   execFileSync(adbPath(), ['shell', 'appops', 'set', 'io.appium.settings', 'android:mock_location', 'allow']);
-  await browser.execute('mobile: setGeolocation', { latitude: pos.lat, longitude: pos.lon });
+  execFileSync(adbPath(), [
+    'shell', 'am', 'start-foreground-service', '--user', '0', '-n', 'io.appium.settings/.LocationService',
+    '--es', 'longitude', String(pos.lon), '--es', 'latitude', String(pos.lat),
+  ]);
   execFileSync(adbPath(), ['shell', 'pm', 'grant', APP_ID, 'android.permission.ACCESS_COARSE_LOCATION']);
 }
 
