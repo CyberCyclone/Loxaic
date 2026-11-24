@@ -75,6 +75,7 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 
 - Beside a spinner or a ticking counter (running cards, badges, sub-agents) set `waitForIdleTimeout: 0` and restore it after; UiAutomator2 otherwise waits ~11 s per query. Probe `getPageSource()` before concluding an element is missing.
 - Emulator stuck on sign-in with `MissingWebViewPackageException` in logcat: `adb reboot`.
+- Set an Android position with `placeDeviceAt` (Appium settings' `LocationService` via adb, after `appops … mock_location allow`), never `adb emu geo fix` (the console is unreachable here) or `mobile: setGeolocation` (succeeds and changes nothing).
 
 ## iOS traps
 

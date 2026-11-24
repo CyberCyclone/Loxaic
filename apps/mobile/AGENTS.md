@@ -84,6 +84,7 @@ The one frontend (Expo + expo-router + gluestack-ui v5 + UniWind) for iOS, Andro
 - Read the clock once per socket message in the handler (`arrivedAt` in `onEvent`) and pass it down; never call `Date.now()` inside a fold or a state updater (React may defer or repeat it).
 - Socket hooks never listen to AppState; the connection monitor owns that listener and asks for a replacement through `onReconnectRequest`.
 - Every approval answer, the thread's own included, names the stream it arrived on (`toPendingApproval`'s `streamId`, `approvalStreamId`) — an unnamed answer can run another thread's call.
+- An answer sent after an OS prompt or a position fix goes through `sendWhenOpen`: on Android those background the app and replace its socket. Call expo-location's `request…PermissionsAsync` only when `get…` is not already granted, and never let it show Play's settings dialog (`mayShowUserSettingsDialog: false`).
 
 ### Promotion: local id to real id
 
