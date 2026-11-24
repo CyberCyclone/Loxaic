@@ -39,7 +39,11 @@ export async function getDevicePosition(): Promise<DevicePosition> {
   const support = platformSupport();
   if (!support.supported || !support.secureContext) return { ok: false, reason: reasonFromError(null, support) };
   try {
-    const permission = await Location.requestForegroundPermissionsAsync();
+    // Asked only when not already granted: on Android the request opens a
+    // system activity even then, which sends the app to the background and
+    // replaces its socket while the position is found.
+    const current = await Location.getForegroundPermissionsAsync();
+    const permission = current.status === Location.PermissionStatus.GRANTED ? current : await Location.requestForegroundPermissionsAsync();
     if (permission.status !== Location.PermissionStatus.GRANTED) return { ok: false, reason: 'permission_denied' };
     // Never Google Play's "improve location accuracy" dialog: it covers the
     // app, and the answer would wait on a screen nobody asked for. A phone

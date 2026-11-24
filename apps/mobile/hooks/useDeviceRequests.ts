@@ -13,6 +13,22 @@ import {
 
 type ByConv = Partial<Record<string, PendingDeviceRequest>>;
 
+/**
+ * Sends on the socket open now, waiting a little for one: finding a position
+ * can send a phone's app to the background (an OS prompt), and coming back
+ * replaces the socket, so the one in hand when the person tapped may be
+ * closing by the time there is an answer to send.
+ */
+async function sendWhenOpen(current: () => WebSocket | null, send: (ws: WebSocket) => boolean, waitMs = 10_000): Promise<boolean> {
+  const until = Date.now() + waitMs;
+  for (;;) {
+    const ws = current();
+    if (ws?.readyState === WebSocket.OPEN) return send(ws);
+    if (Date.now() >= until) return false;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 const without = (prev: ByConv, convId: string): ByConv =>
   convId in prev ? Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId)) : prev;
 
@@ -92,8 +108,8 @@ export function useDeviceRequests(input: {
       inFlightRef.current.add(key);
       try {
         const position = choice === 'deny' ? null : await getDevicePosition();
-        const ws = wsRef.current;
-        const sent = ws ? answerDeviceRequest(ws, pending.streamId, pending.callId, answerFor(choice, position, deviceZone())) : false;
+        const reply = answerFor(choice, position, deviceZone());
+        const sent = await sendWhenOpen(() => wsRef.current, (ws) => answerDeviceRequest(ws, pending.streamId, pending.callId, reply));
         if (!sent) {
           // Not on the wire: the prompt stays so it can be answered again.
           showToast(NOT_SENT_RECONNECTING, 4000);
