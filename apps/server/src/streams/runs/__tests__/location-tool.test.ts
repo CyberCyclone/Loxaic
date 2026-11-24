@@ -243,6 +243,19 @@ describe("get_location", () => {
   });
 });
 
+describe("where it is offered", () => {
+  it("is a chat's tool, not a coding run's", async () => {
+    await setSharing("ask");
+    connectDevice();
+    const { startAgentRun } = await import("../agentRun.ts");
+    const started = await startAgentRun({ userId, content: "What's the weather like today?", model: MODEL, mode: "auto" });
+    convIds.push(started.conversationId);
+    await finished(started.conversationId);
+    expect((await events(started.streamId)).some((e) => e.kind === "device.request")).toBe(false);
+    expect((await stored(started.conversationId)).result).toBeUndefined();
+  });
+});
+
 describe("answerLocationCall", () => {
   it("answers a second call in the same reply as the first, without asking again", async () => {
     const emitted: StreamEventKind[] = [];

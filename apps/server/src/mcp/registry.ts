@@ -82,8 +82,8 @@ export async function buildToolset(
     /** Offer the `skill` tool, listing these skills — the conversation's
      * frozen catalog (skills/session.ts). Absent leaves it out. */
     skills?: readonly SkillListing[];
-    /** Offer `get_location` (streams/runs/location.ts): every run a person
-     * started or scheduled, never a sub-agent's. */
+    /** Offer `get_location` (streams/runs/location.ts): chat runs (routines
+     * included), never an agent run's or a sub-agent's. */
     location?: boolean;
   },
 ): Promise<Toolset> {

@@ -506,8 +506,8 @@ export function resolveBuiltinTools(
     /** The server's browser fallback is on: offer `WEB_FETCH_BROWSING_TOOL`
      * in place of the plain `web_fetch`. */
     browsing?: boolean;
-    /** Offer `LOCATION_TOOL`: a run with a person behind it, never a
-     * sub-agent (it would ask the person on the parent's behalf). */
+    /** Offer `LOCATION_TOOL`: the server offers it to chat runs only
+     * (streams/runs/engine.ts), never to a sub-agent. */
     location?: boolean;
   },
 ): ResolvedTool[] {

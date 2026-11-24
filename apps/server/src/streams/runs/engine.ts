@@ -710,9 +710,10 @@ export async function runToolLoop(ctx: {
       ...(subagents ? { subagents: { models: subagents.offered } } : {}),
       ...(ctx.role ? { handover: false } : {}),
       ...(skills.listing ? { skills: skills.listing } : {}),
-      // Every run with a person behind it; a sub-agent would ask them on its
-      // parent's behalf.
-      location: !ctx.role,
+      // Chat (routines run as chats): weather and local news are questions
+      // for a conversation, not for a coding run, whose prompt stays as it
+      // was. Never a sub-agent, which would ask on its parent's behalf.
+      location: ctx.surface === "chat" && !ctx.role,
     });
     // One answer per reply: a second `get_location` call is answered as the
     // first was, without asking the person again.

@@ -94,6 +94,7 @@ describe("GET /v1/prefs", () => {
       progressReviewPrompt: null,
       subagentModelMode: "choose",
       subagentModel: null,
+      locationSharing: "ask",
       bashGrantRetired: false,
       shareTimeZone: true,
     });
