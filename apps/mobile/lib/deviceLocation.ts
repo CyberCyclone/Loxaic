@@ -40,13 +40,19 @@ export async function getDevicePosition(): Promise<DevicePosition> {
   try {
     const permission = await Location.requestForegroundPermissionsAsync();
     if (permission.status !== Location.PermissionStatus.GRANTED) return { ok: false, reason: 'permission_denied' };
-    const pos = await withTimeout(Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }), POSITION_TIMEOUT_MS);
+    // Never Google Play's "improve location accuracy" dialog: it covers the
+    // app, and the answer would wait on a screen nobody asked for. A phone
+    // that cannot fix a position says so instead.
+    const pos = await withTimeout(
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low, mayShowUserSettingsDialog: false }),
+      POSITION_TIMEOUT_MS,
+    );
     return { ok: true, lat: pos.coords.latitude, lon: pos.coords.longitude };
   } catch (err) {
     // A phone indoors can take long to fix; a recent position is as good at
     // a kilometre. Not on the web, which has no such cache to ask.
     if (Platform.OS !== 'web') {
-      const last = await Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 }).catch(() => null);
+      const last = await withTimeout(Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 }), 5_000).catch(() => null);
       if (last) return { ok: true, lat: last.coords.latitude, lon: last.coords.longitude };
     }
     return { ok: false, reason: reasonFromError(err, support) };
