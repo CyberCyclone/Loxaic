@@ -146,10 +146,14 @@ describe('a conversation that fills up in the middle of a run', () => {
     const rows = await rowsOf(conversationId);
     const at = rows.findIndex((r) => r.authorType === 'summary');
     expect(rows[at].status).toBe('complete');
-    expect(rows[at + 1]).toMatchObject({ authorType: 'user', content: [{ kind: 'text', text: 'and now a short question' }] });
+    // The message, and when it was sent (every current client says so).
+    expect(rows[at + 1]).toMatchObject({
+      authorType: 'user',
+      content: [{ kind: 'text', text: 'and now a short question' }, { kind: 'local_time', source: 'device' }],
+    });
     expect(rows.slice(at + 2).map((r) => r.authorType)).toEqual(['assistant']);
     // And that is what the model was asked.
-    expect(chats().slice(before).at(-1)?.last_user).toBe('and now a short question');
+    expect(chats().slice(before).at(-1)?.last_user).toMatch(/^<local-time>[^<]*<\/local-time>\n\nand now a short question$/);
   });
 
   it('extends the context of a model set to extend, inside the run, and the reply carries on at the larger window', async function () {
