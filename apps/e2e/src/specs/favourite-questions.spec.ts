@@ -8,7 +8,7 @@
  */
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { closeKeyboard, tap, typeInto, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { closeKeyboard, isVisible, tap, typeInto, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   addFavouriteQuestionViaApi,
   getMessageTexts,
@@ -20,6 +20,7 @@ import {
   selectThread,
   signUp,
   startNewThread,
+  waitForComposerReady,
 } from '../helpers/app.ts';
 
 const DEFAULTS = [
@@ -93,8 +94,12 @@ describe('favourite questions', () => {
     await waitForVisible('favourites.add');
     await shot('favourites-empty');
 
+    // A cold start opens the newest thread; the new chat is a tap away.
     await relaunchApp();
-    await waitForVisible('favourites.add', 60_000);
+    await waitForComposerReady(60_000);
+    await startNewThread('chat');
+    await waitForVisible('favourites.add', 30_000);
+    expect(await isVisible('favourites.loadFailed')).toBe(false);
     expect(await listFavouriteQuestions(creds)).toEqual([]);
   });
 });
