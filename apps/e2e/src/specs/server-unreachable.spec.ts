@@ -166,6 +166,10 @@ describe('the server becoming unreachable', () => {
     await tap('sidebar.settings');
     await tap('settings.nav.checkins');
     await waitForVisible('checkins.scroll', 20_000);
+    // The choices follow the screen's prefs request, a moment after the screen.
+    await browser
+      .waitUntil(async () => (await allDisabled('settings.progressCheck.')).count > 0, { timeout: 15_000 })
+      .catch(() => undefined);
     const before = await allDisabled('settings.progressCheck.');
     if (before.count === 0) throw new Error('no review-cadence choices rendered');
     if (before.enabled.length !== before.count) throw new Error('settings were disabled while the server was reachable');
