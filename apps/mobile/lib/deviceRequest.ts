@@ -104,3 +104,27 @@ export function answerFor(
   if (position?.ok) return { outcome: 'shared', location: roundForSending(position.lat, position.lon), ...zone, ...always };
   return { outcome: 'unavailable', reason: position?.reason ?? 'error', ...zone, ...always };
 }
+
+/**
+ * Sends on the socket open now, waiting a little for one: finding a position
+ * can send a phone's app to the background (an OS prompt), and coming back
+ * replaces the socket, so the one in hand when the person tapped may be
+ * closing by the time there is an answer to send. False when none opened.
+ */
+export async function sendWhenOpen(
+  current: () => { readyState: number } | null,
+  send: (ws: WebSocket) => boolean,
+  opts: { waitMs?: number; stepMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<boolean> {
+  const { waitMs = 10_000, stepMs = 250 } = opts;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const until = now() + waitMs;
+  for (;;) {
+    const ws = current();
+    // 1 is WebSocket.OPEN, written out so this runs where WebSocket is not defined.
+    if (ws?.readyState === 1) return send(ws as WebSocket);
+    if (now() >= until) return false;
+    await sleep(stepMs);
+  }
+}

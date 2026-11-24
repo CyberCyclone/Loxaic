@@ -5,6 +5,7 @@ import {
   locationAction,
   reasonFromError,
   roundForSending,
+  sendWhenOpen,
   toPendingDeviceRequest,
   type PendingDeviceRequest,
 } from './deviceRequest';
@@ -76,5 +77,34 @@ describe('answerFor', () => {
     expect(answerFor('once', { ok: false, reason: 'permission_denied' }, undefined)).toEqual({ outcome: 'unavailable', reason: 'permission_denied' });
     expect(answerFor('deny', at, 'Australia/Brisbane')).toEqual({ outcome: 'declined', tz: 'Australia/Brisbane' });
     expect(answerFor('once', null, undefined)).toEqual({ outcome: 'unavailable', reason: 'error' });
+  });
+});
+
+describe('sendWhenOpen', () => {
+  it('sends on the socket that replaced a closing one', async () => {
+    let clock = 0;
+    const closing = { readyState: 2 };
+    const fresh = { readyState: 1 };
+    let current: { readyState: number } = closing;
+    const sentOn: unknown[] = [];
+    const sent = await sendWhenOpen(
+      () => current,
+      (ws) => { sentOn.push(ws); return true; },
+      { now: () => clock, sleep: async (ms) => { clock += ms; if (clock >= 500) current = fresh; } },
+    );
+    expect(sent).toBe(true);
+    expect(sentOn).toEqual([fresh]);
+  });
+
+  it('gives up when no socket opens in time, sending nothing', async () => {
+    let clock = 0;
+    const sentOn: unknown[] = [];
+    const sent = await sendWhenOpen(
+      () => null,
+      (ws) => { sentOn.push(ws); return true; },
+      { waitMs: 1_000, now: () => clock, sleep: async (ms) => { clock += ms; } },
+    );
+    expect(sent).toBe(false);
+    expect(sentOn).toEqual([]);
   });
 });
