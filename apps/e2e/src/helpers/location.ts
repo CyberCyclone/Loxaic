@@ -1,11 +1,11 @@
 /**
  * Where the device under test is, set the way each platform really learns it:
  * DevTools' geolocation override and permission on web and Electron, the
- * simulator's own location and privacy settings on iOS, and the emulator's
- * GPS and a granted permission on Android. The app reads it through
+ * simulator's own location and privacy settings on iOS, and a mock location
+ * provider and a granted permission on Android. The app reads it through
  * expo-location exactly as it would a real position.
  */
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { browser } from '@wdio/globals';
 import { platform } from './selectors.ts';
 import { adbPath, bootedIosDevice } from '../../scripts/native.ts';
@@ -41,23 +41,11 @@ export async function placeDeviceAt(pos: { lat: number; lon: number }): Promise<
     execFileSync('xcrun', ['simctl', 'privacy', udid, 'grant', 'location', APP_ID]);
     return;
   }
-  // The emulator console takes longitude first.
-  execFileSync(adbPath(), ['emu', 'geo', 'fix', String(pos.lon), String(pos.lat)]);
+  // Appium's settings app becomes a mock location provider, which keeps
+  // reporting the position as a phone's GPS would. (The emulator console's
+  // `geo fix` is not reachable through adb on every setup, and sends one fix.)
+  await browser.execute('mobile: setGeolocation', { latitude: pos.lat, longitude: pos.lon });
   execFileSync(adbPath(), ['shell', 'pm', 'grant', APP_ID, 'android.permission.ACCESS_COARSE_LOCATION']);
-}
-
-/**
- * Keeps the emulator's GPS reporting `pos`, as real hardware does: the
- * emulator sends a fix only when told to, and one sent while nobody was
- * listening is lost, so a request made later never gets one. Every second
- * until the returned stop is called. A no-op elsewhere.
- */
-export function keepDeviceAt(pos: { lat: number; lon: number }): () => void {
-  if (platform() !== 'android') return () => undefined;
-  const timer = setInterval(() => {
-    execFile(adbPath(), ['emu', 'geo', 'fix', String(pos.lon), String(pos.lat)], () => undefined);
-  }, 1_000);
-  return () => { clearInterval(timer); };
 }
 
 /** Refuses location permission to the page, as a person who said no to the
