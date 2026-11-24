@@ -20,6 +20,7 @@ import {
   MOCK_TOOL_DONE,
   patchPrefs,
   sendFromDevice,
+  signOut,
   signUp,
 } from '../../helpers/app.ts';
 
@@ -30,6 +31,9 @@ describe('the location tool, server side', () => {
 
   before(async () => {
     await signUp(creds);
+    // The app says it can share a location too: signed out, only this spec's
+    // own sockets are this person's devices.
+    await signOut();
   });
 
   async function resultOf(conversationId: string, reader: Credentials = creds): Promise<string> {
