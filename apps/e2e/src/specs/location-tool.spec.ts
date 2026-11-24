@@ -26,7 +26,7 @@ import {
   waitForComposerReady,
 } from '../helpers/app.ts';
 import { cutServer, restoreServer } from '../helpers/outage.ts';
-import { BRISBANE, placeDeviceAt, refuseBrowserLocation } from '../helpers/location.ts';
+import { BRISBANE, keepDeviceAt, placeDeviceAt, refuseBrowserLocation } from '../helpers/location.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 
 const WEATHER = "What's the weather like today?";
@@ -34,9 +34,16 @@ const WEATHER = "What's the weather like today?";
 describe('the location tool', () => {
   const creds = uniqueCreds();
 
+  let stopGps: () => void = () => undefined;
+
   before(async () => {
     await signUp(creds);
     await placeDeviceAt(BRISBANE);
+    stopGps = keepDeviceAt(BRISBANE);
+  });
+
+  after(() => {
+    stopGps();
   });
 
   async function sharing(): Promise<string> {

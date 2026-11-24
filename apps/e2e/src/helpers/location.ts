@@ -5,7 +5,7 @@
  * GPS and a granted permission on Android. The app reads it through
  * expo-location exactly as it would a real position.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { browser } from '@wdio/globals';
 import { platform } from './selectors.ts';
 import { adbPath, bootedIosDevice } from '../../scripts/native.ts';
@@ -44,6 +44,20 @@ export async function placeDeviceAt(pos: { lat: number; lon: number }): Promise<
   // The emulator console takes longitude first.
   execFileSync(adbPath(), ['emu', 'geo', 'fix', String(pos.lon), String(pos.lat)]);
   execFileSync(adbPath(), ['shell', 'pm', 'grant', APP_ID, 'android.permission.ACCESS_COARSE_LOCATION']);
+}
+
+/**
+ * Keeps the emulator's GPS reporting `pos`, as real hardware does: the
+ * emulator sends a fix only when told to, and one sent while nobody was
+ * listening is lost, so a request made later never gets one. Every second
+ * until the returned stop is called. A no-op elsewhere.
+ */
+export function keepDeviceAt(pos: { lat: number; lon: number }): () => void {
+  if (platform() !== 'android') return () => undefined;
+  const timer = setInterval(() => {
+    execFile(adbPath(), ['emu', 'geo', 'fix', String(pos.lon), String(pos.lat)], () => undefined);
+  }, 1_000);
+  return () => { clearInterval(timer); };
 }
 
 /** Refuses location permission to the page, as a person who said no to the
