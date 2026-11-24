@@ -18,6 +18,7 @@ vi.mock("../../auth/middleware", () => ({
 }));
 
 const { prefsRoutes } = await import("../prefs.ts");
+const { claimAndSeed } = await import("../../favourites/store.ts");
 
 interface Question {
   id: string;
@@ -64,12 +65,15 @@ describe("favourite questions", () => {
     expect((await list()).map((q) => q.text)).toEqual(DEFAULT_FAVOURITE_QUESTIONS);
   });
 
-  it("gives the defaults once when the first requests race", async () => {
+  it("gives the defaults once: a seeding that lost the race adds nothing back", async () => {
+    // Two first requests read "not seeded" at once; one seeds, the person
+    // removes a default, and then the other's seeding runs.
     const id = await freshUser();
-    await Promise.all([list(), list(), list(), add("Raced in")]);
+    const [first] = await list();
+    expect((await remove(first.id)).statusCode).toBe(200);
+    await claimAndSeed(id);
     const rows = await db.select().from(favouriteQuestions).where(eq(favouriteQuestions.userId, id));
-    expect(rows).toHaveLength(DEFAULT_FAVOURITE_QUESTIONS.length + 1);
-    expect((await list()).map((q) => q.text)).toEqual([...DEFAULT_FAVOURITE_QUESTIONS, "Raced in"]);
+    expect(rows.map((r) => r.text).sort()).toEqual(DEFAULT_FAVOURITE_QUESTIONS.slice(1).sort());
   });
 
   it("adds a question to the end, trimmed, and ignores one already there", async () => {

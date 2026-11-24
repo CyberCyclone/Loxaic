@@ -32,6 +32,13 @@ export async function ensureFavouritesSeeded(userId: string, now: () => Date = (
     columns: { favouritesSeededAt: true },
   });
   if (prefs?.favouritesSeededAt) return;
+  await claimAndSeed(userId, now);
+}
+
+/** The part of `ensureFavouritesSeeded` after its quick check, for a caller
+ * that read "not yet" — possibly just before another request seeded. Exported
+ * for the test that plays that late caller. */
+export async function claimAndSeed(userId: string, now: () => Date = () => new Date()): Promise<void> {
   await db.transaction(async (tx) => {
     const at = now();
     const claimed = await tx
