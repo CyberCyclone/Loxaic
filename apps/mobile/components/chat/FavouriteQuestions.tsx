@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Plus, X } from 'lucide-react-native';
-import { Box } from '@/components/ui/box';
+import { ScrollView } from 'react-native';
 import { VStack } from '@/components/ui/vstack';
 import { HStack } from '@/components/ui/hstack';
 import { Heading } from '@/components/ui/heading';
@@ -48,7 +48,15 @@ export function FavouriteQuestions({ onPick }: { onPick: (text: string) => void 
   );
 
   return (
-    <Box className="flex-1 items-center justify-center p-6">
+    // Scrolls: a full list (or a phone with the keyboard up for the add
+    // dialog) is taller than the space between the header and the composer.
+    // Centred while it fits.
+    <ScrollView
+      testID="favourites.scroll"
+      style={{ flex: 1, minHeight: 0 }}
+      contentContainerStyle={{ flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}
+      keyboardShouldPersistTaps="handled"
+    >
       <VStack space="md" className="w-full max-w-[500px] items-center">
         <Heading size="lg" className="text-foreground">
           How can I help?
@@ -122,6 +130,6 @@ export function FavouriteQuestions({ onPick }: { onPick: (text: string) => void 
         onSave={add}
         existing={view.kind === 'list' ? view.questions : []}
       />
-    </Box>
+    </ScrollView>
   );
 }
