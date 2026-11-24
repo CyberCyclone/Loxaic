@@ -41,5 +41,13 @@
   -->
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
+
+  <!--
+    The hardened runtime refuses Core Location to an app without this, and
+    then a conversation that asks for the location (get_location) is told
+    the device could not give one, however the person answered the prompt.
+  -->
+  <key>com.apple.security.personal-information.location</key>
+  <true/>
 </dict>
 </plist>

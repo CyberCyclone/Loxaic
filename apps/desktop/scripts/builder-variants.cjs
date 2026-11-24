@@ -146,8 +146,13 @@ function configFor(rawVariant) {
       // string is what the permission prompt shows; without it the prompt
       // gives no reason. The first beta.3 Mac install failed to reach a LAN
       // headless host exactly this way.
+      // The location strings are what macOS's prompt shows when a
+      // conversation asks for the location (get_location) and the person
+      // allows it; without them the request is refused without a prompt.
       extendInfo: {
         NSLocalNetworkUsageDescription: `${variant.productName} connects to Loxaic servers on your local network, such as a host you join by its LAN address.`,
+        NSLocationUsageDescription: `${variant.productName} shares your approximate location with a conversation only when you allow it.`,
+        NSLocationWhenInUseUsageDescription: `${variant.productName} shares your approximate location with a conversation only when you allow it.`,
       },
     },
     win: { target: "nsis" },

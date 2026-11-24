@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHECKIN_ANSWER_NUDGE, progressNoteText, type ApiMessage, type StreamSnapshot } from '@loxaic/api-client';
-import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages } from './streamMessages';
+import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages, toolSummary } from './streamMessages';
 import type { Message } from './types';
 import { compactionCardState } from '@/components/chat/compactionState';
 
@@ -598,5 +598,12 @@ describe('a full sandbox allocation reaches the card on every path (#254)', () =
     const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '', tools: [{ tool: 'bash', summary: 'ls', result: '', callId: 'c1' }] }];
     const [m] = applyEventToMsgs(msgs, { kind: 'tool.result', message_id: 'a1', call_id: 'c1', tool: 'bash', output: 'exit 1', ok: false });
     expect(m.tools?.[0].notice).toBeUndefined();
+  });
+});
+
+describe('a get_location call', () => {
+  it('says what was asked, whatever reason the model gave', () => {
+    expect(toolSummary('get_location', { reason: 'For the weather' })).toBe('Asked for your location');
+    expect(toolSummary('get_location', {})).toBe('Asked for your location');
   });
 });

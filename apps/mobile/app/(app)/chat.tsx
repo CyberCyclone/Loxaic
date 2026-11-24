@@ -14,6 +14,8 @@ import { useShell } from '@/components/shell/AppShell';
 import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
 import { FavouriteQuestions } from '@/components/chat/FavouriteQuestions';
+import { LocationPrompt } from '@/components/chat/LocationPrompt';
+import { deviceRequestKey } from '@/lib/deviceRequest';
 import { CHAT_APPROVAL_IDS, ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
 import { ReviewStatus } from '@/components/chat/ReviewStatus';
 import { approvalKey } from '@/lib/pendingWaits';
@@ -80,6 +82,9 @@ export default function ChatScreen() {
     queuePosition,
     responseStartedAt,
     pendingApproval,
+    pendingDevice,
+    locationAction,
+    answerLocation,
     reviewing,
     runReviews: runReviewState,
     handleSend,
@@ -369,6 +374,10 @@ export default function ChatScreen() {
         {/* Above the composer, in the flow: a progress review of this run
             under way. Nothing to press — it decides on its own. */}
         <ReviewStatus mode={reviewLineMode(reviewing, runReviews.list)} />
+        {/* The run asking for the person's location (get_location). */}
+        {pendingDevice ? (
+          <LocationPrompt key={deviceRequestKey(pendingDevice)} pending={pendingDevice} action={locationAction} onAnswer={answerLocation} />
+        ) : null}
         {cacheNotice.banner && (
           <PromptCacheBanner banner={cacheNotice.banner} onDismiss={() => { if (cacheNotice.banner) cacheNotice.dismiss(cacheNotice.banner.key); }} />
         )}

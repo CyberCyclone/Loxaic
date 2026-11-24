@@ -107,6 +107,9 @@ export default function AgentScreen() {
     promptCache,
     responseStartedAt,
     pendingApproval,
+    pendingDevice,
+    locationAction,
+    answerLocation,
     reviewing,
     iteration,
     queuePosition,
@@ -608,6 +611,9 @@ export default function AgentScreen() {
                     queuePosition={queuePosition}
                     responseStartedAt={responseStartedAt}
                     pendingApproval={shownApproval}
+                    pendingDevice={pendingDevice}
+                    locationAction={locationAction}
+                    onLocationAnswer={answerLocation}
                     // Who is asking, when it is a sub-agent rather than the run.
                     approvalSource={childApproval?.description}
                     reviewing={reviewing}

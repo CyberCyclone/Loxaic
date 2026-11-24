@@ -8,6 +8,8 @@ import { RunHeader } from './RunHeader';
 import { ModeSwitch } from './ModeSwitch';
 import { PlanningBanner } from './PlanningBanner';
 import { PermissionBar } from './PermissionBar';
+import { LocationPrompt } from '@/components/chat/LocationPrompt';
+import { deviceRequestKey, type LocationAction, type LocationChoice, type PendingDeviceRequest } from '@/lib/deviceRequest';
 import { ReviewStatus } from '@/components/chat/ReviewStatus';
 import type { Conversation, AgentMode } from '@/lib/types';
 import type { RunState, PendingApproval } from '@/hooks/useAgentSession';
@@ -46,6 +48,11 @@ interface AgentStreamProps {
   /** "Allow always" on the bar (#266) — see PermissionBar. */
   onAllowAlways: () => void;
   onDeny: () => void;
+  /** The run asking for the person's location (get_location), what this
+   * device does about it, and its answer — see LocationPrompt. */
+  pendingDevice?: PendingDeviceRequest | null;
+  locationAction?: LocationAction;
+  onLocationAnswer?: (choice: LocationChoice) => Promise<void>;
 }
 
 export function AgentStream({
@@ -60,6 +67,9 @@ export function AgentStream({
   responseStartedAt,
   pendingApproval,
   approvalSource,
+  pendingDevice,
+  locationAction,
+  onLocationAnswer,
   reviewing = null,
   reviews,
   history,
@@ -129,6 +139,9 @@ export function AgentStream({
           onDeny={onDeny}
         />
       )}
+      {pendingDevice && locationAction && onLocationAnswer ? (
+        <LocationPrompt key={deviceRequestKey(pendingDevice)} pending={pendingDevice} action={locationAction} onAnswer={onLocationAnswer} />
+      ) : null}
       {/* Only for a review an older server sent no card for: the card in the
           thread says it otherwise. */}
       <ReviewStatus mode={reviewLineMode(reviewing, reviews)} />
