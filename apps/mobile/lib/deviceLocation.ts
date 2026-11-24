@@ -7,7 +7,8 @@ import { reasonFromError } from './deviceRequest';
  * This device's position for a location request (`get_location`), asking the
  * OS for permission the first time. Always answers: a position, or why there
  * is none — the model is told either way. Low accuracy is all the server
- * keeps (about a kilometre), and is quicker and gentler on a phone.
+ * keeps (about a kilometre), and is quicker and gentler on a phone; GPS is
+ * the fallback when that fails.
  *
  * On the web, browsers share a position only with a secure page (https or
  * localhost); Electron grants it, and on Linux has no source, which surfaces
@@ -15,7 +16,7 @@ import { reasonFromError } from './deviceRequest';
  */
 export type DevicePosition = { ok: true; lat: number; lon: number } | { ok: false; reason: DeviceUnavailableReason };
 
-const POSITION_TIMEOUT_MS = 15_000;
+const POSITION_TIMEOUT_MS = 10_000;
 
 function platformSupport(): { supported: boolean; secureContext: boolean } {
   if (Platform.OS !== 'web') return { supported: true, secureContext: true };
@@ -49,9 +50,16 @@ export async function getDevicePosition(): Promise<DevicePosition> {
     );
     return { ok: true, lat: pos.coords.latitude, lon: pos.coords.longitude };
   } catch (err) {
-    // A phone indoors can take long to fix; a recent position is as good at
-    // a kilometre. Not on the web, which has no such cache to ask.
     if (Platform.OS !== 'web') {
+      // Low accuracy is a network fix, which a phone with network location
+      // off (or an emulator) cannot give; GPS can, once.
+      const precise = await withTimeout(
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High, mayShowUserSettingsDialog: false }),
+        POSITION_TIMEOUT_MS,
+      ).catch(() => null);
+      if (precise) return { ok: true, lat: precise.coords.latitude, lon: precise.coords.longitude };
+      // A phone indoors can take long to fix; a recent position is as good at
+      // a kilometre. Not on the web, which has no such cache to ask.
       const last = await withTimeout(Location.getLastKnownPositionAsync({ maxAge: 10 * 60_000 }), 5_000).catch(() => null);
       if (last) return { ok: true, lat: last.coords.latitude, lon: last.coords.longitude };
     }
