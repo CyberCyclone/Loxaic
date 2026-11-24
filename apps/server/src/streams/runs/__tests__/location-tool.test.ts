@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { asc, db, eq, inArray } from "@loxaic/db";
-import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
+import { conversationShares, conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
 import type { ContentBlock, LocationSharing, StreamEventKind } from "@loxaic/types";
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
 import { getRun, getRunByConversation, runActivityOf } from "../../registry.ts";
@@ -150,7 +150,9 @@ describe("get_location", () => {
     connectDevice();
     const { streamId, conversationId } = await ask();
     const callId = await waitingCall(streamId);
-    // Someone else's position is never the sender's.
+    // An editor of the conversation may approve its tools, but their position
+    // is never the sender's.
+    await db.insert(conversationShares).values({ conversationId, userId: otherId, role: "editor", createdBy: userId });
     await answerDeviceRequest(otherId, { stream_id: streamId, call_id: callId, outcome: "shared", location: { lat: 51.5, lon: -0.13 } });
     // Nor is a malformed answer, or one for another run.
     await answerDeviceRequest(userId, { stream_id: streamId, call_id: callId, outcome: "shared" });
