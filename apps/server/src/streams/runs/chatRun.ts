@@ -15,6 +15,7 @@ import { startRunOnRow, type RunSettled, type StartedRun } from "./start-run.ts"
 import { removeAfterForRetry } from "../../conversations/rewind.ts";
 import { assertModelUsable } from "../../inference/providers.ts";
 import { recordModelUse } from "../../inference/recent-models.ts";
+import { rememberTimeZone, sentAtBlock, type SentFrom } from "./local-time.ts";
 import { getSandboxMode } from "../../sandbox/provider.ts";
 
 /**
@@ -65,6 +66,10 @@ export async function startChatRun(input: {
   /** How hard to think (inference/thinking.ts). Absent means
    * `DEFAULT_THINKING_LEVEL` — what a routine, which has no picker, gets. */
   thinkingLevel?: ThinkingLevel;
+  /** Where the message was sent from, for the model to be told when it was
+   * sent: the device's zone (`chat.send`'s `local_time`), `"schedule"` for a
+   * routine's run, or absent (an older client), when it carries no time. */
+  localTime?: SentFrom;
   /**
    * False for a send nobody typed — a scheduled routine run. The picker's
    * "recently used" list is a record of what the user chose to run, and a
@@ -136,6 +141,9 @@ export async function startChatRun(input: {
     convId = conv.id;
   }
 
+  // Read before the claim: a routine's run looks up its owner's zone.
+  const sentAt = await sentAtBlock(userId, input.localTime);
+
   // Claimed before anything below is written, so a rewind or a second send
   // arriving meanwhile is refused rather than interleaved (claimConversation).
   const claim: RunHandle = {
@@ -171,6 +179,7 @@ export async function startChatRun(input: {
           ...(a.name === undefined ? {} : { name: a.name }),
         })),
         { kind: "text", text: content },
+        ...(sentAt ? [sentAt] : []),
       ] as ContentBlock[],
       status: "complete",
       createdAt: new Date(),
@@ -184,6 +193,7 @@ export async function startChatRun(input: {
     if (input.recordUse !== false) {
       await recordModelUse(userId, model);
     }
+    await rememberTimeZone(userId, input.localTime);
 
     return await startRunOnRow({
       claim,

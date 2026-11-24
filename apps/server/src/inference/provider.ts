@@ -367,6 +367,8 @@ const MOCK_FAIL_MATCH = /\bfail to load the model\b/i;
  * mock's echo is otherwise the same for the same prompt. Per process.
  */
 const MOCK_DIFFERENT_MATCH = /\bgive a different answer\b/i;
+/** Answered with the `<local-time>` the message carried ("none" without one). */
+const MOCK_TIME_MATCH = /\bwhat time is it\b/i;
 
 /**
  * A prompt the mock refuses the way llama.cpp refuses one longer than its
@@ -626,7 +628,12 @@ async function* mockStream(
     ...[...m[1].matchAll(/^No longer available: (.*)$/gm)].flatMap((n) => n[1].split(", ")),
   ]);
   const loadedSkills = [...rawPrompt.matchAll(/<skill-content name="([^"]*)"/g)].map((m) => m[1]);
+  // When the message was sent (streams/runs/local-time.ts): Loxaic's too, and
+  // on every message from a current client, so it must never reach a trigger.
+  // "what time is it" answers with it, so an e2e can prove it reached the prompt.
+  const localTime = /<local-time>([\s\S]*?)<\/local-time>/.exec(rawPrompt)?.[1];
   const prompt = rawPrompt
+    .replace(/<local-time>[\s\S]*?<\/local-time>\s*/g, "")
     .replace(/<project-instructions-update [\s\S]*?<\/project-instructions-update>\s*/g, "")
     .replace(/<skills-update>[\s\S]*?<\/skills-update>\s*/g, "")
     .replace(/The user invoked the "[^"]*" skill[^\n]*\n<skill-content [\s\S]*?<\/skill-content>\s*/g, "")
@@ -910,6 +917,8 @@ async function* mockStream(
         ? MOCK_SUMMARY
         : MOCK_DIFFERENT_MATCH.test(prompt)
           ? `[Mock] Answer number ${String(++mockAnswerCount)}.`
+          : MOCK_TIME_MATCH.test(prompt)
+            ? `[Mock] Local time: ${localTime ?? "none"}`
           : `[Mock] ${imageNote}${documentNote}${instructionsNote}Echo: ${prompt || "Hello"}`;
     yield* emit(fullText);
   }

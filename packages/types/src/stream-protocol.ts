@@ -2,6 +2,7 @@ import type { FileDiff, Workspace } from "./index";
 import type { RunLimitChoices, TimeoutBasis } from "./waits";
 import type { McpOverrides } from "./mcp-state";
 import type { ThinkingLevel } from "./thinking";
+import type { ClientLocalTime } from "./local-time";
 import type { SubAgentEvent, SubAgentLive } from "./subagents";
 import { parseProgressNote, type ReviewAction, type ReviewMode, type ReviewVerdict, type RunReview } from "./progress-review";
 
@@ -1124,6 +1125,10 @@ export type ClientMessage =
       /** Run limits turned off before the conversation existed. As with
        * `mcp_overrides`, written only when this send creates it. */
       run_limits?: RunLimitChoices;
+      /** The sending device's time zone, so the model is told the person's
+       * local date and time with this message. Absent (an older client) means
+       * the message carries none. */
+      local_time?: ClientLocalTime;
     }
   | {
       type: "agent.send";
@@ -1145,6 +1150,8 @@ export type ClientMessage =
       thinking_level?: ThinkingLevel;
       /** As on `chat.send`. */
       run_limits?: RunLimitChoices;
+      /** As on `chat.send`. */
+      local_time?: ClientLocalTime;
     }
   /**
    * Answer the conversation's newest message again: the reply to it (and

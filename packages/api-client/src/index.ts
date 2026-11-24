@@ -2911,6 +2911,7 @@ export type {
   PermissionCheckNote,
   ToolPermission,
 } from "@loxaic/types";
+import { deviceLocalTime } from "@loxaic/types";
 import type { FavouriteQuestion, MySkills, PaletteSkill, PromptCacheView, RunReview, RunReviewDetail, ServerMessage, SkillInput, SubAgentLive, UserSkill } from "@loxaic/types";
 export {
   commandQuery, parseCommand, isValidSkillName, SKILL_NAME_MAX,
@@ -3053,6 +3054,9 @@ export function sendChatMessage(
     ...(contextStage !== undefined ? { context_stage: contextStage } : {}),
     ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
     ...(runLimits ? { run_limits: runLimits } : {}),
+    // This device's zone, read now: the model is told the local date and time
+    // with every message (the server's clock, this zone).
+    local_time: deviceLocalTime(),
   });
 }
 
@@ -3088,6 +3092,9 @@ export function sendAgentMessage(
     ...(contextStage !== undefined ? { context_stage: contextStage } : {}),
     ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
     ...(runLimits ? { run_limits: runLimits } : {}),
+    // This device's zone, read now: the model is told the local date and time
+    // with every message (the server's clock, this zone).
+    local_time: deviceLocalTime(),
   });
 }
 

@@ -363,6 +363,40 @@ describe("the thinking level", () => {
   });
 });
 
+describe("the time each message was sent", () => {
+  /** One turn sent from a device in `tz`, resolved when the run is over. */
+  async function turnFrom(tz: string, content: string, conversationId?: string): Promise<string> {
+    const result = await startChatRun({
+      userId,
+      content,
+      model: "llama-3.1-8b-instruct",
+      localTime: { tz },
+      ...(conversationId === undefined ? {} : { conversationId }),
+    });
+    if (!convIds.includes(result.conversationId)) convIds.push(result.conversationId);
+    await waitForRun(result.conversationId);
+    return result.conversationId;
+  }
+
+  it("rides ahead of each message as stored, so a later send from another zone moves nothing before it", async () => {
+    const convId = await turnFrom("Australia/Brisbane", "first question");
+    // The same person, now somewhere else: only the new message says so.
+    await turnFrom("Pacific/Chatham", "second question", convId);
+    expectEachRequestExtendsTheLast();
+    const last = requests.at(-1) ?? [];
+    const users = last.map((j) => JSON.parse(j) as { role: string; content: unknown }).filter((m) => m.role === "user");
+    expect(users).toHaveLength(2);
+    expect(users[0].content).toMatch(/^<local-time>The user sent this message on .* \(Australia\/Brisbane, UTC\+10:00\)\.<\/local-time>\n\nfirst question$/);
+    expect(users[1].content).toMatch(/^<local-time>The user sent this message on .* \(Pacific\/Chatham, UTC\+1[23]:45\)\.<\/local-time>\n\nsecond question$/);
+  });
+
+  it("is absent from a send that names no zone, which keeps its old shape", async () => {
+    await turn("an older client's question");
+    const users = (requests.at(-1) ?? []).map((j) => JSON.parse(j) as { role: string; content: unknown }).filter((m) => m.role === "user");
+    expect(users.map((m) => m.content)).toEqual(["an older client's question"]);
+  });
+});
+
 describe("every prompt extends the previous one", () => {
   it("holds across a plain two-turn conversation", async () => {
     const convId = await turn("first question");

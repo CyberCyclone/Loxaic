@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { resolveSessionFromToken } from "../auth/middleware";
-import { isThinkingLevel, normalizeMcpOverrides, normalizeRunLimits, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
+import { isThinkingLevel, normalizeClientLocalTime, normalizeMcpOverrides, normalizeRunLimits, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
 import { retryAgentRun, startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { resolveCommandSkill } from "../skills/resolve.ts";
@@ -126,6 +126,8 @@ export function agentWsHandler(app: FastifyInstance) {
             // Anything that is not one of the four words is dropped, not
             // forwarded: it becomes a request field on the model's backend.
             thinkingLevel: isThinkingLevel(msg.thinking_level) ? msg.thinking_level : undefined,
+            // The device's zone, for the model to be told when this was sent.
+            localTime: normalizeClientLocalTime(msg.local_time),
           });
           pendingSend?.started(run);
           const result = await run;
