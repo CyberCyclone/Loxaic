@@ -90,7 +90,7 @@ describe('sendWhenOpen', () => {
     const sent = await sendWhenOpen(
       () => current,
       (ws) => { sentOn.push(ws); return true; },
-      { now: () => clock, sleep: async (ms) => { clock += ms; if (clock >= 500) current = fresh; } },
+      { now: () => clock, sleep: (ms) => { clock += ms; if (clock >= 500) current = fresh; return Promise.resolve(); } },
     );
     expect(sent).toBe(true);
     expect(sentOn).toEqual([fresh]);
@@ -102,7 +102,7 @@ describe('sendWhenOpen', () => {
     const sent = await sendWhenOpen(
       () => null,
       (ws) => { sentOn.push(ws); return true; },
-      { waitMs: 1_000, now: () => clock, sleep: async (ms) => { clock += ms; } },
+      { waitMs: 1_000, now: () => clock, sleep: (ms) => { clock += ms; return Promise.resolve(); } },
     );
     expect(sent).toBe(false);
     expect(sentOn).toEqual([]);
