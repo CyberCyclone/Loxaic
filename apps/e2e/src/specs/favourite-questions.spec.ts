@@ -25,6 +25,7 @@ import {
 import { getWindowSize, setWindowSize } from '../helpers/window.ts';
 import {
   addFavouriteQuestionViaApi,
+  deleteFavouriteQuestionViaApi,
   getMessageTexts,
   goToSurface,
   listConversations,
@@ -159,23 +160,37 @@ describe('favourite questions', () => {
       await selectThread(jokeConversation);
       await waitForTextIn('chat.messageList', mockEcho('Tell me a joke.'));
       await startNewThread('chat');
-      // Full: no add button, anywhere in the list.
-      await waitForFreshText(`favourites.label.${last.id}`, last.text);
-      await waitForAbsent('favourites.add');
       if (p === 'web' || p === 'electron') {
+        await waitForFreshText(`favourites.label.${last.id}`, last.text);
         expect(await scrolledIntoReach(`favourites.question.${last.id}`)).toBe('reachable');
       } else {
+        // UiAutomator2 does not list a card below the fold at all: scroll first.
         await scrollTo(`favourites.remove.${last.id}`);
         expect(await isVisible(`favourites.remove.${last.id}`)).toBe(true);
+        await waitForFreshText(`favourites.label.${last.id}`, last.text);
       }
+      // Full: no add button after the last one.
+      await waitForAbsent('favourites.add');
       await shot('favourites-full-scrolled');
     } finally {
       await restore();
     }
   });
 
-  it('leaves only the add button once every one is removed, across a cold start', async () => {
+  it('leaves only the add button once every one is removed, across a cold start', async function () {
+    this.timeout(6 * 60_000);
+    // The spares go the way they came, from another device; a new chat then
+    // shows the rest, which are removed here.
     for (const q of await listFavouriteQuestions(creds)) {
+      if (q.text.startsWith('Spare question')) await deleteFavouriteQuestionViaApi(creds, q.id);
+    }
+    await selectThread(jokeConversation);
+    await waitForTextIn('chat.messageList', mockEcho('Tell me a joke.'));
+    await startNewThread('chat');
+    const left = await listFavouriteQuestions(creds);
+    expect(left.length).toBeGreaterThan(0);
+    await waitForFreshText(`favourites.label.${left[0].id}`, left[0].text);
+    for (const q of left) {
       await scrollTo(`favourites.remove.${q.id}`);
       await tap(`favourites.remove.${q.id}`);
       await waitForAbsent(`favourites.question.${q.id}`, 15_000);

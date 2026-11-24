@@ -1341,6 +1341,15 @@ export async function addFavouriteQuestionViaApi(creds: Pick<Credentials, 'email
   if (!res.ok) throw new Error(`[e2e] adding a favourite question failed (${String(res.status)})`);
 }
 
+/** Removes a favourite question through the API: another device doing it. */
+export async function deleteFavouriteQuestionViaApi(creds: Pick<Credentials, 'email' | 'password'>, id: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/v1/prefs/favourite-questions/${id}`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${await apiToken(creds)}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] removing a favourite question failed (${String(res.status)})`);
+}
+
 /** Every content block a conversation has stored, in order. */
 export async function getStoredBlocks(
   creds: Pick<Credentials, 'email' | 'password'>,
