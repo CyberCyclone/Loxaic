@@ -158,6 +158,8 @@ describe('favourite questions', () => {
   });
 
   it('says so when another device filled the list meanwhile, and shows what it added', async () => {
+    // Below six cards on a phone.
+    if (platform() === 'ios' || platform() === 'android') await scrollTo('favourites.add');
     await tap('favourites.add');
     await waitForVisible('favourites.modal.input');
     const have = (await listFavouriteQuestions(creds)).length;
