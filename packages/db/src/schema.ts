@@ -881,6 +881,19 @@ export const userPrefs = pgTable("user_prefs", {
    * who removes every favourite keeps an empty list rather than the defaults.
    */
   favouritesSeededAt: timestamp("favourites_seeded_at"),
+  /**
+   * The IANA time zone this person last sent a message from, written on a
+   * send only when it changed (streams/runs/local-time.ts). A routine's run
+   * has no device, so its message is dated in this zone; null until the
+   * first send from a client that says its zone.
+   */
+  timeZone: text("time_zone"),
+  /**
+   * Whether messages carry this person's time zone. Off: each is dated in
+   * UTC instead, and `timeZone` is cleared and no longer kept, so routines
+   * are dated in UTC too (streams/runs/local-time.ts).
+   */
+  shareTimeZone: boolean("share_time_zone").notNull().default(true),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

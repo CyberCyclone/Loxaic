@@ -842,6 +842,13 @@ export async function patchSandboxSettings(patch: Record<string, unknown>): Prom
  * tool calls — so the cadence it needs is set here rather than clicked. Per-user, so it takes that user's own
  * session rather than the admin's, unlike patchSandboxSettings above.
  */
+/** `GET /v1/prefs` for `creds`: what the server holds, not what a screen shows. */
+export async function getPrefsViaApi(creds: Pick<Credentials, 'email' | 'password'>): Promise<Record<string, unknown>> {
+  const res = await fetch(`${BASE_URL}/v1/prefs`, { headers: { authorization: `Bearer ${await apiToken(creds)}` } });
+  if (!res.ok) throw new Error(`[e2e] reading prefs failed (${String(res.status)})`);
+  return (await res.json()) as Record<string, unknown>;
+}
+
 export async function patchPrefs(
   creds: Pick<Credentials, 'email' | 'password'>,
   patch: Record<string, unknown>,
@@ -1765,13 +1772,19 @@ export async function clearConversationModel(
 const NATIVE_APP_ID = 'com.loxaic.app';
 
 /** A fresh start: a reload on the web and Electron, a cold start on a phone —
- * `browser.refresh()` is a browser command XCUITest and UiAutomator2 refuse. */
-export async function relaunchApp(): Promise<void> {
+ * `browser.refresh()` is a browser command XCUITest and UiAutomator2 refuse.
+ * `iosEnv`: environment variables for the app's process on iOS (ignored
+ * elsewhere); a later plain relaunch starts it without them. */
+export async function relaunchApp(iosEnv?: Record<string, string>): Promise<void> {
   if (platform() === 'web' || platform() === 'electron') {
     await browser.refresh();
     return;
   }
   const app = platform() === 'ios' ? { bundleId: NATIVE_APP_ID } : { appId: NATIVE_APP_ID };
   await browser.execute('mobile: terminateApp', app);
+  if (platform() === 'ios' && iosEnv) {
+    await browser.execute('mobile: launchApp', { bundleId: NATIVE_APP_ID, environment: iosEnv });
+    return;
+  }
   await browser.execute('mobile: activateApp', app);
 }

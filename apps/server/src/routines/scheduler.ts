@@ -180,6 +180,8 @@ export async function executeRoutine(routineId: string): Promise<string | undefi
       conversationId: convId,
       // A cron firing is nobody's choice of model — see `recordUse`.
       recordUse: false,
+      // Dated in the owner's last known zone: no device sent it.
+      localTime: "schedule",
       onSettled: (info) => {
         void settleRun(runId, routine.ownerId, routine.name, info);
       },

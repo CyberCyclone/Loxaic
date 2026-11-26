@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq, inArray } from "@loxaic/db";
+import type { ContentBlock } from "@loxaic/types";
 import {
   conversations,
   messages,
@@ -182,6 +183,31 @@ describe("a routine run is a real run", () => {
     const typed = await startChatRun({ userId: ownerId, content: "hello", model: MODEL });
     await waitFor("the typed run to end", () => getRunByConversation(typed.conversationId) === undefined);
     expect(await getRecentModels(ownerId)).toEqual([MODEL]);
+  });
+});
+
+describe("a routine run is dated", () => {
+  async function sentBlockOf(runId: string) {
+    const row = await waitForRunFinished(runId);
+    const user = (await messagesOf(row.conversationId)).find((m) => m.authorType === "user");
+    return (user?.content as ContentBlock[]).find((b) => b.kind === "local_time");
+  }
+
+  it("in the owner's last known zone, as sent by a schedule", async () => {
+    await db.insert(userPrefs).values({ userId: ownerId, timeZone: "Pacific/Chatham" });
+    const runId = await executeRoutine((await makeRoutine()).id);
+    if (!runId) throw new Error("no run started");
+    const sent = await sentBlockOf(runId);
+    expect(sent).toMatchObject({ kind: "local_time", source: "schedule", tz: "Pacific/Chatham" });
+    expect(sent?.text).toMatch(/^<local-time>A schedule sent this message on .*, the user's local time \(Pacific\/Chatham, UTC\+1[23]:45\)\.<\/local-time>$/);
+  });
+
+  it("in the server's zone, said so, when the owner has never sent one", async () => {
+    const runId = await executeRoutine((await makeRoutine()).id);
+    if (!runId) throw new Error("no run started");
+    const sent = await sentBlockOf(runId);
+    expect(sent).toMatchObject({ kind: "local_time", source: "schedule" });
+    expect(sent?.text).toContain("the server's local time");
   });
 });
 

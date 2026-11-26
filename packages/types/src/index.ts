@@ -255,7 +255,13 @@ export type ContentBlock =
   /** On a user message: the conversation's skills changed since the model was
    * last told, and `text` is the notice it was given ahead of the message.
    * `summary` is the one line a client shows. */
-  | { kind: "skills_update"; text: string; summary: string };
+  | { kind: "skills_update"; text: string; summary: string }
+  /** On a user message: when it was sent, in the sender's time zone, and
+   * `text`, how the model was told so ahead of the message. `at` is the
+   * server's clock (ISO 8601 with the zone's offset); `source` is
+   * `schedule` for a routine's run, which nobody sent from a device. Written
+   * once with the row, so every replay sends exactly what the live request did. */
+  | { kind: "local_time"; at: string; tz?: string; source: "device" | "schedule"; text: string };
 
 export interface ModelContextStage {
   /** The stage the model loads at now; 0 is its standard context. */
@@ -411,6 +417,7 @@ export * from "./mcp-state";
 export * from "./thinking";
 export * from "./subagents";
 export * from "./favourites";
+export * from "./local-time";
 
 export interface UsageRecord {
   id: string;

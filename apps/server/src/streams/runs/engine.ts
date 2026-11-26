@@ -3027,19 +3027,22 @@ function attachmentsOf(blocks: ContentBlock[]): AttachmentRef[] {
     .map((b) => ({ ref: b.ref, mime: b.mime, ...(b.name === undefined ? {} : { name: b.name }) }));
 }
 
-/** What Loxaic put ahead of a user's message, verbatim: the notices that
- * the project's instructions or the skills changed, in the order they were
- * attached, then the instructions of a skill the message invoked ("/name").
- * Notices first so the model reads the current list before a skill's own
- * instructions and the task. */
+/** What Loxaic put ahead of a user's message, verbatim: when it was sent
+ * (`local_time`), the notices that the project's instructions or the skills
+ * changed, in the order they were attached, then the instructions of a skill
+ * the message invoked ("/name"). Notices first so the model reads the current
+ * list before a skill's own instructions and the task. */
 function noticesOf(blocks: ContentBlock[]): string {
+  const sent = blocks
+    .filter((b): b is Extract<ContentBlock, { kind: "local_time" }> => b.kind === "local_time")
+    .map((b) => b.text);
   const notices = blocks
     .filter((b) => b.kind === "instructions_update" || b.kind === "skills_update")
     .map((b) => (b as { text: string }).text);
   const invoked = blocks
     .filter((b): b is Extract<ContentBlock, { kind: "skill" }> => b.kind === "skill")
     .map((b) => b.text);
-  return [...notices, ...invoked].join("\n\n");
+  return [...sent, ...notices, ...invoked].join("\n\n");
 }
 
 function textOf(blocks: ContentBlock[]): string {

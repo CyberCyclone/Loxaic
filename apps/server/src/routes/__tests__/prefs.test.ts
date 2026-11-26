@@ -94,6 +94,7 @@ describe("GET /v1/prefs", () => {
       subagentModelMode: "choose",
       subagentModel: null,
       bashGrantRetired: false,
+      shareTimeZone: true,
     });
   });
 
@@ -170,6 +171,23 @@ describe("PATCH /v1/prefs", () => {
       approvalTimeoutMs: 2 * 60_000,
       adaptiveTimeout: false,
     });
+  });
+
+  it("turns sharing the time zone off, which also forgets the zone kept for routines", async () => {
+    expect((await patch({ shareTimeZone: "no" })).statusCode).toBe(400);
+    await db
+      .insert(userPrefs)
+      .values({ userId, timeZone: "Australia/Brisbane" })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { timeZone: "Australia/Brisbane" } });
+    expect((await patch({ shareTimeZone: true })).statusCode).toBe(200);
+    const zone = async () =>
+      (await db.query.userPrefs.findFirst({ where: eq(userPrefs.userId, userId), columns: { timeZone: true } }))?.timeZone;
+    // On again keeps it.
+    expect(await zone()).toBe("Australia/Brisbane");
+    expect((await patch({ shareTimeZone: false })).statusCode).toBe(200);
+    expect(await get()).toMatchObject({ shareTimeZone: false });
+    expect(await zone()).toBeNull();
+    expect((await patch({ shareTimeZone: true })).statusCode).toBe(200);
   });
 
   it("resets each to the server's default with null", async () => {

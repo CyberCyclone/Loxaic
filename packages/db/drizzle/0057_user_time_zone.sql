@@ -1,0 +1,1 @@
+ALTER TABLE "user_prefs" ADD COLUMN "time_zone" text;

@@ -27,6 +27,7 @@ import { startRunOnRow, type LoopOptions, type StartedRun } from "./start-run.ts
 import { removeAfterForRetry } from "../../conversations/rewind.ts";
 import { assertModelUsable } from "../../inference/providers.ts";
 import { recordModelUse } from "../../inference/recent-models.ts";
+import { rememberTimeZone, sentAtBlock, type SentFrom } from "./local-time.ts";
 import { getSandboxMode } from "../../sandbox/provider.ts";
 import { describeWorkspace, loadWorkspace } from "../../agent/workspace.ts";
 import { combinedText, ensureInstructions, renderRootInstructions, resolveDecision, saveDecision } from "../../agent/instructions.ts";
@@ -148,6 +149,8 @@ export async function startAgentRun(input: {
   contextStage?: number;
   /** See chatRun.ts. */
   thinkingLevel?: ThinkingLevel;
+  /** See chatRun.ts. */
+  localTime?: SentFrom;
 }): Promise<StartAgentRunResult> {
   const { userId, content, model, mode } = input;
 
@@ -190,6 +193,9 @@ export async function startAgentRun(input: {
     convId = conv.id;
   }
 
+  // Read before the claim, as in chatRun.ts.
+  const sentAt = await sentAtBlock(userId, input.localTime);
+
   // Claimed before anything below is written — see chatRun.ts.
   const claim: RunHandle = {
     streamId: uuid(),
@@ -229,6 +235,7 @@ export async function startAgentRun(input: {
           ...(a.name === undefined ? {} : { name: a.name }),
         })),
         { kind: "text", text: content },
+        ...(sentAt ? [sentAt] : []),
       ] as ContentBlock[],
       status: "complete",
       createdAt: new Date(),
@@ -236,6 +243,7 @@ export async function startAgentRun(input: {
 
     // See chatRun.ts: recorded once the send is committed to.
     await recordModelUse(userId, model);
+    await rememberTimeZone(userId, input.localTime);
 
     return await startRunOnRow({
       claim,

@@ -31,6 +31,12 @@ import {
 import { SLOT_FREE_FILE } from '../../scripts/standup.ts';
 import { adminApi, downloadTinyModel, patchModel, putModelAtStage, removeMockModels, routerEvents, routerName, type RouterEvent } from '../helpers/hostModels.ts';
 
+/** The person's message as the model got it: the time it was sent first
+ * (`<local-time>`), then their words. */
+function sentAs(lastUser: unknown, text: string): boolean {
+  return typeof lastUser === 'string' && /^<local-time>[^<]*<\/local-time>\n\n/.test(lastUser) && lastUser.endsWith(`\n\n${text}`);
+}
+
 const K = 1024;
 const SETTINGS = { ctxSize: 16 * K };
 // Set to extend when full, which never asks: at 80% the "nearly full" modal
@@ -201,7 +207,7 @@ describe('the prompt cache across a host-model reload', () => {
     await send('still there?');
     await waitForTextIn('chat.promptCache.pill.label', 'Loading cached context', 60_000);
     await waitForRunDone(alice, conversation);
-    const chat = await waitForEvent(from, model, (e) => e.event === 'chat' && e.last_user === 'still there?', 'the turn');
+    const chat = await waitForEvent(from, model, (e) => e.event === 'chat' && sentAs(e.last_user, 'still there?'), 'the turn');
     expect(chat.cache_n).toBeGreaterThan(0);
   });
 
@@ -241,7 +247,7 @@ describe('the prompt cache across a host-model reload', () => {
     await send('carry on');
     await waitForAbsent('chat.promptCache.banner', 30_000);
     await waitForRunDone(alice, long);
-    const chat = await waitForEvent(before, model, (e) => e.event === 'chat' && e.last_user === 'carry on', 'the turn');
+    const chat = await waitForEvent(before, model, (e) => e.event === 'chat' && sentAs(e.last_user, 'carry on'), 'the turn');
     expect(chat.cache_n).toBe(0);
     expect(eventsSince(before, model).some((e) => e.event === 'slot-restore')).toBe(false);
   });
