@@ -17,6 +17,8 @@ import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
 import { CHAT_APPROVAL_IDS, ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
 import { ReviewStatus } from '@/components/chat/ReviewStatus';
+import { LocationPrompt } from '@/components/chat/LocationPrompt';
+import { deviceRequestKey } from '@/lib/deviceRequest';
 import { approvalKey } from '@/lib/pendingWaits';
 import { useOverlayGone } from '@/hooks/useOverlayGone';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
@@ -163,6 +165,9 @@ export default function RoutineChatScreen() {
     queuePosition,
     responseStartedAt,
     pendingApproval,
+    pendingDevice,
+    locationAction,
+    answerLocation,
     reviewing,
     handleSend,
     handleRetry,
@@ -501,6 +506,10 @@ export default function RoutineChatScreen() {
             </Box>
           )}
           <ReviewStatus mode={reviewLineMode(reviewing, runReviews.list)} />
+          {/* A follow-up here is a chat run, which can ask for the location. */}
+          {pendingDevice ? (
+            <LocationPrompt key={deviceRequestKey(pendingDevice)} pending={pendingDevice} action={locationAction} onAnswer={answerLocation} />
+          ) : null}
           {activeConv && (
             <Composer
               onSend={(text, attachments) => { handleSend(text, model, attachments); }}

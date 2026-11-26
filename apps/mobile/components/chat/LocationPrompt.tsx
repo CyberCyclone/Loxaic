@@ -57,7 +57,7 @@ export function LocationPrompt({
         Share your location?
       </Text>
       <Text size="sm" className="text-muted-foreground">
-        The assistant asked for your approximate location (nearest town, about 1 km) and local time.
+        The assistant asked which town you’re in. It is told the nearest town and your local time, not your position.
       </Text>
       {pending.reason ? (
         <Text testID="chat.location.reason" size="sm" className="text-foreground">

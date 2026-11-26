@@ -603,7 +603,7 @@ describe('a full sandbox allocation reaches the card on every path (#254)', () =
 
 describe('a get_location call', () => {
   it('says what was asked, whatever reason the model gave', () => {
-    expect(toolSummary('get_location', { reason: 'For the weather' })).toBe('Asked for your location');
-    expect(toolSummary('get_location', {})).toBe('Asked for your location');
+    expect(toolSummary('get_location', { reason: 'For the weather' })).toBe('Asked for the location');
+    expect(toolSummary('get_location', {})).toBe('Asked for the location');
   });
 });

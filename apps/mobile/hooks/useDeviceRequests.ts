@@ -4,6 +4,7 @@ import { NOT_SENT_RECONNECTING, isOffline } from '@/lib/connection';
 import { deviceZone, getDevicePosition } from '@/lib/deviceLocation';
 import {
   answerFor,
+  answerWasLost,
   deviceRequestKey,
   locationAction,
   sendWhenOpen,
@@ -34,21 +35,25 @@ export function useDeviceRequests(input: {
   const [pendingByConv, setPendingByConv] = useState<ByConv>({});
   const pendingRef = useRef<ByConv>({});
   pendingRef.current = pendingByConv;
-  // Sent from here, so a resync does not show the prompt again; and being
-  // answered (the position is a few seconds away), so neither a second press
-  // nor the silent answer below starts another. Read before every update,
-  // never out of one.
-  const answeredRef = useRef(new Set<string>());
+  // Sent from here, with the socket it went out on, so a resync does not show
+  // the prompt again unless that socket is gone and the run still waits; and
+  // being answered (the position is a few seconds away), so neither a second
+  // press nor the silent answer below starts another. Read before every
+  // update, never out of one.
+  const answeredRef = useRef(new Map<string, WebSocket>());
   const inFlightRef = useRef(new Set<string>());
   const [, setAnsweredVersion] = useState(0);
 
   /** A `stream.sync` for the run this conversation is tracking. */
   const onSync = useCallback((convId: string, streamId: string, snapshot: StreamSnapshot, serverNow: number | undefined, arrivedAt: number) => {
     const waiting = snapshot.pending_device_request;
-    setPendingByConv((prev) =>
-      waiting ? { ...prev, [convId]: toPendingDeviceRequest(waiting, arrivedAt, streamId, serverNow) } : without(prev, convId),
-    );
-  }, []);
+    const pending = waiting ? toPendingDeviceRequest(waiting, arrivedAt, streamId, serverNow) : null;
+    if (pending) {
+      const key = deviceRequestKey(pending);
+      if (answerWasLost(answeredRef.current.get(key), wsRef.current)) answeredRef.current.delete(key);
+    }
+    setPendingByConv((prev) => (pending ? { ...prev, [convId]: pending } : without(prev, convId)));
+  }, [wsRef]);
 
   /** A live event of that run. */
   const onEvent = useCallback((convId: string, streamId: string, event: StreamEventKind, arrivedAt: number) => {
@@ -94,13 +99,17 @@ export function useDeviceRequests(input: {
       try {
         const position = choice === 'deny' ? null : await getDevicePosition();
         const reply = answerFor(choice, position, deviceZone());
-        const sent = await sendWhenOpen(() => wsRef.current, (ws) => answerDeviceRequest(ws, pending.streamId, pending.callId, reply));
-        if (!sent) {
+        const sentOn: { ws?: WebSocket } = {};
+        const sent = await sendWhenOpen(() => wsRef.current, (ws) => {
+          sentOn.ws = ws;
+          return answerDeviceRequest(ws, pending.streamId, pending.callId, reply);
+        });
+        if (!sent || !sentOn.ws) {
           // Not on the wire: the prompt stays so it can be answered again.
           showToast(NOT_SENT_RECONNECTING, 4000);
           return;
         }
-        answeredRef.current.add(key);
+        answeredRef.current.set(key, sentOn.ws);
         setAnsweredVersion((v) => v + 1);
       } finally {
         inFlightRef.current.delete(key);

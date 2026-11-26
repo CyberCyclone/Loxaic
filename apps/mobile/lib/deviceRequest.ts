@@ -46,22 +46,35 @@ export function deviceRequestKey(pending: PendingDeviceRequest): string {
  * - `prompt`: ask the person ("Share your location?");
  * - `answerSilently`: they chose "Always allow" — answer without asking;
  * - `waitingForOther`: someone else's run waits on that person's device;
- * - `none`: nothing waits, or this device already answered.
+ * - `none`: nothing waits, this device already answered, or who is signed in
+ *   is not known yet (a cold start) — it may be the sender.
  */
 export type LocationAction = 'none' | 'prompt' | 'answerSilently' | 'waitingForOther';
 
 export function locationAction(input: {
   pending: PendingDeviceRequest | null | undefined;
-  /** The signed-in user. Unknown (null) is never the sender. */
+  /** The signed-in user; null or undefined while not known. */
   me: string | null | undefined;
   /** Requests this device has answered (`deviceRequestKey`). */
-  answered: ReadonlySet<string>;
+  answered: { has(key: string): boolean };
 }): LocationAction {
   const { pending, me } = input;
-  if (!pending) return 'none';
-  if (!me || pending.userId !== me) return 'waitingForOther';
+  if (!pending || !me) return 'none';
+  if (pending.userId !== me) return 'waitingForOther';
   if (input.answered.has(deviceRequestKey(pending))) return 'none';
   return pending.ask ? 'prompt' : 'answerSilently';
+}
+
+/**
+ * Whether this device's answer to a request was lost, given a snapshot that
+ * says the run still waits on it: it was, when it went out on a socket since
+ * replaced (a phone's OS prompt or position fix can background the app, which
+ * replaces the socket, and a frame sent just before is gone). Then the prompt,
+ * or the silent answer, comes back. An answer sent on the socket now in use
+ * may simply not have been read yet.
+ */
+export function answerWasLost(sentOn: object | undefined, current: object | null): boolean {
+  return sentOn !== undefined && sentOn !== current;
 }
 
 /** The person's choice at the prompt, or the silent answer of "Always". */

@@ -22,7 +22,8 @@ const CHOICES: Chip<LocationSharing>[] = [
 const HELP: Record<LocationSharing, string> = {
   off: 'The assistant is told location sharing is off, and asks you where you are when it needs to know.',
   ask: 'When the assistant asks for your location, you are asked first: Allow once, Always allow, or Don’t allow.',
-  always: 'Your device answers the assistant’s request without asking you.',
+  always:
+    'Your device answers the assistant’s request without asking you. Anything the assistant reads, such as a web page, a file or a message, can lead it to ask, so your town can be shared without you seeing it happen.',
 };
 
 const OS_STATUS = {
@@ -34,9 +35,10 @@ const OS_STATUS = {
 
 /**
  * Location: whether the assistant may learn where you are, for questions like
- * the weather or local news (the `get_location` tool). Only your approximate
- * position goes, to about a kilometre, and the server names the nearest town
- * from its own list (GeoNames), sending your position to nobody else.
+ * the weather or local news (the `get_location` tool). The device sends its
+ * approximate position, to about a kilometre, to the server, which names the
+ * nearest town from its own list (GeoNames); the model is told only the town,
+ * and the position goes nowhere else.
  */
 export default function LocationScreen() {
   const shell = useShell();
@@ -74,8 +76,8 @@ export default function LocationScreen() {
     return (
       <VStack space="lg" className="p-4">
         <Text size="xs" className="text-muted-foreground">
-          The assistant can ask for your approximate location (the nearest town, to about a kilometre) and your local
-          time, for questions like today’s weather or the news where you are.
+          The assistant can ask which town you’re in, and your local time, for questions like today’s weather or the news
+          where you are. It is told only the nearest town, never your position.
         </Text>
         {/* Hidden against a server that predates the setting. */}
         {prefs.locationSharing !== undefined && (

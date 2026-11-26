@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   answerFor,
+  answerWasLost,
   deviceRequestKey,
   locationAction,
   reasonFromError,
@@ -35,8 +36,15 @@ describe('locationAction', () => {
     expect(locationAction({ pending: pending(), me: 'me', answered: none })).toBe('prompt');
     expect(locationAction({ pending: pending({ ask: false }), me: 'me', answered: none })).toBe('answerSilently');
     expect(locationAction({ pending: pending(), me: 'someone else', answered: none })).toBe('waitingForOther');
-    expect(locationAction({ pending: pending(), me: null, answered: none })).toBe('waitingForOther');
     expect(locationAction({ pending: null, me: 'me', answered: none })).toBe('none');
+  });
+
+  it('shows nothing, and answers nothing, until it knows who is signed in', () => {
+    // A cold start: the sender must not be told they wait on someone else.
+    for (const me of [null, undefined]) {
+      expect(locationAction({ pending: pending(), me, answered: new Set() })).toBe('none');
+      expect(locationAction({ pending: pending({ ask: false }), me, answered: new Set() })).toBe('none');
+    }
   });
 
   it('does nothing about a request this device already answered', () => {
@@ -44,6 +52,19 @@ describe('locationAction', () => {
     expect(locationAction({ pending: p, me: 'me', answered: new Set([deviceRequestKey(p)]) })).toBe('none');
     // Another run's call with the same id is a different request.
     expect(locationAction({ pending: { ...p, streamId: 's2' }, me: 'me', answered: new Set([deviceRequestKey(p)]) })).toBe('answerSilently');
+  });
+});
+
+describe('answerWasLost', () => {
+  const first = {};
+  const second = {};
+  it('is lost when it went out on a socket since replaced', () => {
+    expect(answerWasLost(first, second)).toBe(true);
+    expect(answerWasLost(first, null)).toBe(true);
+  });
+  it('may still be on its way on the socket in use, and was never sent when there is none', () => {
+    expect(answerWasLost(first, first)).toBe(false);
+    expect(answerWasLost(undefined, second)).toBe(false);
   });
 });
 

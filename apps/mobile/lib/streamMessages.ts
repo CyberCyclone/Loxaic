@@ -123,8 +123,9 @@ export function toolSummary(tool: string, args: Record<string, unknown>): string
     case 'skill':
       return typeof args.name === 'string' ? `Loaded the ${args.name} skill` : 'Skill';
     case 'get_location':
-      // What came back (the town, or why not) is the card's output.
-      return 'Asked for your location';
+      // What came back (the town, or why not) is the card's output. Not
+      // "your": someone the thread is shared with reads it too.
+      return 'Asked for the location';
     case 'todo_write': {
       const todos = args.todos;
       const n = Array.isArray(todos) ? todos.length : 0;
