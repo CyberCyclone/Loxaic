@@ -875,6 +875,12 @@ export const userPrefs = pgTable("user_prefs", {
    * can say so once; cleared when the person dismisses the notice.
    */
   bashGrantRetiredAt: timestamp("bash_grant_retired_at"),
+  /**
+   * When this person was given the default favourite questions. Null until the
+   * first read or write of the list (favourites/store.ts); set once, so a person
+   * who removes every favourite keeps an empty list rather than the defaults.
+   */
+  favouritesSeededAt: timestamp("favourites_seeded_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -898,6 +904,24 @@ export const commandRules = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [uniqueIndex("command_rules_user_pattern_action_idx").on(t.userId, t.pattern, t.action)],
+);
+
+// ── Favourite questions ──
+/**
+ * The questions a person keeps on the new-chat screen, one tap to send. One
+ * row per question, like `command_rules`, so an add on one device and a
+ * removal on another are each a single statement and never overwrite each
+ * other. Listed by `created_at, id`.
+ */
+export const favouriteQuestions = pgTable(
+  "favourite_questions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    text: text("text").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("favourite_questions_user_text_idx").on(t.userId, t.text)],
 );
 
 // ── Skills ──

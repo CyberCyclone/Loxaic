@@ -410,6 +410,7 @@ export * from "./commands";
 export * from "./mcp-state";
 export * from "./thinking";
 export * from "./subagents";
+export * from "./favourites";
 
 export interface UsageRecord {
   id: string;

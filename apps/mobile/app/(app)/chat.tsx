@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare } from 'lucide-react-native';
 import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
-import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
+import { disconnectedCopy, requireServer, showsDisconnected, useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -13,7 +13,7 @@ import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
 import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
-import { PromptSuggestions } from '@/components/chat/PromptSuggestions';
+import { FavouriteQuestions } from '@/components/chat/FavouriteQuestions';
 import { CHAT_APPROVAL_IDS, ToolApprovalSheet } from '@/components/agent/ToolApprovalSheet';
 import { ReviewStatus } from '@/components/chat/ReviewStatus';
 import { approvalKey } from '@/lib/pendingWaits';
@@ -358,8 +358,9 @@ export default function ChatScreen() {
           />
           </RunReviewContext.Provider>
         ) : (
-          <PromptSuggestions
+          <FavouriteQuestions
             onPick={(text) => {
+              if (!requireServer(showToast)) return;
               bumpRecentModel(selectedModel);
               handleSend(text, selectedModel);
             }}

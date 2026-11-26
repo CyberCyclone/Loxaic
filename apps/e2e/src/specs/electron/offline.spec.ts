@@ -17,8 +17,8 @@
  */
 import { uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { isVisible, waitForVisible, waitForTextIn } from '../../helpers/selectors.ts';
-import { mockEcho, sendAndAwaitReply, signUp, startNewThread } from '../../helpers/app.ts';
+import { byTestId, isVisible, waitForFreshText, waitForVisible, waitForTextIn } from '../../helpers/selectors.ts';
+import { listFavouriteQuestions, mockEcho, sendAndAwaitReply, signUp, startNewThread } from '../../helpers/app.ts';
 
 /** A DevTools session on the window WebDriver drives, found by its URL rather than list order. */
 async function openDevTools() {
@@ -115,6 +115,16 @@ describe('offline', () => {
     await shot('offline-other-cached-thread');
   });
 
+  it('says a new chat’s favourite questions could not load, rather than that there are none', async () => {
+    // Never loaded in this start-up, and nothing to ask: "Couldn't load", with
+    // its Try again off until the host is back, never an empty list.
+    await startNewThread('chat');
+    await waitForFreshText('favourites.loadFailed', "Couldn't load your favourite questions");
+    expect(await byTestId('favourites.retry').getAttribute('aria-disabled')).toBe('true');
+    expect(await isVisible('favourites.add')).toBe(false);
+    await shot('offline-favourites-could-not-load');
+  });
+
   it('recovers when the server comes back', async () => {
     await goOnline();
     await browser.refresh();
@@ -126,5 +136,8 @@ describe('offline', () => {
     // And the composer is a composer again.
     await waitForVisible('composer.input');
     await shot('offline-recovered');
+    // And a new chat has its favourite questions.
+    await startNewThread('chat');
+    for (const q of await listFavouriteQuestions(creds)) await waitForFreshText(`favourites.label.${q.id}`, q.text);
   });
 });

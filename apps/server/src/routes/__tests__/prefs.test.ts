@@ -321,7 +321,9 @@ describe("command rules and the retired bash grant", () => {
     expect(removed.statusCode).toBe(200);
     expect((await rules()).map((r) => r.pattern)).toEqual(["rm *"]);
     expect((await app.inject({ method: "DELETE", url: `/v1/prefs/command-rules/${listed[0].id}` })).statusCode).toBe(404);
-    expect((await app.inject({ method: "DELETE", url: "/v1/prefs/command-rules/not-an-id" })).statusCode).toBe(404);
+    for (const id of ["not-an-id", "-".repeat(36), "0".repeat(36)]) {
+      expect((await app.inject({ method: "DELETE", url: `/v1/prefs/command-rules/${id}` })).statusCode).toBe(404);
+    }
     for (const r of await rules()) await app.inject({ method: "DELETE", url: `/v1/prefs/command-rules/${r.id}` });
   });
 

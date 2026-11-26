@@ -18,8 +18,8 @@ import { browser } from '@wdio/globals';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { platform, tap, testIdSelector, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
-import { chooseScratchWorkspace, goToSurface, mockEcho, sendAndAwaitReply, sendMessage, signUp } from '../helpers/app.ts';
+import { platform, tap, testIdSelector, waitForFreshText, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { chooseScratchWorkspace, goToSurface, listFavouriteQuestions, mockEcho, sendAndAwaitReply, sendMessage, signUp, startNewThread } from '../helpers/app.ts';
 import { cutServer, restoreServer } from '../helpers/outage.ts';
 
 const BANNER = 'shell.offlineBanner';
@@ -166,6 +166,10 @@ describe('the server becoming unreachable', () => {
     await tap('sidebar.settings');
     await tap('settings.nav.checkins');
     await waitForVisible('checkins.scroll', 20_000);
+    // The choices follow the screen's prefs request, a moment after the screen.
+    await browser
+      .waitUntil(async () => (await allDisabled('settings.progressCheck.')).count > 0, { timeout: 15_000 })
+      .catch(() => undefined);
     const before = await allDisabled('settings.progressCheck.');
     if (before.count === 0) throw new Error('no review-cadence choices rendered');
     if (before.enabled.length !== before.count) throw new Error('settings were disabled while the server was reachable');
@@ -186,6 +190,36 @@ describe('the server becoming unreachable', () => {
     await goToSurface('chat');
     await sendAndAwaitReply('Hello again', mockEcho('Hello again'));
     await shot('unreachable-recovered');
+  });
+
+  it('keeps loaded favourite questions on screen, none of them pressable', async function () {
+    this.timeout(2 * 60_000);
+    const p = platform();
+    if (p !== 'web' && p !== 'electron') this.skip();
+
+    await goToSurface('chat');
+    await startNewThread('chat');
+    const questions = await listFavouriteQuestions(creds);
+    for (const q of questions) await waitForFreshText(`favourites.label.${q.id}`, q.text);
+
+    await cutServer();
+    await waitForTextIn(BANNER, "Can't reach your server", 30_000);
+    // Still readable: the list is what was loaded.
+    for (const q of questions) await waitForFreshText(`favourites.label.${q.id}`, q.text);
+    for (const prefix of ['favourites.question.', 'favourites.remove.', 'favourites.add']) {
+      const { count, enabled } = await allDisabled(prefix);
+      expect(count).toBeGreaterThan(0);
+      expect(enabled).toEqual([]);
+    }
+    await shot('unreachable-favourites');
+
+    await restoreServer();
+    await tap('shell.offlineRetry');
+    await waitForGone(BANNER, 15_000);
+    await browser.waitUntil(async () => !(await isDisabled(`favourites.question.${questions[0].id}`)), {
+      timeout: 15_000,
+      timeoutMsg: 'the favourite questions stayed disabled after the server came back',
+    });
   });
 
   it('notices a server that goes quiet just after the app comes back', async function () {
