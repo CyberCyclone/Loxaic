@@ -8,28 +8,25 @@
  * What the model was told is read from the stored result and from the mock's
  * reply, which quotes it; the setting from the API.
  */
-import { apiToken, uniqueCreds } from '../helpers/auth.ts';
+import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, platform, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, platform, tap, waitForAbsent, waitForFreshText, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
-  getToolResults,
+  createRoutine,
   goToSurface,
-  listConversations,
-  listFavouriteQuestions,
   MOCK_TOOL_DONE,
   openSettings,
   patchPrefs,
   relaunchApp,
   revealInSettings,
+  runRoutine,
+  sendMessage,
   signUp,
-  startNewThread,
   waitForComposerReady,
+  waitForRunDone,
 } from '../helpers/app.ts';
-import { cutServer, restoreServer } from '../helpers/outage.ts';
-import { BRISBANE, placeDeviceAt, refuseBrowserLocation } from '../helpers/location.ts';
-import { BASE_URL } from '../../scripts/standup.ts';
-
-const WEATHER = "What's the weather like today?";
+import { pauseServer, resumeServer } from '../helpers/server.ts';
+import { askForTheWeather, BRISBANE, locationResultOf, locationSharing, placeDeviceAt, WEATHER } from '../helpers/location.ts';
 
 describe('the location tool', () => {
   const creds = uniqueCreds();
@@ -39,45 +36,15 @@ describe('the location tool', () => {
     await placeDeviceAt(BRISBANE);
   });
 
-  async function sharing(): Promise<string> {
-    const res = await fetch(`${BASE_URL}/v1/prefs`, { headers: { authorization: `Bearer ${await apiToken(creds)}` } });
-    return ((await res.json()) as { locationSharing: string }).locationSharing;
-  }
+  afterEach(() => {
+    resumeServer();
+  });
 
-  /** Taps the weather favourite on a new chat; resolves with its conversation
-   * once the send has started. */
-  async function askForTheWeather(): Promise<string> {
-    await goToSurface('chat');
-    await startNewThread('chat');
-    const weather = (await listFavouriteQuestions(creds)).find((q) => q.text === WEATHER);
-    if (!weather) throw new Error('the weather favourite is gone');
-    const before = new Set((await listConversations(creds)).map((c) => c.id));
-    await tap(`favourites.question.${weather.id}`);
-    let convId = '';
-    await browser.waitUntil(
-      async () => {
-        convId = (await listConversations(creds)).find((c) => !before.has(c.id))?.id ?? '';
-        return convId !== '';
-      },
-      { timeout: 20_000, timeoutMsg: 'the weather question never started a conversation' },
-    );
-    return convId;
-  }
-
-  async function resultOf(convId: string): Promise<string> {
-    let output = '';
-    await browser.waitUntil(
-      async () => {
-        output = (await getToolResults(creds, convId)).at(0)?.output ?? '';
-        return output !== '';
-      },
-      { timeout: 40_000, interval: 500, timeoutMsg: 'no location result was stored' },
-    );
-    return output;
-  }
+  const sharing = () => locationSharing(creds);
+  const resultOf = (convId: string) => locationResultOf(creds, convId);
 
   it('asks first, and with "Allow once" tells the model the nearest town', async () => {
-    const convId = await askForTheWeather();
+    const convId = await askForTheWeather(creds);
     await waitForFreshText('chat.location.title', 'Share your location?');
     await waitForVisible('chat.location.reason');
     await shot('location-prompt');
@@ -91,14 +58,14 @@ describe('the location tool', () => {
   });
 
   it('passes on "Don\'t allow" without changing the setting', async () => {
-    const convId = await askForTheWeather();
+    const convId = await askForTheWeather(creds);
     await tap('chat.location.deny');
     expect(await resultOf(convId)).toMatch(/^The user chose not to share their location/);
     expect(await sharing()).toBe('ask');
   });
 
   it('asks again after a cold start while the question is up', async () => {
-    await askForTheWeather();
+    await askForTheWeather(creds);
     await waitForVisible('chat.location.bar');
     // Only a cold start proves the snapshot carries the request.
     await relaunchApp();
@@ -109,12 +76,12 @@ describe('the location tool', () => {
   });
 
   it('turns to Always with "Always allow", and then answers without asking', async () => {
-    const first = await askForTheWeather();
+    const first = await askForTheWeather(creds);
     await tap('chat.location.allowAlways');
     expect(await resultOf(first)).toContain('Brisbane, Queensland, Australia');
     expect(await sharing()).toBe('always');
 
-    const second = await askForTheWeather();
+    const second = await askForTheWeather(creds);
     expect(await resultOf(second)).toContain('Brisbane, Queensland, Australia');
     await waitForAbsent('chat.location.bar');
   });
@@ -130,37 +97,51 @@ describe('the location tool', () => {
     await waitForFreshText('location.sharing.help', 'location sharing is off');
     await shot('location-settings');
 
-    const convId = await askForTheWeather();
+    const convId = await askForTheWeather(creds);
     expect(await resultOf(convId)).toMatch(/^The user has turned location sharing off/);
     await waitForAbsent('chat.location.bar');
     await patchPrefs(creds, { locationSharing: 'ask' });
   });
 
-  it('cannot be answered while the server is away', async function () {
-    const p = platform();
-    if (p !== 'web' && p !== 'electron') this.skip(); // the page is patched; native has no page
-    await askForTheWeather();
+  it('cannot be answered while the server is away', async () => {
+    const convId = await askForTheWeather(creds);
     await waitForVisible('chat.location.bar');
-    await cutServer();
-    try {
-      await waitForTextIn('shell.offlineBanner', "Can't reach your server", 30_000);
+    pauseServer();
+    // Nothing to return from: only the heartbeat notices a frozen server.
+    await waitForTextIn('shell.offlineBanner', "Can't reach your server", 60_000);
+    const p = platform();
+    if (p === 'web' || p === 'electron') {
       for (const id of ['chat.location.allowOnce', 'chat.location.allowAlways', 'chat.location.deny']) {
         expect(await byTestId(id).getAttribute('aria-disabled')).toBe('true');
       }
-    } finally {
-      await restoreServer();
     }
-    await tap('shell.offlineRetry');
+    // A press goes nowhere, on every platform: had "Allow once" been sent,
+    // the server would read it on waking and share.
+    await tap('chat.location.allowOnce');
+    await browser.pause(1_000);
+    resumeServer();
+    await waitForGone('shell.offlineBanner', 60_000);
     await tap('chat.location.deny');
-    await waitForAbsent('chat.location.bar', 30_000);
+    expect(await resultOf(convId)).toMatch(/^The user chose not to share their location/);
   });
 
-  it('tells the model why when the browser refuses the location', async function () {
-    if (platform() !== 'web') this.skip(); // see refuseBrowserLocation
-    await refuseBrowserLocation();
-    const convId = await askForTheWeather();
+  it("asks in a routine's thread too, where a follow-up is a chat", async () => {
+    const routine = await createRoutine(creds, { name: `Weather ${String(Date.now())}`, prompt: 'summarise yesterday', model: 'llama-3.1-8b-instruct' });
+    const run = await runRoutine(creds, routine.id);
+    await waitForRunDone(creds, run.conversationId);
+    await goToSurface('routines');
+    await tap(`routines.open.${routine.id}`);
+    await waitForVisible('routineChat.back');
+    await waitForComposerReady();
+    await sendMessage(WEATHER);
+    await waitForFreshText('chat.location.title', 'Share your location?', 30_000);
+    await shot('location-prompt-routine');
     await tap('chat.location.allowOnce');
-    expect(await resultOf(convId)).toContain('location permission is turned off for Loxaic on that device');
-    await placeDeviceAt(BRISBANE);
+    await waitForAbsent('chat.location.bar', 30_000);
+    await browser.waitUntil(async () => (await locationResultOf(creds, run.conversationId)).startsWith('Approximate location: Brisbane'), {
+      timeout: 40_000,
+      timeoutMsg: "the routine's thread never shared the location",
+    });
+    await goToSurface('chat');
   });
 });

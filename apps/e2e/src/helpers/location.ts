@@ -7,8 +7,11 @@
  */
 import { execFileSync } from 'node:child_process';
 import { browser } from '@wdio/globals';
-import { platform } from './selectors.ts';
+import { platform, tap } from './selectors.ts';
+import { apiToken, type Credentials } from './auth.ts';
+import { getToolResults, goToSurface, listConversations, listFavouriteQuestions, startNewThread } from './app.ts';
 import { adbPath, bootedIosDevice } from '../../scripts/native.ts';
+import { BASE_URL } from '../../scripts/standup.ts';
 
 export const BRISBANE = { lat: -27.4679, lon: 153.0281 };
 
@@ -66,4 +69,45 @@ export async function refuseBrowserLocation(): Promise<void> {
     setting: 'denied',
     origin: new URL(target.url()).origin,
   });
+}
+
+export const WEATHER = "What's the weather like today?";
+
+/** `creds`' location setting, from the API. */
+export async function locationSharing(creds: Pick<Credentials, 'email' | 'password'>): Promise<string> {
+  const res = await fetch(`${BASE_URL}/v1/prefs`, { headers: { authorization: `Bearer ${await apiToken(creds)}` } });
+  return ((await res.json()) as { locationSharing: string }).locationSharing;
+}
+
+/** Taps the weather favourite on a new chat (the mock calls get_location for
+ * "weather"); resolves with its conversation once the send has started. */
+export async function askForTheWeather(creds: Pick<Credentials, 'email' | 'password'>): Promise<string> {
+  await goToSurface('chat');
+  await startNewThread('chat');
+  const weather = (await listFavouriteQuestions(creds)).find((q) => q.text === WEATHER);
+  if (!weather) throw new Error('the weather favourite is gone');
+  const before = new Set((await listConversations(creds)).map((c) => c.id));
+  await tap(`favourites.question.${weather.id}`);
+  let convId = '';
+  await browser.waitUntil(
+    async () => {
+      convId = (await listConversations(creds)).find((c) => !before.has(c.id))?.id ?? '';
+      return convId !== '';
+    },
+    { timeout: 20_000, timeoutMsg: 'the weather question never started a conversation' },
+  );
+  return convId;
+}
+
+/** What get_location told the model in a conversation, once it is stored. */
+export async function locationResultOf(creds: Pick<Credentials, 'email' | 'password'>, convId: string): Promise<string> {
+  let output = '';
+  await browser.waitUntil(
+    async () => {
+      output = (await getToolResults(creds, convId)).at(0)?.output ?? '';
+      return output !== '';
+    },
+    { timeout: 40_000, interval: 500, timeoutMsg: 'no location result was stored' },
+  );
+  return output;
 }
