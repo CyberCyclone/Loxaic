@@ -1399,6 +1399,18 @@ export async function sendFromDevice(
   return { conversationId: await started, requests, close: () => { ws.close(); } };
 }
 
+/** A device of `creds`' that can share a location, connected and following
+ * nothing: a phone open on the thread list. Returns how to disconnect it. */
+export async function connectIdleLocationDevice(creds: Pick<Credentials, 'email' | 'password'>): Promise<() => void> {
+  const token = await apiToken(creds);
+  const ws = new WebSocket(`${BASE_URL.replace(/^http/, 'ws')}/ws/chat?token=${encodeURIComponent(token)}&caps=location`);
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => { resolve(); });
+    ws.addEventListener('error', () => { reject(new Error('[e2e] idle device socket failed to open')); });
+  });
+  return () => { ws.close(); };
+}
+
 /** Every content block a conversation has stored, in order. */
 export async function getStoredBlocks(
   creds: Pick<Credentials, 'email' | 'password'>,
