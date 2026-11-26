@@ -1399,15 +1399,31 @@ export async function sendFromDevice(
   return { conversationId: await started, requests, close: () => { ws.close(); } };
 }
 
-/** A device of `creds`' that can share a location, connected and following
- * nothing: a phone open on the thread list. Returns how to disconnect it. */
-export async function connectIdleLocationDevice(creds: Pick<Credentials, 'email' | 'password'>): Promise<() => void> {
+/** A socket of `creds`' that claims it can share a location: by default a
+ * chat socket following nothing (a phone open on the thread list); with
+ * `follow`, following that conversation from `surface`'s socket. Returns how
+ * to disconnect it. */
+export async function connectIdleLocationDevice(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  opts: { surface?: 'chat' | 'agent'; follow?: string } = {},
+): Promise<() => void> {
   const token = await apiToken(creds);
-  const ws = new WebSocket(`${BASE_URL.replace(/^http/, 'ws')}/ws/chat?token=${encodeURIComponent(token)}&caps=location`);
+  const ws = new WebSocket(`${BASE_URL.replace(/^http/, 'ws')}/ws/${opts.surface ?? 'chat'}?token=${encodeURIComponent(token)}&caps=location`);
   await new Promise<void>((resolve, reject) => {
     ws.addEventListener('open', () => { resolve(); });
     ws.addEventListener('error', () => { reject(new Error('[e2e] idle device socket failed to open')); });
   });
+  if (opts.follow) {
+    const synced = new Promise<void>((resolve) => {
+      ws.addEventListener('message', (m) => {
+        if (String(m.data).includes('"type":"stream.sync"')) resolve();
+      });
+      // A run already over sends no sync.
+      setTimeout(resolve, 5_000);
+    });
+    ws.send(JSON.stringify({ type: 'stream.subscribe', conversation_id: opts.follow }));
+    await synced;
+  }
   return () => { ws.close(); };
 }
 

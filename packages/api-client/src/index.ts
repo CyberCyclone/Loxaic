@@ -2948,12 +2948,9 @@ function trySend(ws: WebSocket, payload: unknown): boolean {
   return true;
 }
 
-function createStreamSocket(path: string, token: string, onEvent: (event: ServerMessage) => void): WebSocket {
+function createStreamSocket(path: string, token: string, onEvent: (event: ServerMessage) => void, caps = ""): WebSocket {
   const wsBase = BASE_URL.replace("http", "ws");
-  // Every current app can answer a location request — with a position, or
-  // with why it cannot (lib/deviceLocation.ts) — so every socket says so,
-  // and the server never waits on an app too old to reply.
-  const ws = new WebSocket(`${wsBase}${path}?token=${token}&caps=${DEVICE_CAP_LOCATION}`);
+  const ws = new WebSocket(`${wsBase}${path}?token=${token}${caps ? `&caps=${caps}` : ""}`);
   ws.onmessage = (msg) => {
     try {
       onEvent(JSON.parse(msg.data as string) as ServerMessage);
@@ -2973,7 +2970,11 @@ export function answerDeviceRequest(ws: WebSocket, streamId: string, callId: str
 }
 
 export function createChatSocket(token: string, onEvent: (event: ServerMessage) => void): WebSocket {
-  return createStreamSocket("/ws/chat", token, onEvent);
+  // Every current app's chat screen answers a location request, with a
+  // position or with why it cannot (lib/deviceLocation.ts), so its socket
+  // says so and the server never waits on an app too old to reply. The agent
+  // screen answers none, so its socket claims nothing.
+  return createStreamSocket("/ws/chat", token, onEvent, DEVICE_CAP_LOCATION);
 }
 
 export function createAgentSocket(token: string, onEvent: (event: ServerMessage) => void): WebSocket {

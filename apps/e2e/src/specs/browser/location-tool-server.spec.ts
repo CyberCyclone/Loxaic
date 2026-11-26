@@ -110,6 +110,17 @@ describe('the location tool, server side', () => {
     }
   });
 
+  it('does not wait on the agent screen following the run, which cannot answer', async () => {
+    const device = await sendFromDevice(creds, "What's the weather like today?", { caps: false });
+    const disconnect = await connectIdleLocationDevice(creds, { surface: 'agent', follow: device.conversationId });
+    try {
+      expect(await resultOf(device.conversationId)).toMatch(/^None of the user's devices that can share a location is connected/);
+    } finally {
+      device.close();
+      disconnect();
+    }
+  });
+
   it('shows someone the conversation is shared with only that a location was shared', async () => {
     const member = await provisionUser();
     const signIn = await fetch(`${BASE_URL}/api/auth/sign-in`, {

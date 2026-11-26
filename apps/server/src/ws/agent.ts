@@ -7,7 +7,6 @@ import { resolveCommandSkill } from "../skills/resolve.ts";
 import { recordSkillUse } from "../skills/usage.ts";
 import { createDelivery } from "./delivery.ts";
 import { assertConversationAccess } from "../streams/authz.ts";
-import { canShareLocation, capsFromQuery } from "../streams/device-presence.ts";
 import { answerApproval, answerDeviceRequest, changeRunMode, isPermissionMode, mayActOnRun } from "./run-actions.ts";
 import { getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
@@ -51,14 +50,10 @@ export function agentWsHandler(app: FastifyInstance) {
     const safeSend = (msg: ServerMessage) => {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
     };
-    // A device that can share its location says so in `caps`: a get_location
-    // call waits only for one following its run (streams/device-presence.ts).
-    const delivery = createDelivery(
-      userId,
-      safeSend,
-      () => socket.bufferedAmount,
-      canShareLocation(capsFromQuery(url.searchParams.get("caps"))),
-    );
+    // Never a device for get_location, whatever `caps` claims: nothing on the
+    // agent screen answers a location request, and this socket can follow a
+    // chat run, which would then wait out its deadline on it.
+    const delivery = createDelivery(userId, safeSend, () => socket.bufferedAmount);
     socket.on("close", () => {
       delivery.close();
     });
