@@ -1066,6 +1066,7 @@ export function useChatSession(
         // replay them: clear what the last one said, and ask again for the
         // list on screen (#282).
         onRunSocketOpen();
+        deviceRef.current.onSocketOpen(ws);
       };
       ws.onclose = (ev: { code?: number }) => {
         if (cancelled) return;

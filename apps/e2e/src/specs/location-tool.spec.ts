@@ -10,7 +10,7 @@
  */
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, platform, tap, waitForAbsent, waitForFreshText, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, isVisible, platform, tap, waitForAbsent, waitForFreshText, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   createRoutine,
   goToSurface,
@@ -142,6 +142,8 @@ describe('the location tool', () => {
       timeout: 40_000,
       timeoutMsg: "the routine's thread never shared the location",
     });
+    // On a phone a routine's chat has a back arrow where the menu button goes.
+    if (await isVisible('routineChat.back')) await tap('routineChat.back');
     await goToSurface('chat');
   });
 });

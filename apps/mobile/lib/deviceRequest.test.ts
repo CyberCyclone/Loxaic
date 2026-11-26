@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   answerFor,
-  answerWasLost,
+  answersSentElsewhere,
   deviceRequestKey,
   locationAction,
   reasonFromError,
@@ -55,16 +55,13 @@ describe('locationAction', () => {
   });
 });
 
-describe('answerWasLost', () => {
-  const first = {};
-  const second = {};
-  it('is lost when it went out on a socket since replaced', () => {
-    expect(answerWasLost(first, second)).toBe(true);
-    expect(answerWasLost(first, null)).toBe(true);
-  });
-  it('may still be on its way on the socket in use, and was never sent when there is none', () => {
-    expect(answerWasLost(first, first)).toBe(false);
-    expect(answerWasLost(undefined, second)).toBe(false);
+describe('answersSentElsewhere', () => {
+  it('forgets what went out on a socket a new one replaced, and keeps what went out on the new one', () => {
+    const old = {};
+    const opened = {};
+    const answered = new Map<string, object>([['s1:c1', old], ['s1:c2', opened], ['s2:c1', old]]);
+    expect(answersSentElsewhere(answered, opened)).toEqual(['s1:c1', 's2:c1']);
+    expect(answersSentElsewhere(new Map(), opened)).toEqual([]);
   });
 });
 

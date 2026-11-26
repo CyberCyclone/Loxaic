@@ -4,7 +4,7 @@ import { NOT_SENT_RECONNECTING, isOffline } from '@/lib/connection';
 import { deviceZone, getDevicePosition } from '@/lib/deviceLocation';
 import {
   answerFor,
-  answerWasLost,
+  answersSentElsewhere,
   deviceRequestKey,
   locationAction,
   sendWhenOpen,
@@ -36,24 +36,30 @@ export function useDeviceRequests(input: {
   const pendingRef = useRef<ByConv>({});
   pendingRef.current = pendingByConv;
   // Sent from here, with the socket it went out on, so a resync does not show
-  // the prompt again unless that socket is gone and the run still waits; and
-  // being answered (the position is a few seconds away), so neither a second
-  // press nor the silent answer below starts another. Read before every
-  // update, never out of one.
+  // the prompt again (until a new socket replaces that one: `onSocketOpen`);
+  // and being answered (the position is a few seconds away), so neither a
+  // second press nor the silent answer below starts another. Read before
+  // every update, never out of one.
   const answeredRef = useRef(new Map<string, WebSocket>());
   const inFlightRef = useRef(new Set<string>());
-  const [, setAnsweredVersion] = useState(0);
+  const [answeredVersion, setAnsweredVersion] = useState(0);
 
   /** A `stream.sync` for the run this conversation is tracking. */
   const onSync = useCallback((convId: string, streamId: string, snapshot: StreamSnapshot, serverNow: number | undefined, arrivedAt: number) => {
     const waiting = snapshot.pending_device_request;
-    const pending = waiting ? toPendingDeviceRequest(waiting, arrivedAt, streamId, serverNow) : null;
-    if (pending) {
-      const key = deviceRequestKey(pending);
-      if (answerWasLost(answeredRef.current.get(key), wsRef.current)) answeredRef.current.delete(key);
-    }
-    setPendingByConv((prev) => (pending ? { ...prev, [convId]: pending } : without(prev, convId)));
-  }, [wsRef]);
+    setPendingByConv((prev) =>
+      waiting ? { ...prev, [convId]: toPendingDeviceRequest(waiting, arrivedAt, streamId, serverNow) } : without(prev, convId),
+    );
+  }, []);
+
+  /** A new socket is open: an answer that went out on the one it replaced may
+   * have died with it (`answersSentElsewhere`). */
+  const onSocketOpen = useCallback((opened: WebSocket) => {
+    const lost = answersSentElsewhere(answeredRef.current, opened);
+    if (lost.length === 0) return;
+    for (const key of lost) answeredRef.current.delete(key);
+    setAnsweredVersion((v) => v + 1);
+  }, []);
 
   /** A live event of that run. */
   const onEvent = useCallback((convId: string, streamId: string, event: StreamEventKind, arrivedAt: number) => {
@@ -124,7 +130,8 @@ export function useDeviceRequests(input: {
     for (const [convId, pending] of Object.entries(pendingByConv)) {
       if (locationAction({ pending, me, answered: answeredRef.current }) === 'answerSilently') void answer(convId, 'once');
     }
-  }, [pendingByConv, me, answer]);
+    // answeredVersion: a forgotten answer is given again.
+  }, [pendingByConv, me, answer, answeredVersion]);
 
   /** What this device shows for a conversation's request. */
   const actionFor = useCallback(
@@ -132,5 +139,5 @@ export function useDeviceRequests(input: {
     [pendingByConv, me],
   );
 
-  return { pendingByConv, onSync, onEvent, onStreamEnd, onRewound, answer, actionFor };
+  return { pendingByConv, onSync, onSocketOpen, onEvent, onStreamEnd, onRewound, answer, actionFor };
 }

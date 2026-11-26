@@ -66,15 +66,17 @@ export function locationAction(input: {
 }
 
 /**
- * Whether this device's answer to a request was lost, given a snapshot that
- * says the run still waits on it: it was, when it went out on a socket since
- * replaced (a phone's OS prompt or position fix can background the app, which
- * replaces the socket, and a frame sent just before is gone). Then the prompt,
- * or the silent answer, comes back. An answer sent on the socket now in use
- * may simply not have been read yet.
+ * The answers to stop counting as given once `opened` replaces the socket:
+ * every one that went out on another socket. A frame sent just before a socket
+ * dies is gone (a phone's OS prompt or position fix can background the app,
+ * which replaces the socket), and nothing says whether it arrived: a reconnect
+ * whose cursor is current gets no snapshot, only what happens next. So the
+ * prompt, or the silent answer, comes back; if the answer did arrive, its
+ * `tool.result` follows on the new socket and clears it, and a second answer
+ * is ignored by the server.
  */
-export function answerWasLost(sentOn: object | undefined, current: object | null): boolean {
-  return sentOn !== undefined && sentOn !== current;
+export function answersSentElsewhere(answered: ReadonlyMap<string, object>, opened: object): string[] {
+  return [...answered].filter(([, sentOn]) => sentOn !== opened).map(([key]) => key);
 }
 
 /** The person's choice at the prompt, or the silent answer of "Always". */
