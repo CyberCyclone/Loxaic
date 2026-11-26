@@ -1,8 +1,9 @@
-import type { PermissionMode } from "@loxaic/types";
+import { normalizeDeviceAnswer, type PermissionMode } from "@loxaic/types";
 import { recordPermissionMode } from "../conversations/permission-mode.ts";
 import { actingRole, atLeast, resolveAccess } from "../streams/authz.ts";
 import {
   clearRunApproval,
+  clearRunDeviceRequest,
   findRunsByApprovalCallId,
   getRun,
   getRunByConversation,
@@ -82,6 +83,30 @@ export async function answerApproval(
     }
     break;
   }
+}
+
+/**
+ * The sender's device answering a `get_location` request (streams/runs/
+ * location.ts). Unlike an approval, only the run's sender may answer — it is
+ * their position — and only for the run named: call ids repeat across runs.
+ * Every refusal is silent, as for approvals.
+ */
+export async function answerDeviceRequest(userId: string, msg: unknown): Promise<void> {
+  if (!msg || typeof msg !== "object") return;
+  const { stream_id: streamId, call_id: callId } = msg as { stream_id?: unknown; call_id?: unknown };
+  if (typeof streamId !== "string" || typeof callId !== "string") return;
+  const answer = normalizeDeviceAnswer(msg);
+  if (!answer) return;
+  const before = getRun(streamId);
+  if (!before?.deviceRequests?.has(callId) || before.userId !== userId) return;
+  // A share revoked or the conversation deleted meanwhile: no answer.
+  if (!(await mayActOnRun(userId, before.conversationId))) return;
+  // Read again after the await: answered, timed out or stopped meanwhile.
+  const run = getRun(streamId);
+  const request = run?.deviceRequests?.get(callId);
+  if (!run || !request || run.userId !== userId) return;
+  clearRunDeviceRequest(run, callId);
+  request.resolve(answer);
 }
 
 /** Whether a mode off a socket is one of the three words. */

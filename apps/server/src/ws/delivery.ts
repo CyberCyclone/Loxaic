@@ -4,6 +4,8 @@ import { getStreamBroker } from "../streams/index.ts";
 import type { StreamRecord } from "../streams/types.ts";
 import { getRunByConversation, listBusyRuns, runActivityOf } from "../streams/registry.ts";
 import { watchConversation, watchConversationEvents, watchRunActivity } from "../streams/watchers.ts";
+import { followStream } from "../streams/device-presence.ts";
+import { eventForReader, snapshotForReader } from "../streams/for-reader.ts";
 
 const BACKPRESSURE_BYTES = 512 * 1024;
 
@@ -17,8 +19,13 @@ export function createDelivery(
   userId: string,
   send: (msg: ServerMessage) => void,
   getBufferedAmount: () => number,
+  /** The socket can answer a location request (`caps=location`): while it
+   * follows a run, that run's get_location waits for it. */
+  canShareLocation = false,
 ) {
   const subs = new Map<string, { unsubRecord: () => void; unsubEnd: () => void }>();
+  /** Per stream followed: its release from streams/device-presence.ts. */
+  const follows = new Map<string, () => void>();
   const convWatches = new Map<string, () => void>();
   /** Finished runs this socket has already been sent a snapshot of. Re-sending
    * those is pure waste — they cannot change — and doing it on every
@@ -54,6 +61,9 @@ export function createDelivery(
     // delivering every event. The placeholder is replaced with the real
     // unsubscribers once they exist; nothing reads `subs` before then.
     subs.set(streamId, { unsubRecord: () => undefined, unsubEnd: () => undefined });
+    // Counted from the reservation, synchronously: the run may call
+    // get_location before the catch-up below has been read.
+    if (canShareLocation) follows.set(streamId, followStream(userId, streamId));
     const broker = getStreamBroker();
 
     // Race-free handoff: tap live records BEFORE reading catch-up, buffer
@@ -72,7 +82,7 @@ export function createDelivery(
       // doesn't immediately follow its cursor) makes it re-subscribe and
       // resync from a fresh snapshot on its own.
       if (getBufferedAmount() > BACKPRESSURE_BYTES) return;
-      send({ type: "stream.event", stream_id: streamId, conversation_id: conversationId, seq: record.seq, event: record.event });
+      send({ type: "stream.event", stream_id: streamId, conversation_id: conversationId, seq: record.seq, event: eventForReader(record.event, userId) });
     };
 
     const unsubRecord = broker.onRecord(streamId, (record) => {
@@ -119,6 +129,7 @@ export function createDelivery(
     const folded = broker.foldSnapshot(records);
     currentSeq = records.length ? records[records.length - 1].seq : 0;
     // A finished run holds no questions and runs no review. `pending_approval`
+    // (and `pending_device_request`, a location request)
     // describes a run parked on a person, which cannot be answered once the
     // stream has ended — so advertising one to a client catching up is
     // offering a button that does nothing. `reviewing` is the same: a run that
@@ -136,7 +147,7 @@ export function createDelivery(
     const snapshot: StreamSnapshot =
       status === "active"
         ? folded
-        : (({ pending_approval: _a, reviewing: _r, subagents, reviews, ...rest }) => ({
+        : (({ pending_approval: _a, pending_device_request: _d, reviewing: _r, subagents, reviews, ...rest }) => ({
             ...rest,
             // A review the run ended under never finished: no card for it.
             ...(reviews && settledRunReviews(reviews).length ? { reviews: settledRunReviews(reviews) } : {}),
@@ -150,7 +161,7 @@ export function createDelivery(
         conversation_id: conversationId,
         seq: currentSeq,
         status,
-        snapshot,
+        snapshot: snapshotForReader(snapshot, userId),
         // A pending wait's `expires_at` is on the server's clock. With this a
         // client can count down on its own clock without trusting the two to
         // agree — a phone a minute fast would otherwise show a minute too few.
@@ -188,6 +199,8 @@ export function createDelivery(
   }
 
   function unsubscribeStream(streamId: string): void {
+    follows.get(streamId)?.();
+    follows.delete(streamId);
     const s = subs.get(streamId);
     if (!s) return;
     s.unsubRecord();
@@ -457,6 +470,8 @@ export function createDelivery(
   }
 
   function close(): void {
+    for (const release of follows.values()) release();
+    follows.clear();
     for (const s of subs.values()) {
       s.unsubRecord();
       s.unsubEnd();

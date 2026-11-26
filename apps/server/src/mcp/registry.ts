@@ -82,6 +82,9 @@ export async function buildToolset(
     /** Offer the `skill` tool, listing these skills — the conversation's
      * frozen catalog (skills/session.ts). Absent leaves it out. */
     skills?: readonly SkillListing[];
+    /** Offer `get_location` (streams/runs/location.ts): chat runs (routines
+     * included), never an agent run's or a sub-agent's. */
+    location?: boolean;
   },
 ): Promise<Toolset> {
   const allowlist = opts.allowlist ?? (await builtinAllowlist(userId));
@@ -93,6 +96,7 @@ export async function buildToolset(
     skills: opts.skills,
     // The admin switch, not the browser's health: see WEB_FETCH_BROWSING_TOOL.
     browsing: getBrowserSettings().enabled,
+    location: opts.location,
   }).map((t) =>
     allowlist.has(t.name) && isAllowlistableTool(t.name) ? { ...t, requiresApproval: false } : t,
   );

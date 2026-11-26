@@ -10,7 +10,8 @@ export type ToolName =
   | "propose_plan"
   | "ask_questions"
   | "subagent"
-  | "skill";
+  | "skill"
+  | "get_location";
 
 export type PermissionMode = "planning" | "manual" | "auto";
 
@@ -164,6 +165,31 @@ export const TOOLS: ToolDef[] = [
     requiresApproval: false,
   },
 ];
+
+/**
+ * The person's approximate location and local time, from their own device and
+ * as their location-sharing setting allows (`LOCATION_TOOL_NAME` in
+ * packages/types; streams/runs/location.ts on the server). Offered whatever
+ * the setting says: the tool list is part of every request's prefix, so the
+ * setting is read when the tool is called. Outside `TOOLS`: it never asks for
+ * approval itself (the device does, as the person chose) and writes nothing.
+ */
+export const LOCATION_TOOL: ToolDef = {
+  name: "get_location",
+  description:
+    "Get the user's approximate location (the nearest town, region and country) and their current local " +
+    "date, time and time zone, from their own device. Use it only when the answer depends on where they are, " +
+    "such as weather, local news or nearby places. The user may be asked first and may decline; if so, ask them " +
+    "where they are instead.",
+  parameters: {
+    type: "object",
+    properties: {
+      reason: { type: "string", description: "One short sentence the user is shown: why you need their location." },
+    },
+    required: [],
+  },
+  requiresApproval: false,
+};
 
 /** The wire name of `PLAN_TOOL`. The client matches it to render a plan
  * rather than a tool card (its own copy lives in apps/mobile/lib/plan.ts). */
@@ -480,10 +506,14 @@ export function resolveBuiltinTools(
     /** The server's browser fallback is on: offer `WEB_FETCH_BROWSING_TOOL`
      * in place of the plain `web_fetch`. */
     browsing?: boolean;
+    /** Offer `LOCATION_TOOL`: the server offers it to chat runs only
+     * (streams/runs/engine.ts), never to a sub-agent. */
+    location?: boolean;
   },
 ): ResolvedTool[] {
   const defs = [
     ...TOOLS.map((t) => (t.name === "web_fetch" && opts?.browsing === true ? WEB_FETCH_BROWSING_TOOL : t)),
+    ...(opts?.location ? [LOCATION_TOOL] : []),
     ...(mode === "planning" && opts?.handover !== false ? [PLAN_TOOL, QUESTIONS_TOOL] : []),
     ...(opts?.subagents ? [subagentTool(opts.subagents.models ?? undefined)] : []),
     ...(opts?.skills ? [skillTool(opts.skills)] : []),

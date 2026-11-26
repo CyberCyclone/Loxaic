@@ -1357,6 +1357,60 @@ export async function deleteFavouriteQuestionViaApi(creds: Pick<Credentials, 'em
   if (!res.ok) throw new Error(`[e2e] removing a favourite question failed (${String(res.status)})`);
 }
 
+/**
+ * A device of the person's, on a socket of its own: sends `prompt` into a new
+ * chat and answers any location request with `answer`. With `caps` false it
+ * is an app too old to say it can share a location, which the server must
+ * never wait on. Resolves once the send has started; `requests` fills as
+ * requests arrive.
+ */
+export async function sendFromDevice(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  prompt: string,
+  opts: { caps: boolean; answer?: Record<string, unknown> },
+): Promise<{ conversationId: string; requests: Record<string, unknown>[]; close: () => void }> {
+  const token = await apiToken(creds);
+  const caps = opts.caps ? '&caps=location' : '';
+  const ws = new WebSocket(`${BASE_URL.replace(/^http/, 'ws')}/ws/chat?token=${encodeURIComponent(token)}${caps}`);
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => { resolve(); });
+    ws.addEventListener('error', () => { reject(new Error('[e2e] device socket failed to open')); });
+  });
+  const requests: Record<string, unknown>[] = [];
+  const started = new Promise<string>((resolve, reject) => {
+    ws.addEventListener('message', (m) => {
+      let msg: { type?: string; conversation_id?: string; stream_id?: string; error?: string; event?: Record<string, unknown> };
+      try {
+        msg = JSON.parse(String(m.data)) as typeof msg;
+      } catch {
+        return;
+      }
+      if (msg.type === 'turn.started' && msg.conversation_id) resolve(msg.conversation_id);
+      if (msg.type === 'error') reject(new Error(`[e2e] device send refused: ${String(msg.error)}`));
+      if (msg.type === 'stream.event' && msg.event?.kind === 'device.request') {
+        requests.push(msg.event);
+        if (opts.answer) {
+          ws.send(JSON.stringify({ type: 'device.answer', stream_id: msg.stream_id, call_id: msg.event.call_id, ...opts.answer }));
+        }
+      }
+    });
+  });
+  ws.send(JSON.stringify({ type: 'chat.send', content: prompt }));
+  return { conversationId: await started, requests, close: () => { ws.close(); } };
+}
+
+/** A device of `creds`' that can share a location, connected and following
+ * nothing: a phone open on the thread list. Returns how to disconnect it. */
+export async function connectIdleLocationDevice(creds: Pick<Credentials, 'email' | 'password'>): Promise<() => void> {
+  const token = await apiToken(creds);
+  const ws = new WebSocket(`${BASE_URL.replace(/^http/, 'ws')}/ws/chat?token=${encodeURIComponent(token)}&caps=location`);
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => { resolve(); });
+    ws.addEventListener('error', () => { reject(new Error('[e2e] idle device socket failed to open')); });
+  });
+  return () => { ws.close(); };
+}
+
 /** Every content block a conversation has stored, in order. */
 export async function getStoredBlocks(
   creds: Pick<Credentials, 'email' | 'password'>,

@@ -206,6 +206,7 @@ export async function startChatRun(input: {
         newConversation: opening ? { chosenStage: input.contextStage } : undefined,
         thinkingLevel: input.thinkingLevel,
         ...(routine ? { subagents: { routine: true } } : {}),
+        ...(input.localTime === "schedule" ? { scheduled: true } : {}),
       }),
       onSettled: input.onSettled,
     });

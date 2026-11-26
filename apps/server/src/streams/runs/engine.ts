@@ -25,6 +25,8 @@ import {
   type PermissionCheckNote,
   type ToolNotice,
   type ToolPermission,
+  LOCATION_TOOL_NAME,
+  type ToolDeviceInfo,
 } from "@loxaic/types";
 import {
   countDocumentParts,
@@ -103,6 +105,7 @@ import { countShownScreenshots, screenshotMessage, screenshotTurnsOf, SCREENSHOT
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
+import { answerLocationCall, type LocationMemo } from "./location.ts";
 import { clearRunApproval, clearRunQueuePosition, getRun, onRunModeChange, seedRunLimits, setRunApproval, setRunQueuePosition, unregisterRun } from "../registry.ts";
 import { loadRunLimits } from "../../conversations/run-limits.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
@@ -540,6 +543,10 @@ export async function runToolLoop(ctx: {
    *   conversation a person is in.
    */
   role?: { kind: "subagent"; parentConvId: string };
+  /** A routine's scheduled run: nobody's device is there to answer
+   * `get_location`, so it is told so at once (location.ts). A person typing
+   * into a routine's conversation is not this. */
+  scheduled?: boolean;
   /** The turn this run's file edits are checkpointed under
    * (agent/checkpoints.ts). Absent means this run's own: its workspace's
    * conversation and its user message. A sub-agent is given its parent's, so
@@ -703,7 +710,14 @@ export async function runToolLoop(ctx: {
       ...(subagents ? { subagents: { models: subagents.offered } } : {}),
       ...(ctx.role ? { handover: false } : {}),
       ...(skills.listing ? { skills: skills.listing } : {}),
+      // Chat (routines run as chats): weather and local news are questions
+      // for a conversation, not for a coding run, whose prompt stays as it
+      // was. Never a sub-agent, which would ask on its parent's behalf.
+      location: ctx.surface === "chat" && !ctx.role,
     });
+    // One answer per reply: a second `get_location` call is answered as the
+    // first was, without asking the person again.
+    const locationMemo: LocationMemo = {};
     const tools = toolset.openAiTools;
     // Fixed for the run, like the toolset: which source each schema came from,
     // so the context breakdown can say what each MCP server costs. Emit-only —
@@ -1820,6 +1834,7 @@ export async function runToolLoop(ctx: {
               takeTodoReminder,
               screenshotsShown,
               commandRules,
+              location: { scheduled: ctx.scheduled === true, memo: locationMemo },
               isolation: runIsolation,
               check: {
                 model,
@@ -1871,6 +1886,7 @@ export async function runToolLoop(ctx: {
           ...(outcome.images && outcome.imagesSentToModel ? { images_sent_to_model: true } : {}),
           ...(outcome.browser ? { browser: true } : {}),
           ...(outcome.notice ? { notice: outcome.notice } : {}),
+          ...(outcome.device ? { device: outcome.device } : {}),
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
         if (outcome.images && outcome.imagesSentToModel) screenshotTurns.push({ callId: call.id, images: outcome.images });
@@ -2207,6 +2223,8 @@ async function runOneToolCall(
     screenshotsShown: { count: number };
     /** The sender's command rules, for this run; "Allow always" adds to it. */
     commandRules: CommandRule[];
+    /** What `get_location` needs beyond the above (location.ts). */
+    location: { scheduled: boolean; memo: LocationMemo };
     /** Whether the workspace contains its commands — asked once per run. */
     isolation: () => Promise<Isolation>;
     /** What the permission check sends: this run's model, tools and thinking
@@ -2231,6 +2249,8 @@ async function runOneToolCall(
   browser?: true;
   /** A failure a person can act on (#254's full allocation). */
   notice?: ToolNotice;
+  /** A `get_location` call: how it ended. */
+  device?: ToolDeviceInfo;
 }> {
   const { userId, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
@@ -2248,6 +2268,26 @@ async function runOneToolCall(
       ok: false,
     });
     return { output, ok: false };
+  }
+
+  // The person's device answers this one, as their setting allows; it never
+  // takes the approval path (location.ts).
+  if (toolName === LOCATION_TOOL_NAME && resolved.source.kind === "builtin") {
+    return answerLocationCall(
+      {
+        streamId: ctx.streamId,
+        userId,
+        producer,
+        assistantMsgId,
+        slot: ctx.slot,
+        signal: ctx.signal,
+        askDeadline: ctx.approvalDeadline,
+        scheduled: ctx.location.scheduled,
+        memo: ctx.location.memo,
+      },
+      call.id,
+      args,
+    );
   }
 
   // ── Permission ───────────────────────────────────────────

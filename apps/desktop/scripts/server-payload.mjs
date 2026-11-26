@@ -29,8 +29,10 @@ export const PAYLOAD_KEEP = new Set(["dist", "node_modules", "package.json"]);
 // (sandbox/container-engine.ts, which the executor bundles too): without it
 // neither process loads. playwright-core drives web_fetch's browser fallback
 // and carries the installer that downloads its Chromium (browser/install.ts):
-// without it the admin's Install button has nothing to run.
-export const PAYLOAD_REQUIRED = ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "node_modules/playwright-core", "node_modules/node-forge", "node_modules/yaml", "node_modules/tar-stream", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"];
+// without it the admin's Install button has nothing to run. dist/geo-data is
+// the location tool's town list (src/geo/cities.ts): without it a shared
+// location is never named.
+export const PAYLOAD_REQUIRED = ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "dist/geo-data/cities15000.tsv", "node_modules/fastify", "node_modules/ws", "node_modules/playwright-core", "node_modules/node-forge", "node_modules/yaml", "node_modules/tar-stream", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"];
 
 /** The entries of PAYLOAD_REQUIRED that are not under `dir`. */
 export function missingFromPayload(dir) {

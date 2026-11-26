@@ -1,5 +1,6 @@
 import type { AttachmentRef, CompactionStats, ContextBreakdown, ToolNotice, ToolPermission } from "./stream-protocol";
 import type { ModelThinking } from "./thinking";
+import type { ToolDeviceInfo } from "./location";
 
 export type Result<T, E = Error> =
   | { ok: true; data: T }
@@ -236,6 +237,8 @@ export type ContentBlock =
       browser?: true;
       /** See `ToolNotice`; written only for a failure a person can act on. */
       notice?: ToolNotice;
+      /** A `get_location` call: how it ended (`ToolDeviceInfo`). */
+      device?: ToolDeviceInfo;
     }
   | { kind: "attachment"; ref: string; mime: string; name?: string }
   /** Rides alongside a summary message's text block so a cold REST load can
@@ -418,6 +421,7 @@ export * from "./thinking";
 export * from "./subagents";
 export * from "./favourites";
 export * from "./local-time";
+export * from "./location";
 
 export interface UsageRecord {
   id: string;

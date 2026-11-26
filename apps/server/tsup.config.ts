@@ -1,3 +1,4 @@
+import { cpSync } from "node:fs";
 import { defineConfig } from "tsup";
 
 export default defineConfig({
@@ -23,4 +24,9 @@ export default defineConfig({
   // drizzle-orm/postgres must therefore be direct deps of this package so the
   // bundled output can resolve them as bare specifiers.
   noExternal: [/^@loxaic\//],
+  // The location tool's town list (src/geo/cities.ts looks for it at
+  // dist/geo-data): data, not code, so it is copied rather than bundled.
+  onSuccess: async () => {
+    cpSync("src/geo/data", "dist/geo-data", { recursive: true });
+  },
 });

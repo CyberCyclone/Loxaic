@@ -4,7 +4,7 @@ import { conversationShares, conversations, user } from "@loxaic/db/schema";
 import { authenticate, requireAdmin } from "../auth/middleware";
 import { purgeConversation, restoreConversation } from "../conversations/delete.ts";
 import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
-import { withoutOthersLocalTime } from "../streams/runs/local-time.ts";
+import { contentForReader } from "../streams/for-reader.ts";
 import { conversationPurgeAt } from "../settings.ts";
 import { resolveAccess } from "../streams/authz";
 import { getRun } from "../streams/registry.ts";
@@ -275,7 +275,7 @@ export function adminConversationRoutes(app: FastifyInstance) {
         authorUserId: m.authorUserId,
         model: m.model,
         // An audit reads what was said, not where its authors were.
-        content: withoutOthersLocalTime(m.content, m.authorUserId, adminId),
+        content: contentForReader(m.content, m.authorUserId, adminId),
         status: m.status,
         createdAt: m.createdAt,
         removedAt: m.deletedAt,

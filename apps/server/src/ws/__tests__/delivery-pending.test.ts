@@ -118,6 +118,28 @@ describe("a finished stream's snapshot", () => {
     expect(ended?.snapshot.pending_approval).toBeUndefined();
   });
 
+  it("keeps a waiting location request while the run goes, and drops it once the run has ended", async () => {
+    const broker = getStreamBroker();
+    const streamId = uuid();
+    const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface: "chat" });
+    producer.emit({ kind: "device.request", call_id: "c1", request: "location", ask: true, user_id: userId, timeout_ms: 60_000, expires_at: Date.now() + 60_000 });
+    // A reconnecting device is shown it, so it can still answer.
+    expect((await syncFor(streamId))?.snapshot.pending_device_request).toMatchObject({ call_id: "c1", ask: true, user_id: userId });
+    await producer.end("cancelled");
+    expect((await syncFor(streamId))?.snapshot.pending_device_request).toBeUndefined();
+  });
+
+  it("clears a location request from the snapshot when its call has a result", async () => {
+    const broker = getStreamBroker();
+    const streamId = uuid();
+    const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface: "chat" });
+    producer.emit({ kind: "device.request", call_id: "c1", request: "location", ask: false, user_id: userId });
+    producer.emit({ kind: "tool.result", message_id: "m1", call_id: "c1", tool: "get_location", output: "x", ok: true, device: { request: "location", outcome: "shared", place: "Brisbane" } });
+    const snapshot = broker.foldSnapshot(await broker.readFrom(streamId, 0));
+    expect(snapshot.pending_device_request).toBeUndefined();
+    await producer.end("complete");
+  });
+
   it("ends a sub-agent a finished run's log still calls running, and keeps a queue position through a child's events", async () => {
     // A run waits for its children before it ends, so one still marked running
     // in a finished run's log is one whose end was never written (a crash).

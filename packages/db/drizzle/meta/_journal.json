@@ -414,6 +414,13 @@
       "when": 1795690469013,
       "tag": "0058_share_time_zone",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1795696095743,
+      "tag": "0059_location_sharing",
+      "breakpoints": true
     }
   ]
 }
