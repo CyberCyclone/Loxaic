@@ -371,7 +371,7 @@ export function prefsRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>("/v1/prefs/command-rules/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const ok = /^[0-9a-f-]{36}$/i.test(request.params.id) && (await deleteCommandRule(userId, request.params.id));
+    const ok = UUID_RE.test(request.params.id) && (await deleteCommandRule(userId, request.params.id));
     if (!ok) {
       reply.code(404);
       return { error: "Not found" };
@@ -403,7 +403,7 @@ export function prefsRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>("/v1/prefs/favourite-questions/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const ok = /^[0-9a-f-]{36}$/i.test(request.params.id) && (await deleteFavouriteQuestion(userId, request.params.id));
+    const ok = UUID_RE.test(request.params.id) && (await deleteFavouriteQuestion(userId, request.params.id));
     if (!ok) {
       reply.code(404);
       return { error: "Not found" };
@@ -411,6 +411,10 @@ export function prefsRoutes(app: FastifyInstance) {
     return { questions: await listFavouriteQuestions(userId) };
   });
 }
+
+/** A malformed id is a 404 like any other: Postgres would refuse it in the
+ * `uuid` cast and answer 500. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function ruleToApi(rule: Awaited<ReturnType<typeof loadCommandRules>>[number]) {
   return {

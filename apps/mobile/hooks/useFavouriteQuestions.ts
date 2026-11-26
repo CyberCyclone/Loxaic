@@ -7,7 +7,7 @@ import {
 } from '@loxaic/api-client';
 import { useToastHelper } from './useToastHelper';
 import { describeRequestError, requireServer, useServerReachable } from '@/lib/connection';
-import { failedLoad, type FavouritesLoad } from '@/lib/favouriteQuestions';
+import { failedLoad, removeFailure, type FavouritesLoad } from '@/lib/favouriteQuestions';
 
 /** The last list loaded, so the next new chat shows it at once (and, while
  * the server is away, still shows it) while it is asked for again. Keyed by
@@ -57,21 +57,36 @@ export function useFavouriteQuestions(token: string | null) {
   /** Throws the server's own words, for the dialog to show. */
   const add = useCallback(async (text: string): Promise<void> => {
     const mine = ++seq.current;
-    const questions = await addFavouriteQuestion(text);
-    if (mine === seq.current) setLoad({ status: 'ready', questions });
-  }, [setLoad]);
+    try {
+      const questions = await addFavouriteQuestion(text);
+      if (mine === seq.current) setLoad({ status: 'ready', questions });
+    } catch (err) {
+      // The bump above dropped any load in flight, and a refusal ("list is
+      // full") usually means another device changed the list: ask again.
+      void refresh();
+      throw err;
+    }
+  }, [refresh, setLoad]);
+
+  // Ids with a DELETE in flight: a second tap on the same X (a double tap, a
+  // slow network) is ignored rather than sent, where it would answer 404.
+  const removing = useRef(new Set<string>());
 
   const remove = useCallback(
     async (question: FavouriteQuestion) => {
+      if (removing.current.has(question.id)) return;
       if (!requireServer(showToast)) return;
+      removing.current.add(question.id);
       const mine = ++seq.current;
       try {
         const questions = await deleteFavouriteQuestion(question.id);
         if (mine === seq.current) setLoad({ status: 'ready', questions });
       } catch (err) {
-        showToast(describeRequestError(err, 'Could not remove that question'), 4000);
-        // A 404 means another device removed it already: show what is there.
+        const failure = removeFailure(err);
+        if (failure) showToast(describeRequestError(err, failure), 4000);
         void refresh();
+      } finally {
+        removing.current.delete(question.id);
       }
     },
     [refresh, setLoad, showToast],

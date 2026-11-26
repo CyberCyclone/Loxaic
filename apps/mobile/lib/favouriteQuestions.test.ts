@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError, type FavouriteQuestion } from '@loxaic/api-client';
 import { FAVOURITE_QUESTION_MAX_CHARS, MAX_FAVOURITE_QUESTIONS } from '@loxaic/types';
-import { draftProblem, failedLoad, favouritesView } from './favouriteQuestions';
+import { draftProblem, failedLoad, favouritesView, removeFailure } from './favouriteQuestions';
 
 const q = (id: string, text = `Question ${id}`): FavouriteQuestion => ({ id, text, createdAt: '2026-11-24T00:00:00.000Z' });
 
@@ -38,6 +38,14 @@ describe('failedLoad', () => {
     expect(failedLoad(new ApiError('Not Found', 404))).toEqual({ status: 'unsupported' });
     expect(failedLoad(new ApiError('Internal', 500))).toEqual({ status: 'failed' });
     expect(failedLoad(new TypeError('Failed to fetch'))).toEqual({ status: 'failed' });
+  });
+});
+
+describe('removeFailure', () => {
+  it('says nothing for a question already gone, and something for any other failure', () => {
+    expect(removeFailure(new ApiError('Not found', 404))).toBeNull();
+    expect(removeFailure(new ApiError('Internal', 500))).toBe('Could not remove that question');
+    expect(removeFailure(new TypeError('Failed to fetch'))).toBe('Could not remove that question');
   });
 });
 

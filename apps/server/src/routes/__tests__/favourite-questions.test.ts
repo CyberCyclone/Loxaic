@@ -96,8 +96,10 @@ describe("favourite questions", () => {
     expect((await add("x".repeat(FAVOURITE_QUESTION_MAX_CHARS))).statusCode).toBe(200);
   });
 
-  // The prefs-row lock in addFavouriteQuestion is for two devices adding at
-  // the same moment; requests here never interleave, so no test drives it.
+  // The three adds at once below still pass with the prefs-row lock in
+  // addFavouriteQuestion removed (checked): inject does not interleave them
+  // between the count and the insert, so this case does not prove the lock,
+  // which is for two devices adding at the same moment.
   it("stops at the cap", async () => {
     await freshUser();
     const room = MAX_FAVOURITE_QUESTIONS - DEFAULT_FAVOURITE_QUESTIONS.length;
@@ -123,7 +125,10 @@ describe("favourite questions", () => {
     const other = await remove(theirs.id);
     const malformed = await remove("not-an-id");
     const missing = await remove(uuid());
-    for (const res of [other, malformed, missing]) {
+    // 36 characters a looser check takes for a uuid, which Postgres refuses.
+    const dashes = await remove("-".repeat(36));
+    const undashed = await remove("0".repeat(36));
+    for (const res of [other, malformed, missing, dashes, undashed]) {
       expect(res.statusCode).toBe(404);
       expect(res.body).toBe(malformed.body);
     }

@@ -44,6 +44,13 @@ export function failedLoad(err: unknown): FavouritesLoad {
   return err instanceof ApiError && err.status === 404 ? { status: 'unsupported' } : { status: 'failed' };
 }
 
+/** What a failed remove says, or null for nothing: a 404 is a question
+ * already gone (another device, or a repeat of this one), which is what was
+ * asked for, so the list is only refreshed. */
+export function removeFailure(err: unknown): string | null {
+  return err instanceof ApiError && err.status === 404 ? null : 'Could not remove that question';
+}
+
 /**
  * The add dialog's check, before asking: the same rules as the server's, so
  * Save is only offered for a question it will keep. Null while the field is

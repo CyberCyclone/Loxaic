@@ -1,16 +1,20 @@
 /**
  * Favourite questions on the new-chat screen: the four a person starts with,
  * each sent as it is with one tap; one added from the dialog; one added on
- * another device (the API); and removing them all, which leaves only the add
- * button and stays that way across a cold start.
+ * another device (the API); an add refused because another device filled the
+ * list; a double tap on remove; and removing them all, which leaves only the
+ * add button and stays that way across a cold start.
  *
  * What the server holds is read from the API, not only from the screen.
  */
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { browser } from '@wdio/globals';
+import { pauseServer, resumeServer } from '../helpers/server.ts';
 import {
   closeKeyboard,
+  doubleTap,
+  expectNeverPresent,
   isVisible,
   platform,
   scrollTo,
@@ -108,6 +112,10 @@ describe('favourite questions', () => {
     await signUp(creds);
   });
 
+  afterEach(() => {
+    resumeServer();
+  });
+
   it('starts with the defaults, and sends one as it is with a tap', async () => {
     await goToSurface('chat');
     await startNewThread('chat');
@@ -149,6 +157,26 @@ describe('favourite questions', () => {
     await waitForFreshText(`favourites.label.${await idOf('Added somewhere else')}`, 'Added somewhere else');
   });
 
+  it('says so when another device filled the list meanwhile, and shows what it added', async () => {
+    await tap('favourites.add');
+    await waitForVisible('favourites.modal.input');
+    const have = (await listFavouriteQuestions(creds)).length;
+    for (let i = have; i < MAX_FAVOURITE_QUESTIONS; i++) await addFavouriteQuestionViaApi(creds, `Spare question ${String(i)}`);
+    const last = (await listFavouriteQuestions(creds)).at(-1);
+    if (!last) throw new Error('no favourite questions');
+
+    await typeInto('favourites.modal.input', 'One too many');
+    await closeKeyboard();
+    await tap('favourites.modal.save');
+    await waitForFreshText('favourites.modal.error', `up to ${String(MAX_FAVOURITE_QUESTIONS)} favourite questions`);
+    await tap('favourites.modal.cancel');
+    await waitForAbsent('favourites.modal.input', 20_000);
+    // The refusal asked for the list again: the other device's questions are
+    // there without leaving this screen.
+    if (platform() === 'ios' || platform() === 'android') await scrollTo(`favourites.remove.${last.id}`);
+    await waitForFreshText(`favourites.label.${last.id}`, last.text, 15_000);
+  });
+
   it('keeps the last of a full list reachable on a small screen', async () => {
     const have = (await listFavouriteQuestions(creds)).length;
     for (let i = have; i < MAX_FAVOURITE_QUESTIONS; i++) await addFavouriteQuestionViaApi(creds, `Spare question ${String(i)}`);
@@ -177,13 +205,35 @@ describe('favourite questions', () => {
     }
   });
 
-  it('leaves only the add button once every one is removed, across a cold start', async function () {
-    this.timeout(6 * 60_000);
-    // The spares go the way they came, from another device; a new chat then
-    // shows the rest, which are removed here.
+  it('removes one once when its X is tapped twice before the server answers', async () => {
+    // The spares go the way they came, from another device.
     for (const q of await listFavouriteQuestions(creds)) {
       if (q.text.startsWith('Spare question')) await deleteFavouriteQuestionViaApi(creds, q.id);
     }
+    await selectThread(jokeConversation);
+    await waitForTextIn('chat.messageList', mockEcho('Tell me a joke.'));
+    await startNewThread('chat');
+    const before = await listFavouriteQuestions(creds);
+    const [first] = before;
+    await waitForFreshText(`favourites.label.${first.id}`, first.text);
+
+    // Held, so the second tap lands while the first DELETE is unanswered.
+    pauseServer();
+    try {
+      await doubleTap(`favourites.remove.${first.id}`);
+      await browser.pause(300);
+    } finally {
+      resumeServer();
+    }
+    await waitForAbsent(`favourites.question.${first.id}`, 15_000);
+    expect((await listFavouriteQuestions(creds)).map((q) => q.id)).toEqual(before.slice(1).map((q) => q.id));
+    // A repeat sent anyway would answer 404 and say the removal failed.
+    await expectNeverPresent(['shell.toast'], 4_000);
+  });
+
+  it('leaves only the add button once every one is removed, across a cold start', async function () {
+    this.timeout(6 * 60_000);
+    // A new chat shows the rest, which are removed here.
     await selectThread(jokeConversation);
     await waitForTextIn('chat.messageList', mockEcho('Tell me a joke.'));
     await startNewThread('chat');

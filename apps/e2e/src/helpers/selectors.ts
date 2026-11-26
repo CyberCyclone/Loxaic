@@ -81,6 +81,30 @@ async function waitUntilStill(id: string): Promise<void> {
 }
 
 /**
+ * Two taps in quick succession, the second landing before anything the first
+ * started has answered. XCUITest has its own gesture; elsewhere, one pointer
+ * pressed twice in one action sequence.
+ */
+export async function doubleTap(id: string): Promise<void> {
+  const el = byTestId(id);
+  await el.waitForDisplayed();
+  if (platform() === 'ios') {
+    await browser.execute('mobile: doubleTap', { elementId: await el.elementId });
+    return;
+  }
+  const pointerType = platform() === 'android' ? 'touch' : 'mouse';
+  await browser
+    .action('pointer', { parameters: { pointerType } })
+    .move({ origin: el })
+    .down()
+    .up()
+    .pause(80)
+    .down()
+    .up()
+    .perform();
+}
+
+/**
  * Long-press, which is how the thread list exposes its row actions on every
  * platform — web's hover-only actions have no touch fallback, so the app uses
  * long-press → actionsheet everywhere.
