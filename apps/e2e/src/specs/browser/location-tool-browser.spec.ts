@@ -7,7 +7,7 @@
 import { browser } from '@wdio/globals';
 import { uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { platform, tap, waitForAbsent, waitForFreshText, waitForVisible } from '../../helpers/selectors.ts';
+import { platform, tap, testIdSelector, waitForAbsent, waitForFreshText, waitForVisible } from '../../helpers/selectors.ts';
 import { openSettings, revealInSettings, signUp } from '../../helpers/app.ts';
 import { cutServer, restoreServer } from '../../helpers/outage.ts';
 import { askForTheWeather, BRISBANE, locationResultOf, placeDeviceAt, refuseBrowserLocation } from '../../helpers/location.ts';
@@ -47,10 +47,22 @@ describe('the location tool, in a page', () => {
     await waitForVisible('chat.location.bar');
     await loseNextAnswer();
     await tap('chat.location.deny');
-    // Answered as far as the page knows; then the new socket's snapshot says
-    // the run still waits, and the question is back.
-    await waitForAbsent('chat.location.bar', 10_000);
-    await waitForFreshText('chat.location.title', 'Share your location?', 30_000);
+    // Answered as far as the page knows, and the socket gone with the answer.
+    // The replacement opens within the hook's one-second backoff, and with it
+    // the question is back, ready to answer; it stays gone without the fix.
+    await browser.pause(3_000);
+    await browser.waitUntil(
+      async () =>
+        browser.execute(
+          (selector: string) => {
+            const el = document.querySelector(selector);
+            return el !== null && el.getAttribute('aria-disabled') !== 'true';
+          },
+          testIdSelector('chat.location.allowOnce'),
+        ),
+      { timeout: 30_000, interval: 300, timeoutMsg: 'the question never came back after its answer was lost' },
+    );
+    await shot('location-asked-again');
     await tap('chat.location.allowOnce');
     expect(await locationResultOf(creds, convId)).toMatch(/^Approximate location: Brisbane/);
     await waitForAbsent('chat.location.bar', 30_000);
