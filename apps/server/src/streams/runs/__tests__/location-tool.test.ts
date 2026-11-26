@@ -5,7 +5,7 @@ import { conversationShares, conversations, messages, usageRecords, user, userPr
 import type { ContentBlock, LocationSharing, StreamEventKind } from "@loxaic/types";
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
 import { getRun, getRunByConversation, runActivityOf } from "../../registry.ts";
-import { registerDeviceSocket } from "../../device-presence.ts";
+import { followStream } from "../../device-presence.ts";
 import { answerDeviceRequest } from "../../../ws/run-actions.ts";
 import { startChatRun } from "../chatRun.ts";
 import { answerLocationCall, withoutPosition, type LocationMemo } from "../location.ts";
@@ -45,6 +45,7 @@ afterEach(() => {
   for (const release of releases) release();
   releases = [];
   delete process.env.LOCATION_SILENT_TIMEOUT_MS;
+  delete process.env.LOCATION_FOLLOWER_GRACE_MS;
 });
 
 afterAll(async () => {
@@ -69,11 +70,6 @@ async function sharing(): Promise<string | undefined> {
   return (await db.query.userPrefs.findFirst({ where: eq(userPrefs.userId, userId) }))?.locationSharing;
 }
 
-/** A device of the person's that can answer, connected for this test. */
-function connectDevice(): void {
-  releases.push(registerDeviceSocket(userId, ["location"]));
-}
-
 /** The run's handle, or a failed test saying it is gone. */
 function runOf(streamId: string) {
   const run = getRun(streamId);
@@ -89,9 +85,13 @@ async function waitFor(label: string, check: () => boolean, ms = 15_000): Promis
   }
 }
 
-async function ask(prompt = "What's the weather like today?") {
+/** Sends the weather question. `device`: a device of the person's that can
+ * answer follows the run, as the socket that sent it does once the send is
+ * answered (ws/delivery.ts). */
+async function ask(prompt = "What's the weather like today?", device = true) {
   const started = await startChatRun({ userId, content: prompt, model: MODEL, localTime: { tz: "Australia/Brisbane" } });
   convIds.push(started.conversationId);
+  if (device) releases.push(followStream(userId, started.streamId));
   return started;
 }
 
@@ -123,7 +123,6 @@ async function stored(convId: string) {
 describe("get_location", () => {
   it("asks the device, and tells the model the nearest town and the local time", async () => {
     await setSharing("ask");
-    connectDevice();
     const { streamId, conversationId } = await ask();
     const callId = await waitingCall(streamId);
     // Waiting on a person, as an approval is, with the inference slot given back.
@@ -135,9 +134,12 @@ describe("get_location", () => {
     await answerDeviceRequest(userId, { stream_id: streamId, call_id: callId, outcome: "shared", location: BRISBANE, tz: "Australia/Brisbane" });
     await finished(conversationId);
     const { result, replyText } = await stored(conversationId);
-    expect(result?.device).toEqual({ request: "location", outcome: "shared", place: "Brisbane, Queensland, Australia" });
+    expect(result?.device).toEqual({ request: "location", outcome: "shared", place: "Brisbane, Queensland, Australia", user_id: userId });
     expect(result?.ok).toBe(true);
-    expect(result?.output).toMatch(/^Approximate location: Brisbane, Queensland, Australia \(latitude -27\.47, longitude 153\.03; city-level, about 1 km\)\.\nLocal time: .* \(Australia\/Brisbane, UTC\+10:00\)\.$/);
+    // The town, never coordinates: what the model holds, a page it reads can
+    // ask it to send on.
+    expect(result?.output).toMatch(/^Approximate location: Brisbane, Queensland, Australia \(city-level\)\.\nLocal time: .* \(Australia\/Brisbane, UTC\+10:00\)\.$/);
+    expect(result?.output).not.toMatch(/-?27\.4|153\.0|latitude|longitude/);
     // The live event said exactly what was stored, and the model was told it.
     const live = (await events(streamId)).find((e) => e.kind === "tool.result" && e.call_id === callId);
     expect(live).toMatchObject({ output: result?.output, device: result?.device });
@@ -147,7 +149,6 @@ describe("get_location", () => {
 
   it("remembers \"Always allow\" from the sender, and ignores anyone else's answer", async () => {
     await setSharing("ask");
-    connectDevice();
     const { streamId, conversationId } = await ask();
     const callId = await waitingCall(streamId);
     // An editor of the conversation may approve its tools, but their position
@@ -169,7 +170,6 @@ describe("get_location", () => {
 
   it("with Always allow, lets the device answer without asking, and gives up when it does not", async () => {
     await setSharing("always");
-    connectDevice();
     process.env.LOCATION_SILENT_TIMEOUT_MS = "400";
     const { streamId, conversationId } = await ask();
     await waitingCall(streamId);
@@ -184,7 +184,6 @@ describe("get_location", () => {
 
   it("says sharing is off, without asking, when it is", async () => {
     await setSharing("off");
-    connectDevice();
     const { streamId, conversationId } = await ask();
     await finished(conversationId);
     expect((await events(streamId)).some((e) => e.kind === "device.request")).toBe(false);
@@ -193,9 +192,21 @@ describe("get_location", () => {
     expect(result?.output).toMatch(/^The user has turned location sharing off in Loxaic's settings\. .*\nLocal time: .*Australia\/Brisbane/);
   });
 
-  it("answers at once when no device that can share is connected", async () => {
+  it("answers soon when no device that can share follows the run", async () => {
     await setSharing("ask");
-    const { streamId, conversationId } = await ask();
+    process.env.LOCATION_FOLLOWER_GRACE_MS = "200";
+    const { streamId, conversationId } = await ask(undefined, false);
+    await finished(conversationId);
+    expect((await events(streamId)).some((e) => e.kind === "device.request")).toBe(false);
+    expect((await stored(conversationId)).result?.device?.outcome).toBe("no_device");
+  });
+
+  it("does not wait on a device that is open on another thread", async () => {
+    await setSharing("ask");
+    process.env.LOCATION_FOLLOWER_GRACE_MS = "200";
+    // The phone follows some other run of the person's, not this one.
+    releases.push(followStream(userId, uuid()));
+    const { streamId, conversationId } = await ask(undefined, false);
     await finished(conversationId);
     expect((await events(streamId)).some((e) => e.kind === "device.request")).toBe(false);
     expect((await stored(conversationId)).result?.device?.outcome).toBe("no_device");
@@ -203,12 +214,14 @@ describe("get_location", () => {
 
   it("passes on a declined request, and why a device could not answer", async () => {
     await setSharing("ask");
-    connectDevice();
     const first = await ask();
     let callId = await waitingCall(first.streamId);
-    await answerDeviceRequest(userId, { stream_id: first.streamId, call_id: callId, outcome: "declined", always: true });
+    // A zone the server does not know falls back to the one on record.
+    await answerDeviceRequest(userId, { stream_id: first.streamId, call_id: callId, outcome: "declined", always: true, tz: "Foo/Bar" });
     await finished(first.conversationId);
-    expect((await stored(first.conversationId)).result?.device?.outcome).toBe("declined");
+    const declined = (await stored(first.conversationId)).result;
+    expect(declined?.device?.outcome).toBe("declined");
+    expect(declined?.output).toMatch(/\nLocal time: .* \(Australia\/Brisbane, UTC\+10:00\)\.$/);
     // "Always" never rides a refusal.
     expect(await sharing()).toBe("ask");
 
@@ -223,7 +236,6 @@ describe("get_location", () => {
 
   it("stops cleanly while it waits", async () => {
     await setSharing("ask");
-    connectDevice();
     const { streamId, conversationId } = await ask();
     const callId = await waitingCall(streamId);
     getRun(streamId)?.abort.abort();
@@ -236,7 +248,6 @@ describe("get_location", () => {
 
   it("asks nobody for a schedule's run", async () => {
     await setSharing("always");
-    connectDevice();
     const started = await startChatRun({ userId, content: "What's the weather like today?", model: MODEL, localTime: "schedule" });
     convIds.push(started.conversationId);
     await finished(started.conversationId);
@@ -248,7 +259,6 @@ describe("get_location", () => {
 describe("where it is offered", () => {
   it("is a chat's tool, not a coding run's", async () => {
     await setSharing("ask");
-    connectDevice();
     const { startAgentRun } = await import("../agentRun.ts");
     const started = await startAgentRun({ userId, content: "What's the weather like today?", model: MODEL, mode: "auto" });
     convIds.push(started.conversationId);
@@ -259,14 +269,10 @@ describe("where it is offered", () => {
 });
 
 describe("answerLocationCall", () => {
-  it("answers a second call in the same reply as the first, without asking again", async () => {
-    const emitted: StreamEventKind[] = [];
-    const memo: LocationMemo = {
-      answered: { output: "first answer", ok: false, device: { request: "location", outcome: "declined" } },
-    };
-    const result = await answerLocationCall(
+  function callWith(memo: LocationMemo, emitted: StreamEventKind[], callId = "call_2") {
+    return answerLocationCall(
       {
-        streamId: "s",
+        streamId: uuid(),
         userId,
         producer: { emit: (e: StreamEventKind) => { emitted.push(e); } } as never,
         assistantMsgId: "m",
@@ -276,12 +282,33 @@ describe("answerLocationCall", () => {
         scheduled: false,
         memo,
       },
-      "call_2",
+      callId,
       {},
     );
-    expect(result).toEqual({ output: "first answer", ok: false, device: { request: "location", outcome: "declined" } });
+  }
+  const earlier = { output: "first answer", ok: false, device: { request: "location" as const, outcome: "declined" as const } };
+
+  it("answers a later call in the run as the person did, without asking again", async () => {
+    await setSharing("ask");
+    const emitted: StreamEventKind[] = [];
+    const result = await callWith({ answered: earlier }, emitted);
+    expect(result).toEqual(earlier);
     expect(emitted).toEqual([
-      { kind: "tool.result", message_id: "m", call_id: "call_2", tool: "get_location", output: "first answer", ok: false, device: { request: "location", outcome: "declined" } },
+      { kind: "tool.result", message_id: "m", call_id: "call_2", tool: "get_location", output: "first answer", ok: false, device: earlier.device },
     ]);
+  });
+
+  it("does not replay an answer once sharing is turned off", async () => {
+    await setSharing("off");
+    const result = await callWith({ answered: { ...earlier, ok: true, device: { request: "location", outcome: "shared" } } }, []);
+    expect(result.device.outcome).toBe("off");
+  });
+
+  it("keeps no answer but the person's own: no device is asked about again", async () => {
+    await setSharing("ask");
+    process.env.LOCATION_FOLLOWER_GRACE_MS = "0";
+    const memo: LocationMemo = {};
+    expect((await callWith(memo, [])).device.outcome).toBe("no_device");
+    expect(memo.answered).toBeUndefined();
   });
 });

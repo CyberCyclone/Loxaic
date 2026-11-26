@@ -7,7 +7,7 @@ import { resolveCommandSkill } from "../skills/resolve.ts";
 import { recordSkillUse } from "../skills/usage.ts";
 import { createDelivery } from "./delivery.ts";
 import { assertConversationAccess } from "../streams/authz.ts";
-import { capsFromQuery, registerDeviceSocket } from "../streams/device-presence.ts";
+import { canShareLocation, capsFromQuery } from "../streams/device-presence.ts";
 import { answerApproval, answerDeviceRequest, mayActOnRun } from "./run-actions.ts";
 import { getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
@@ -54,12 +54,15 @@ export function chatWsHandler(app: FastifyInstance) {
     const safeSend = (msg: ServerMessage) => {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
     };
-    const delivery = createDelivery(userId, safeSend, () => socket.bufferedAmount);
     // A device that can share its location says so in `caps`: a get_location
-    // call waits only when one of the person's is connected.
-    const releaseDevice = registerDeviceSocket(userId, capsFromQuery(url.searchParams.get("caps")));
+    // call waits only for one following its run (streams/device-presence.ts).
+    const delivery = createDelivery(
+      userId,
+      safeSend,
+      () => socket.bufferedAmount,
+      canShareLocation(capsFromQuery(url.searchParams.get("caps"))),
+    );
     socket.on("close", () => {
-      releaseDevice();
       delivery.close();
     });
 

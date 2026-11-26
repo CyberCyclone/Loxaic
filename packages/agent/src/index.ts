@@ -166,8 +166,6 @@ export const TOOLS: ToolDef[] = [
   },
 ];
 
-/** The wire name of `PLAN_TOOL`. The client matches it to render a plan
- * rather than a tool card (its own copy lives in apps/mobile/lib/plan.ts). */
 /**
  * The person's approximate location and local time, from their own device and
  * as their location-sharing setting allows (`LOCATION_TOOL_NAME` in
@@ -179,7 +177,7 @@ export const TOOLS: ToolDef[] = [
 export const LOCATION_TOOL: ToolDef = {
   name: "get_location",
   description:
-    "Get the user's approximate location (nearest town and coordinates to about 1 km) and their current local " +
+    "Get the user's approximate location (the nearest town, region and country) and their current local " +
     "date, time and time zone, from their own device. Use it only when the answer depends on where they are, " +
     "such as weather, local news or nearby places. The user may be asked first and may decline; if so, ask them " +
     "where they are instead.",
@@ -193,6 +191,8 @@ export const LOCATION_TOOL: ToolDef = {
   requiresApproval: false,
 };
 
+/** The wire name of `PLAN_TOOL`. The client matches it to render a plan
+ * rather than a tool card (its own copy lives in apps/mobile/lib/plan.ts). */
 export const PLAN_TOOL_NAME = "propose_plan";
 
 /**

@@ -1,28 +1,46 @@
 import { describe, expect, it } from "vitest";
 import { normalizeDeviceAnswer } from "@loxaic/types";
-import { capsFromQuery, hasLocationDevice, registerDeviceSocket } from "../device-presence.ts";
+import { canShareLocation, capsFromQuery, followStream, hasLocationFollower, waitForLocationFollower } from "../device-presence.ts";
 
 describe("device presence", () => {
-  it("counts each socket that can share a location until it closes", () => {
+  it("counts each capable socket following a run, for that run only, until it stops", () => {
     const user = `presence-${String(Math.random())}`;
-    expect(hasLocationDevice(user)).toBe(false);
-    const phone = registerDeviceSocket(user, ["location"]);
-    const laptop = registerDeviceSocket(user, capsFromQuery("other, location"));
-    const oldApp = registerDeviceSocket(user, capsFromQuery(null));
+    expect(hasLocationFollower(user, "run-a")).toBe(false);
+    const phone = followStream(user, "run-a");
+    const laptop = followStream(user, "run-a");
+    // A device open on another thread does not count for this run.
+    const elsewhere = followStream(user, "run-b");
     phone();
     // Released twice: still counts once.
     phone();
-    expect(hasLocationDevice(user)).toBe(true);
+    expect(hasLocationFollower(user, "run-a")).toBe(true);
     laptop();
-    expect(hasLocationDevice(user)).toBe(false);
-    oldApp();
-    expect(hasLocationDevice(user)).toBe(false);
+    expect(hasLocationFollower(user, "run-a")).toBe(false);
+    expect(hasLocationFollower(user, "run-b")).toBe(true);
+    expect(hasLocationFollower(`${user}-other`, "run-b")).toBe(false);
+    elsewhere();
+  });
+
+  it("waits a moment for the sending socket to follow, and no longer", async () => {
+    const user = `presence-wait-${String(Math.random())}`;
+    const never = new AbortController().signal;
+    const late = waitForLocationFollower(user, "run", never, 1_000);
+    const release = followStream(user, "run");
+    expect(await late).toBe(true);
+    release();
+    expect(await waitForLocationFollower(user, "run", never, 30)).toBe(false);
+    const stop = new AbortController();
+    const stopped = waitForLocationFollower(user, "run", stop.signal, 10_000);
+    stop.abort();
+    expect(await stopped).toBe(false);
   });
 
   it("reads caps as a short comma-separated list", () => {
     expect(capsFromQuery("location")).toEqual(["location"]);
     expect(capsFromQuery(" location , ,x")).toEqual(["location", "x"]);
     expect(capsFromQuery("x".repeat(40))).toEqual([]);
+    expect(canShareLocation(capsFromQuery("other, location"))).toBe(true);
+    expect(canShareLocation(capsFromQuery(null))).toBe(false);
   });
 });
 

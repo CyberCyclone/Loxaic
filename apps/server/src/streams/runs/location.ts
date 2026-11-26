@@ -29,7 +29,7 @@ import type { RunSlot } from "../../inference/scheduler.ts";
 import { RunSlotAbortedError } from "../../inference/scheduler.ts";
 import { loadTowns } from "../../geo/cities.ts";
 import { nearestTown } from "../../geo/nearest.ts";
-import { hasLocationDevice } from "../device-presence.ts";
+import { waitForLocationFollower } from "../device-presence.ts";
 import { clearRunDeviceRequest, getRun, setRunDeviceRequest } from "../registry.ts";
 import type { StreamProducer } from "../broker.ts";
 import { formatLocalTime, storedTimeZone } from "./local-time.ts";
@@ -46,8 +46,10 @@ export function locationSilentTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
 }
 
-/** The answer one reply already got, so a second call in the same reply does
- * not ask the person again. One per run. */
+/** The person's answer earlier in this run (shared or declined), so a later
+ * call does not ask them again while the setting still allows it. Anything
+ * else (no device, no answer, unavailable) is asked again: the device may be
+ * there now. One per run. */
 export interface LocationMemo {
   answered?: { output: string; ok: boolean; device: ToolDeviceInfo };
 }
@@ -147,35 +149,36 @@ const REASONS: Record<DeviceUnavailableReason, string> = {
 
 const ASK_INSTEAD = "If you need to know where they are, ask them.";
 
-/** The local-time line every result ends with. */
+/** The local-time line every result ends with: the device's zone, else the
+ * one on record when the server does not know the device's. */
 async function localTimeLine(userId: string, tz: string | undefined, now: Date): Promise<string> {
-  const zone = tz ?? (await storedTimeZone(userId)) ?? undefined;
-  const user = zone ? formatLocalTime(now, { tz: zone }) : null;
+  const fromDevice = tz ? formatLocalTime(now, { tz }) : null;
+  const stored = fromDevice ? null : await storedTimeZone(userId);
+  const user = fromDevice ?? (stored ? formatLocalTime(now, { tz: stored }) : null);
   if (user) return `Local time: ${user.date}, ${user.time} (${user.zone}).`;
   const server = formatLocalTime(now, deviceLocalTime(now));
   return server ? `Local time on the server (the user's own zone is unknown): ${server.date}, ${server.time} (${server.zone}).` : "";
 }
 
-/** What the model is told for a shared position: the nearest town, or only
- * coordinates when no listed town is near. */
+/** What the model is told for a shared position: the nearest town, region
+ * and country, never coordinates. City-level is what the person agreed to,
+ * and anything the model holds, content it reads can ask it to send on. */
 export async function describeShared(lat: number, lon: number): Promise<{ text: string; place?: string }> {
-  const la = roundCoordinate(lat);
-  const lo = roundCoordinate(lon);
-  const coords = `latitude ${la.toFixed(2)}, longitude ${lo.toFixed(2)}`;
   let town: Awaited<ReturnType<typeof nearestTown>> = null;
   try {
-    town = nearestTown(await loadTowns(), la, lo);
+    // Rounded before the lookup, as the device already did.
+    town = nearestTown(await loadTowns(), roundCoordinate(lat), roundCoordinate(lon));
   } catch (err) {
     console.warn(`could not read the town list: ${(err as Error).message}`);
   }
-  if (!town) return { text: `Approximate location: ${coords} (city-level, about 1 km).` };
+  if (!town) return { text: "The user shared their location, but the town it is near could not be named. Ask them where they are if it matters." };
   const place = [town.name, town.region, town.country].filter(Boolean).join(", ");
   if (town.km > NO_TOWN_NEARBY_KM) {
     return {
-      text: `Approximate location: ${coords} (city-level, about 1 km). No listed town is nearby: the nearest is ${place}, about ${String(Math.round(town.km))} km away.`,
+      text: `Approximate location: no listed town within ${String(NO_TOWN_NEARBY_KM)} km. The nearest is ${place}, about ${String(Math.round(town.km))} km away.`,
     };
   }
-  return { text: `Approximate location: ${place} (${coords}; city-level, about 1 km).`, place };
+  return { text: `Approximate location: ${place} (city-level).`, place };
 }
 
 /** The sentence for every way a location call can end without a position. */
@@ -215,7 +218,12 @@ export async function answerLocationCall(
   ): Promise<LocationCallResult> => {
     const time = await localTimeLine(ctx.userId, opts.tz, now());
     const output = jsonbSafe(time ? `${body}\n${time}` : body);
-    const device: ToolDeviceInfo = { request: "location", outcome, ...(opts.place ? { place: opts.place } : {}) };
+    const device: ToolDeviceInfo = {
+      request: "location",
+      outcome,
+      ...(opts.place ? { place: opts.place } : {}),
+      user_id: ctx.userId,
+    };
     const ok = outcome === "shared";
     ctx.producer.emit({
       kind: "tool.result",
@@ -227,21 +235,28 @@ export async function answerLocationCall(
       device,
     });
     const result = { output, ok, device };
-    ctx.memo.answered = result;
+    if (outcome === "shared" || outcome === "declined") ctx.memo.answered = result;
     return result;
   };
 
-  // The same reply asking again gets the same answer, without asking again.
+  if (ctx.scheduled) return finish("unattended", withoutPosition("unattended"));
+  // Read on every call, a repeat included: turning sharing off reaches a run
+  // already going.
+  const sharing = await readSharing(ctx.userId);
+  if (sharing === "off") return finish("off", withoutPosition("off"));
+
+  // The person already answered in this run: the same answer, unasked.
   if (ctx.memo.answered) {
     const { output, ok, device } = ctx.memo.answered;
     ctx.producer.emit({ kind: "tool.result", message_id: ctx.assistantMsgId, call_id: callId, tool: "get_location", output, ok, device });
     return { output, ok, device };
   }
-  if (ctx.scheduled) return finish("unattended", withoutPosition("unattended"));
-
-  const sharing = await readSharing(ctx.userId);
-  if (sharing === "off") return finish("off", withoutPosition("off"));
-  if (!hasLocationDevice(ctx.userId)) return finish("no_device", withoutPosition("no_device"));
+  // Only a device following this run can see the request: one on another
+  // thread, or none, would leave the run waiting on nobody.
+  if (!(await waitForLocationFollower(ctx.userId, ctx.streamId, ctx.signal))) {
+    if (ctx.signal.aborted) throw new RunSlotAbortedError();
+    return finish("no_device", withoutPosition("no_device"));
+  }
 
   const ask = sharing === "ask";
   const deadline = ask

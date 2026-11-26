@@ -93,4 +93,29 @@ export interface ToolDeviceInfo {
   outcome: LocationOutcome;
   /** "Brisbane, Queensland, Australia", with `shared`. */
   place?: string;
+  /** Whose device was asked: the run's sender. Anyone else reading the
+   * conversation gets the result through `locationResultFor`. */
+  user_id?: string;
+}
+
+/** What someone other than the sender reads in place of a location result. */
+export const LOCATION_SHARED_ELSEWHERE = "Shared their location.";
+export const LOCATION_NOT_SHARED_ELSEWHERE = "Did not share their location.";
+
+/**
+ * A `get_location` result (a stored block, a live event or a snapshot's call)
+ * as `reader` may see it. The person whose device answered sees it all;
+ * anyone else in the conversation (a share member, an admin) sees only whether
+ * a location was shared: no place, no coordinates, no local time. A result
+ * with no `user_id` is treated as someone else's. Anything else is returned
+ * as it was.
+ */
+export function locationResultFor<T extends { output?: string; device?: ToolDeviceInfo }>(item: T, reader: string): T {
+  const d = item.device;
+  if (!d || d.user_id === reader) return item;
+  return {
+    ...item,
+    output: d.outcome === "shared" ? LOCATION_SHARED_ELSEWHERE : LOCATION_NOT_SHARED_ELSEWHERE,
+    device: { request: d.request, outcome: d.outcome, ...(d.user_id ? { user_id: d.user_id } : {}) },
+  };
 }

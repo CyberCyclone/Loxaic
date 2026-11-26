@@ -14,7 +14,7 @@ import { sandboxLimitBody } from "./errors.ts";
 import { randomUUID } from "node:crypto";
 import { NotFoundError } from "../streams/authz.ts";
 import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
-import { withoutOthersLocalTime } from "../streams/runs/local-time.ts";
+import { contentForReader } from "../streams/for-reader.ts";
 
 /** Rows per page of a thread's history — a floor, since a page grows back to
  * the start of the turn it cuts into. */
@@ -585,7 +585,7 @@ export function conversationRoutes(app: FastifyInstance) {
       return {
         ...m,
         // Viewers of a shared thread are not told where its other members are.
-        content: withoutOthersLocalTime(m.content, m.authorUserId, userId),
+        content: contentForReader(m.content, m.authorUserId, userId),
         usage: u
           ? {
               inputTokens: u.inputTokens,
