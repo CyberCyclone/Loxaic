@@ -55,6 +55,7 @@ function toApi(row: {
   subagentModelMode?: string;
   subagentModel?: string | null;
   bashGrantRetiredAt?: Date | null;
+  shareTimeZone?: boolean;
 }) {
   // Not `bash`: its grants are command rules (GET /v1/prefs/command-rules).
   const allowlist = Array.isArray(row.toolAllowlist) ? row.toolAllowlist.filter(isAllowlistableTool) : [];
@@ -89,6 +90,8 @@ function toApi(row: {
     // absent key — when none was ever picked.
     subagentModelMode: isSubAgentModelMode(row.subagentModelMode) ? row.subagentModelMode : DEFAULT_SUBAGENT_MODEL_MODE,
     subagentModel: row.subagentModel ?? null,
+    // Whether messages carry this person's time zone (streams/runs/local-time.ts).
+    shareTimeZone: row.shareTimeZone ?? true,
     // What "server default" currently means, so the settings screen can label
     // that choice with a real value — and show the built-in reviewer
     // instructions to start editing from. Read-only and live: the operator's
@@ -152,6 +155,7 @@ export function prefsRoutes(app: FastifyInstance) {
       subagentModelMode?: unknown;
       subagentModel?: unknown;
       bashGrantNoticeSeen?: unknown;
+      shareTimeZone?: unknown;
     };
 
     // Named rather than ignored: silently dropping it would leave a client
@@ -192,6 +196,8 @@ export function prefsRoutes(app: FastifyInstance) {
       subagentModelMode?: SubAgentModelMode;
       subagentModel?: string | null;
       bashGrantRetiredAt?: null;
+      shareTimeZone?: boolean;
+      timeZone?: null;
     } = {};
     if (body.toolAllowlist !== undefined) {
       if (!Array.isArray(body.toolAllowlist)) {
@@ -235,6 +241,16 @@ export function prefsRoutes(app: FastifyInstance) {
         return { error: "adaptiveTimeout must be a boolean" };
       }
       patch.adaptiveTimeout = body.adaptiveTimeout;
+    }
+    if (body.shareTimeZone !== undefined) {
+      if (typeof body.shareTimeZone !== "boolean") {
+        reply.code(400);
+        return { error: "shareTimeZone must be a boolean" };
+      }
+      patch.shareTimeZone = body.shareTimeZone;
+      // Turning it off forgets the zone kept for routines as well: otherwise
+      // a routine would go on dating its messages in it.
+      if (!body.shareTimeZone) patch.timeZone = null;
     }
     if (body.progressReview !== undefined) {
       if (typeof body.progressReview !== "boolean") {

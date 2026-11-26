@@ -139,3 +139,39 @@ describe("the zone kept for routines", () => {
     expect((await storedZone()) ?? null).toBeNull();
   });
 });
+
+describe("a person who keeps their time zone private", () => {
+  const sharing = (on: boolean) =>
+    db
+      .insert(userPrefs)
+      .values({ userId, shareTimeZone: on })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { shareTimeZone: on } });
+
+  it("has messages dated in UTC, whatever zone the app sends, and the zone is not kept", async () => {
+    await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
+    await sharing(false);
+    const convId = await send("what time is it", { tz: "Australia/Brisbane", utc_offset_min: 600 });
+    const [userRow, reply] = await rowsOf(convId);
+    const [sent] = sentOf(userRow);
+    expect(sent).not.toHaveProperty("tz");
+    expect(sent.at).toMatch(/\+00:00$/);
+    expect(sent.text).toContain("keeps their time zone private");
+    expect(sent.text).not.toContain("Brisbane");
+    expect(textOf(reply)).toContain("UTC+00:00");
+    expect((await storedZone()) ?? null).toBeNull();
+  });
+
+  it("has a routine's messages dated in UTC too", async () => {
+    await sharing(true);
+    await send("remember me", { tz: "Asia/Tokyo" });
+    expect(await storedZone()).toBe("Asia/Tokyo");
+    // What PATCH /v1/prefs does when sharing is turned off.
+    await db.update(userPrefs).set({ shareTimeZone: false, timeZone: null }).where(eq(userPrefs.userId, userId));
+    const convId = await send("a scheduled run", "schedule");
+    const [sent] = sentOf((await rowsOf(convId))[0]);
+    expect(sent).toMatchObject({ source: "schedule" });
+    expect(sent).not.toHaveProperty("tz");
+    expect(sent.text).toContain("keeps their time zone private");
+    await sharing(true);
+  });
+});

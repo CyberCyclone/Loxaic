@@ -109,19 +109,27 @@ export function formatLocalTime(now: Date, zone: ClientLocalTime): FormattedLoca
  * sends none, and its message then carries no time, as before).
  *
  * `whose`: `user` for the sender's own zone, `server` when a routine's owner
- * has never sent from a device and the server's zone stands in.
+ * has never sent from a device and the server's zone stands in, `private`
+ * for a person who keeps their zone to themselves (dated in UTC).
  */
 export function localTimeBlock(
   now: Date,
   zone: ClientLocalTime | null,
   source: "device" | "schedule",
-  whose: "user" | "server" = "user",
+  whose: "user" | "server" | "private" = "user",
 ): Extract<ContentBlock, { kind: "local_time" }> | null {
   if (!zone) return null;
   const f = formatLocalTime(now, zone);
   if (!f) return null;
   const who = source === "schedule" ? "A schedule sent this message" : "The user sent this message";
-  const clock = whose === "server" ? "the server's local time" : source === "schedule" ? "the user's local time" : "their local time";
+  const clock =
+    whose === "private"
+      ? "in UTC; the user keeps their time zone private"
+      : whose === "server"
+        ? "the server's local time"
+        : source === "schedule"
+          ? "the user's local time"
+          : "their local time";
   return {
     kind: "local_time",
     at: f.at,
@@ -136,9 +144,15 @@ export function localTimeBlock(
  * (an older client), in which case the message carries no time. */
 export type SentFrom = ClientLocalTime | "schedule" | null | undefined;
 
+/** UTC, for a person who does not share their zone. */
+const UTC: ClientLocalTime = { utc_offset_min: 0 };
+
 /**
  * The block for the user row a starter is about to write. A routine's run is
- * dated in its owner's last known zone, else the server's.
+ * dated in its owner's last known zone, else the server's. A person who has
+ * turned off sharing their zone (`user_prefs.share_time_zone`) gets UTC either
+ * way: the server holds that choice, so an app that sends the zone anyway
+ * cannot put it in the thread.
  */
 export async function sentAtBlock(
   userId: string,
@@ -146,27 +160,48 @@ export async function sentAtBlock(
   now: Date = new Date(),
 ): Promise<Extract<ContentBlock, { kind: "local_time" }> | null> {
   if (!from) return null;
+  const prefs = await timeZonePrefs(userId);
+  const source = from === "schedule" ? "schedule" : "device";
+  if (!prefs.share) return localTimeBlock(now, UTC, source, "private");
   if (from !== "schedule") return localTimeBlock(now, from, "device");
-  const stored = await storedTimeZone(userId);
   return (
-    (stored ? localTimeBlock(now, { tz: stored }, "schedule") : null) ??
+    (prefs.stored ? localTimeBlock(now, { tz: prefs.stored }, "schedule") : null) ??
     localTimeBlock(now, deviceLocalTime(now), "schedule", "server")
   );
 }
 
-async function storedTimeZone(userId: string): Promise<string | null> {
+/** Whether this person shares their zone, and the one kept for routines.
+ * A failed read shares nothing: the time zone is a convenience, privacy is
+ * not. */
+async function timeZonePrefs(userId: string): Promise<{ share: boolean; stored: string | null }> {
   try {
-    const row = await db.query.userPrefs.findFirst({ where: eq(userPrefs.userId, userId), columns: { timeZone: true } });
-    return row?.timeZone ?? null;
+    const row = await db.query.userPrefs.findFirst({
+      where: eq(userPrefs.userId, userId),
+      columns: { timeZone: true, shareTimeZone: true },
+    });
+    return { share: row?.shareTimeZone ?? true, stored: row?.timeZone ?? null };
   } catch (err) {
     console.warn(`could not read the time zone of ${userId}: ${(err as Error).message}`);
-    return null;
+    return { share: false, stored: null };
   }
 }
 
 /**
+ * A stored row's content as `reader` may see it: someone else's
+ * `local_time` block is left out, since its zone (and offset) says roughly
+ * where they are. The model still has it; only the message routes serve rows
+ * to people, and the app never shows the block.
+ */
+export function withoutOthersLocalTime(content: unknown, authorUserId: string | null, reader: string): unknown {
+  if (authorUserId === reader || !Array.isArray(content)) return content;
+  const blocks = content as ContentBlock[];
+  return blocks.some((b) => b.kind === "local_time") ? blocks.filter((b) => b.kind !== "local_time") : content;
+}
+
+/**
  * Keeps the zone a person sends from, for their routines. One statement that
- * writes only when the zone changed; only a zone this server knows is kept.
+ * writes only when the zone changed, and never for a person who does not
+ * share it; only a zone this server knows is kept.
  * Swallows its own failures: the time zone is a convenience, the send is not.
  */
 export async function rememberTimeZone(userId: string, from: SentFrom, now: Date = new Date()): Promise<void> {
@@ -180,7 +215,7 @@ export async function rememberTimeZone(userId: string, from: SentFrom, now: Date
       .onConflictDoUpdate({
         target: userPrefs.userId,
         set: { timeZone: tz },
-        setWhere: sql`${userPrefs.timeZone} IS DISTINCT FROM ${tz}`,
+        setWhere: sql`${userPrefs.shareTimeZone} AND ${userPrefs.timeZone} IS DISTINCT FROM ${tz}`,
       });
   } catch (err) {
     console.warn(`could not record the time zone of ${userId}: ${(err as Error).message}`);

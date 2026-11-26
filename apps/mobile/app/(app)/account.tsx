@@ -7,11 +7,15 @@ import { Badge, BadgeText } from '@/components/ui/badge';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
 import { ChangePasswordForm } from '@/components/account/ChangePasswordForm';
+import { ShareTimeZoneToggle } from '@/components/settings/ShareTimeZoneToggle';
+import { usePrefs } from '@/hooks/usePrefs';
+import { useServerReachable } from '@/lib/connection';
 import { useSession } from '@/lib/session';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 /**
- * Who you are signed in as, and your password.
+ * Who you are signed in as, your password, and what your messages say about
+ * you (the time zone).
  *
  * The first place the app shows the account's own email: the sidebar's name
  * is a local display preference, not the account, and on a shared server
@@ -20,6 +24,8 @@ import { TRUNCATE_TEXT } from '@/lib/truncate';
 export default function AccountScreen() {
   const shell = useShell();
   const { user, isAdmin } = useSession();
+  const { prefs, busy, save } = usePrefs();
+  const reachable = useServerReachable();
 
   return (
     <VStack className="h-full flex-1">
@@ -48,6 +54,19 @@ export default function AccountScreen() {
             </Heading>
             <ChangePasswordForm />
           </VStack>
+
+          {prefs?.shareTimeZone !== undefined && (
+            <VStack space="md">
+              <Heading size="sm" className="text-foreground">
+                Privacy
+              </Heading>
+              <ShareTimeZoneToggle
+                value={prefs.shareTimeZone}
+                onChange={(v) => { save({ shareTimeZone: v }); }}
+                disabled={busy || !reachable}
+              />
+            </VStack>
+          )}
         </VStack>
       </ScrollView>
     </VStack>

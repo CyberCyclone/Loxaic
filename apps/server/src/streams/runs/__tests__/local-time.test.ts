@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deviceLocalTime, normalizeClientLocalTime } from "@loxaic/types";
-import { formatLocalTime, localTimeBlock } from "../local-time.ts";
+import { formatLocalTime, localTimeBlock, withoutOthersLocalTime } from "../local-time.ts";
 
 // 2026-11-23T23:15:00Z: Tuesday 24 November in Brisbane (UTC+10, no DST).
 const NOW = new Date("2026-11-23T23:15:00Z");
@@ -112,5 +112,39 @@ describe("deviceLocalTime", () => {
     const got = deviceLocalTime(NOW);
     expect(got.utc_offset_min).toBe(-NOW.getTimezoneOffset());
     expect(got.tz).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  });
+});
+
+describe("localTimeBlock for a private zone", () => {
+  it("dates the message in UTC, names no zone, and says why", () => {
+    const block = localTimeBlock(NOW, { utc_offset_min: 0 }, "device", "private");
+    expect(block).toEqual({
+      kind: "local_time",
+      at: "2026-11-23T23:15+00:00",
+      source: "device",
+      text: "<local-time>The user sent this message on Monday 23 November 2026 at 23:15, in UTC; the user keeps their time zone private (UTC+00:00).</local-time>",
+    });
+  });
+});
+
+describe("withoutOthersLocalTime", () => {
+  const content = [
+    { kind: "text", text: "hi" },
+    { kind: "local_time", at: "2026-11-24T09:15+10:00", tz: "Australia/Brisbane", source: "device", text: "x" },
+  ];
+
+  it("keeps a sender's own block", () => {
+    expect(withoutOthersLocalTime(content, "a", "a")).toBe(content);
+  });
+
+  it("leaves the block out for anyone else, and for a row with no author", () => {
+    expect(withoutOthersLocalTime(content, "a", "b")).toEqual([content[0]]);
+    expect(withoutOthersLocalTime(content, null, "b")).toEqual([content[0]]);
+  });
+
+  it("returns content with no block, or not a list, as it was", () => {
+    const plain = [content[0]];
+    expect(withoutOthersLocalTime(plain, "a", "b")).toBe(plain);
+    expect(withoutOthersLocalTime("text", "a", "b")).toBe("text");
   });
 });

@@ -2644,6 +2644,9 @@ export interface UserPrefs {
   bashGrantRetired?: boolean;
   /** Write-only: `true` dismisses the retired-grant notice. */
   bashGrantNoticeSeen?: true;
+  /** Whether messages carry this person's time zone; off dates them in UTC.
+   * Default true. */
+  shareTimeZone?: boolean;
 }
 
 // ── Skills ────────────────────────────────────────────────

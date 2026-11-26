@@ -4,6 +4,7 @@ import { conversationShares, conversations, user } from "@loxaic/db/schema";
 import { authenticate, requireAdmin } from "../auth/middleware";
 import { purgeConversation, restoreConversation } from "../conversations/delete.ts";
 import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
+import { withoutOthersLocalTime } from "../streams/runs/local-time.ts";
 import { conversationPurgeAt } from "../settings.ts";
 import { resolveAccess } from "../streams/authz";
 import { getRun } from "../streams/registry.ts";
@@ -246,7 +247,7 @@ export function adminConversationRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { before?: string } }>(
     "/v1/admin/conversations/:id/messages",
     async (request, reply) => {
-      await requireAdmin(request, reply);
+      const adminId = await requireAdmin(request, reply);
       const conv = await db.query.conversations.findFirst({
         where: eq(conversations.id, request.params.id),
         columns: { id: true },
@@ -273,7 +274,8 @@ export function adminConversationRoutes(app: FastifyInstance) {
         authorType: m.authorType,
         authorUserId: m.authorUserId,
         model: m.model,
-        content: m.content,
+        // An audit reads what was said, not where its authors were.
+        content: withoutOthersLocalTime(m.content, m.authorUserId, adminId),
         status: m.status,
         createdAt: m.createdAt,
         removedAt: m.deletedAt,
