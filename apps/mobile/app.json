@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.loxaic.app",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocationDefaultAccuracyReduced": true
       }
     },
     "android": {
@@ -20,7 +21,11 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#13161a"
       },
-      "package": "com.loxaic.app"
+      "package": "com.loxaic.app",
+      "blockedPermissions": [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -53,6 +58,15 @@
         {
           "photosPermission": "Loxaic uses your photo library to attach images to a message.",
           "cameraPermission": "Loxaic uses your camera to attach a photo to a message."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Loxaic shares your approximate location with a conversation only when you allow it, so the assistant can answer for where you are.",
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false,
+          "isAndroidForegroundServiceEnabled": false
         }
       ]
     ],

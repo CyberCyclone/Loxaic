@@ -2639,6 +2639,9 @@ export interface UserPrefs {
   /** The model `fixed` uses. Null when none was ever picked; kept when the
    * mode moves away from `fixed`. */
   subagentModel?: string | null;
+  /** Whether a conversation may learn where this person is (`get_location`):
+   * `off`, `ask` each time, or `always`. Optional — see `progressReview`. */
+  locationSharing?: import("@loxaic/types").LocationSharing;
   /** **Read-only** — an old "allow always" for every bash command was retired
    * for command rules, and the permissions screen should say so once. */
   bashGrantRetired?: boolean;
@@ -2865,6 +2868,11 @@ export async function getConversationStats(range?: StatsRange, limit?: number): 
 // The envelope is owned by @loxaic/types (the server emits it from the
 // same definitions) and re-exported here so UI code has a single import.
 export type {
+  DeviceAnswer,
+  DeviceUnavailableReason,
+  LocationOutcome,
+  LocationSharing,
+  ToolDeviceInfo,
   ServerMessage,
   ClientMessage,
   RunActivity,
@@ -2914,7 +2922,7 @@ export type {
   PermissionCheckNote,
   ToolPermission,
 } from "@loxaic/types";
-import { deviceLocalTime } from "@loxaic/types";
+import { DEVICE_CAP_LOCATION, deviceLocalTime, type DeviceAnswer } from "@loxaic/types";
 import type { FavouriteQuestion, MySkills, PaletteSkill, PromptCacheView, RunReview, RunReviewDetail, ServerMessage, SkillInput, SubAgentLive, UserSkill } from "@loxaic/types";
 export {
   commandQuery, parseCommand, isValidSkillName, SKILL_NAME_MAX,
@@ -2940,9 +2948,9 @@ function trySend(ws: WebSocket, payload: unknown): boolean {
   return true;
 }
 
-function createStreamSocket(path: string, token: string, onEvent: (event: ServerMessage) => void): WebSocket {
+function createStreamSocket(path: string, token: string, onEvent: (event: ServerMessage) => void, caps = ""): WebSocket {
   const wsBase = BASE_URL.replace("http", "ws");
-  const ws = new WebSocket(`${wsBase}${path}?token=${token}`);
+  const ws = new WebSocket(`${wsBase}${path}?token=${token}${caps ? `&caps=${caps}` : ""}`);
   ws.onmessage = (msg) => {
     try {
       onEvent(JSON.parse(msg.data as string) as ServerMessage);
@@ -2953,8 +2961,20 @@ function createStreamSocket(path: string, token: string, onEvent: (event: Server
   return ws;
 }
 
+/**
+ * This device's answer to a location request of the run `streamId`
+ * (`device.request`). False when the socket is not open: nothing was sent.
+ */
+export function answerDeviceRequest(ws: WebSocket, streamId: string, callId: string, answer: DeviceAnswer): boolean {
+  return trySend(ws, { type: "device.answer", stream_id: streamId, call_id: callId, ...answer });
+}
+
 export function createChatSocket(token: string, onEvent: (event: ServerMessage) => void): WebSocket {
-  return createStreamSocket("/ws/chat", token, onEvent);
+  // Every current app's chat screen answers a location request, with a
+  // position or with why it cannot (lib/deviceLocation.ts), so its socket
+  // says so and the server never waits on an app too old to reply. The agent
+  // screen answers none, so its socket claims nothing.
+  return createStreamSocket("/ws/chat", token, onEvent, DEVICE_CAP_LOCATION);
 }
 
 export function createAgentSocket(token: string, onEvent: (event: ServerMessage) => void): WebSocket {

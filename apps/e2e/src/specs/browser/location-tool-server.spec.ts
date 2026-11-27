@@ -20,6 +20,7 @@ import {
   MOCK_TOOL_DONE,
   patchPrefs,
   sendFromDevice,
+  signOut,
   signUp,
 } from '../../helpers/app.ts';
 
@@ -30,6 +31,9 @@ describe('the location tool, server side', () => {
 
   before(async () => {
     await signUp(creds);
+    // The app says it can share a location too: signed out, only this spec's
+    // own sockets are this person's devices.
+    await signOut();
   });
 
   async function resultOf(conversationId: string, reader: Credentials = creds): Promise<string> {
@@ -98,6 +102,17 @@ describe('the location tool, server side', () => {
     // app that cannot share.
     const disconnect = await connectIdleLocationDevice(creds);
     const device = await sendFromDevice(creds, "What's the weather like today?", { caps: false });
+    try {
+      expect(await resultOf(device.conversationId)).toMatch(/^None of the user's devices that can share a location is connected/);
+    } finally {
+      device.close();
+      disconnect();
+    }
+  });
+
+  it('does not wait on the agent screen following the run, which cannot answer', async () => {
+    const device = await sendFromDevice(creds, "What's the weather like today?", { caps: false });
+    const disconnect = await connectIdleLocationDevice(creds, { surface: 'agent', follow: device.conversationId });
     try {
       expect(await resultOf(device.conversationId)).toMatch(/^None of the user's devices that can share a location is connected/);
     } finally {

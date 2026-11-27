@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter, type Href } from 'expo-router';
-import { BookOpen, Boxes, Container, Gauge, GitBranch, HardDrive, Hourglass, Layers, Plug, ScrollText, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
+import { BookOpen, Boxes, Container, Gauge, GitBranch, HardDrive, Hourglass, Layers, MapPin, Plug, ScrollText, Server, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -395,6 +395,14 @@ export function SettingsModal({
               title="Approvals & progress"
               subtitle="How long an approval waits for you, and how long runs are reviewed"
               onPress={() => { openScreen('/checkins'); }}
+            />
+
+            <SettingsNavRow
+              testID="settings.nav.location"
+              icon={MapPin}
+              title="Location"
+              subtitle="Whether the assistant may ask where you are"
+              onPress={() => { openScreen('/location'); }}
             />
 
             <SettingsNavRow

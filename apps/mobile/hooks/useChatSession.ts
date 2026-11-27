@@ -28,6 +28,8 @@ import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connection
 import { lastUserId, readCachedConversations, removeCachedConversation, writeCachedConversation, writeCachedList } from '@/lib/message-cache';
 import type { RunLimitsLink } from '@/lib/runLimits';
 import { useSession } from '@/lib/session';
+import { useDeviceRequests } from './useDeviceRequests';
+import type { LocationChoice } from '@/lib/deviceRequest';
 import type { Conversation, Message } from '@/lib/types';
 import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
 import { applyRewound, restoreReportLine } from '@/lib/rewind';
@@ -327,6 +329,10 @@ export function useChatSession(
   // (the server does not offer it the tool), but a routine's run does, and its
   // chats are this hook's too.
   const subAgents = useSubAgentState({ wsRef, cursorsRef, showToast });
+  // Location requests (`get_location`) waiting on this person's device.
+  const device = useDeviceRequests({ wsRef, me: user?.id, showToast });
+  const deviceRef = useRef(device);
+  deviceRef.current = device;
   const {
     isChild: isSubAgentConv,
     onParentEvent: onSubAgentEvent,
@@ -751,6 +757,7 @@ export function useChatSession(
             }
             return { ...prev, [convId]: toPendingApproval(pa, Date.now(), event.server_now, event.stream_id) };
           });
+          deviceRef.current.onSync(convId, event.stream_id, event.snapshot, event.server_now, arrivedAt);
           setReviewingByConv((prev) => {
             const mode = event.status === 'active' ? event.snapshot.reviewing?.mode : undefined;
             if (!mode) {
@@ -890,6 +897,7 @@ export function useChatSession(
             return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
           });
         }
+        deviceRef.current.onEvent(convId, event.stream_id, inner, arrivedAt);
         if (inner.kind === 'approval.request') {
           setPendingApprovalByConv((prev) => ({
             ...prev,
@@ -944,6 +952,8 @@ export function useChatSession(
           if (!(convId in prev)) return prev;
           return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
         });
+        // Nor a location request.
+        deviceRef.current.onStreamEnd(event.conversation_id);
         // A review cannot outlive its run.
         setReviewingByConv((prev) => {
           const convId = event.conversation_id;
@@ -993,6 +1003,7 @@ export function useChatSession(
           if (!pa?.streamId || !removedStreams.has(pa.streamId)) return prev;
           return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
         });
+        deviceRef.current.onRewound(convId, removedStreams);
         setStageCardByConv((prev) => {
           const card = prev[convId];
           if (!card || !removedStreams.has(card.streamId)) return prev;
@@ -1055,6 +1066,7 @@ export function useChatSession(
         // replay them: clear what the last one said, and ask again for the
         // list on screen (#282).
         onRunSocketOpen();
+        deviceRef.current.onSocketOpen(ws);
       };
       ws.onclose = (ev: { code?: number }) => {
         if (cancelled) return;
@@ -1470,6 +1482,11 @@ export function useChatSession(
     queuePosition: activeStream?.queuePosition ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,
+    /** A location request of the open thread's run, and what this device does
+     * about it (lib/deviceRequest.ts `locationAction`). */
+    pendingDevice: activeId ? (device.pendingByConv[activeId] ?? null) : null,
+    locationAction: device.actionFor(activeId),
+    answerLocation: (choice: LocationChoice) => (activeId ? device.answer(activeId, choice) : Promise.resolve()),
     /** How a progress review of the open thread's run is going, or null. */
     reviewing: activeId ? (reviewingByConv[activeId] ?? null) : null,
     /** Every conversation's progress-review cards — see useRunReviews. */

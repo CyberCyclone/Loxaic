@@ -128,7 +128,7 @@ export function androidApkPath(): string {
  * anyway) and returning its udid. Both `simctl` calls below need a booted
  * device, so the find-and-boot lives here rather than in either of them.
  */
-function bootedIosDevice(deviceName: string, osVersion?: string): string {
+export function bootedIosDevice(deviceName: string, osVersion?: string): string {
   const listJson = execFileSync('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], {
     encoding: 'utf8',
   });
