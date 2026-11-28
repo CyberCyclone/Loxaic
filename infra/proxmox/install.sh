@@ -87,7 +87,8 @@ feed_deb_entry() {
 }
 
 installed_version() {
-  local pkg="${ROOT}/opt/$(product_name "$1")/resources/app/package.json"
+  local pkg
+  pkg="${ROOT}/opt/$(product_name "$1")/resources/app/package.json"
   [ -f "$pkg" ] || return 0
   sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$pkg" | head -n 1
 }
@@ -253,8 +254,8 @@ install_package() {
   log "Installing $(product_name "$CHANNEL") ${RELEASE_VERSION}"
   apt-get install -y -qq "$deb"
 
-  local bin="${ROOT}/opt/$(product_name "$CHANNEL")/$(service_name "$CHANNEL")"
-  local missing
+  local bin missing
+  bin="${ROOT}/opt/$(product_name "$CHANNEL")/$(service_name "$CHANNEL")"
   missing=$(ldd "$bin" 2>&1 | awk '/not found/ { print $1 }' | tr '\n' ' ' || true)
   [ -z "${missing// /}" ] || die "$(product_name "$CHANNEL") needs libraries this system lacks: ${missing}"
 }
