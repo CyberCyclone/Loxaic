@@ -260,6 +260,32 @@ install_package() {
   [ -z "${missing// /}" ] || die "$(product_name "$CHANNEL") needs libraries this system lacks: ${missing}"
 }
 
+# Whether the app's own binary, run as Node, may open a TCP socket.
+can_listen() {
+  ELECTRON_RUN_AS_NODE=1 "$1" -e 'const s = require("net").createServer();
+s.on("error", (e) => { console.error(e.message); process.exit(1); });
+s.listen(0, "127.0.0.1", () => s.close());' 2>&1
+}
+
+# The .deb installs an AppArmor profile so Chromium's sandbox may create user
+# namespaces. Inside a container the kernel enforces it in the container's
+# nested AppArmor namespace, where it denies every socket ("listen EACCES"),
+# and a headless install never starts Chromium, so the profile only gets in
+# the way. dpkg puts it back on every upgrade, so this runs after each install.
+check_sockets() {
+  local bin=$1 out profile
+  out=$(can_listen "$bin") && return 0
+  profile="${ROOT}/etc/apparmor.d/$(service_name "$CHANNEL")"
+  if [ -f "$profile" ]; then
+    log "Disabling the package's AppArmor profile, which blocks networking inside a container"
+    mkdir -p "${ROOT}/etc/apparmor.d/disable"
+    ln -sf "${profile#"$ROOT"}" "${ROOT}/etc/apparmor.d/disable/$(service_name "$CHANNEL")"
+    apparmor_parser -R "${profile#"$ROOT"}" 2>/dev/null || true
+    out=$(can_listen "$bin") && return 0
+  fi
+  die "$(product_name "$CHANNEL") cannot open a network socket here: ${out}"
+}
+
 ensure_user() {
   local user group
   user=$(service_name "$CHANNEL")
@@ -365,6 +391,9 @@ main() {
     install_package
     installed=1
   fi
+  # Also when nothing was installed: a container already on this version may
+  # still have the profile active.
+  check_sockets "${ROOT}/opt/$(product_name "$CHANNEL")/$(service_name "$CHANNEL")"
   ensure_user
   if write_unit; then changed=1; fi
 

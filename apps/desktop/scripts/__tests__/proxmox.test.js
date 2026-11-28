@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,11 @@ const RAW = "https://raw.githubusercontent.com/CyberCyclone/Loxaic";
 
 // Each script run spawns a few dozen fake commands: about 2 s on macOS.
 const SLOW = { timeout: 30_000 };
+
+/** The disable/ symlink points at the real /etc path, so it dangles here. */
+const isLink = (file) => {
+  try { return lstatSync(file).isSymbolicLink(); } catch { return false; }
+};
 
 const urlKey = (url) => url.replace(/[^A-Za-z0-9]/g, "_");
 
@@ -148,7 +153,10 @@ function installSandbox() {
     `for a in "$@"; do case $a in *.deb)
   d="$LOXAIC_TEST_ROOT/opt/$FAKE_PRODUCT"; mkdir -p "$d/resources/app"
   printf '{\\n  "name": "@loxaic/desktop",\\n  "version": "%s"\\n}\\n' "$FAKE_DEB_VERSION" > "$d/resources/app/package.json"
-  : > "$d/$FAKE_EXE" ;;
+  cp "$FAKE_APP_BIN" "$d/$FAKE_EXE"
+  # The real package ships an AppArmor profile for Chromium's sandbox.
+  mkdir -p "$LOXAIC_TEST_ROOT/etc/apparmor.d"
+  echo "profile $FAKE_EXE flags=(unconfined) { userns, }" > "$LOXAIC_TEST_ROOT/etc/apparmor.d/$FAKE_EXE" ;;
 esac; done`,
   );
   sb.fake("systemctl", '[ "$1" = is-active ] && exit "${FAKE_INACTIVE:-0}"; exit 0');
@@ -160,6 +168,18 @@ esac; done`,
   sb.fake("nvidia-smi", 'echo "${FAKE_NVIDIA_SMI:-}"');
   sb.fake("journalctl", 'echo "last journal lines"');
   sb.fake("hostname", 'echo "192.168.1.50 fd00::50"');
+  sb.fake("apparmor_parser", "");
+  // The installed app binary, run as Node to try a listen. FAKE_APPARMOR_BLOCKS
+  // is a container whose kernel enforces the package's profile; FAKE_NO_SOCKETS
+  // is one where sockets fail for some other reason.
+  sb.env.FAKE_APP_BIN = path.join(sb.dir, "app-binary");
+  writeFileSync(
+    sb.env.FAKE_APP_BIN,
+    `${FAKE_HEAD}if [ "\${FAKE_NO_SOCKETS:-}" = 1 ] || { [ "\${FAKE_APPARMOR_BLOCKS:-}" = 1 ] && [ -f "$LOXAIC_TEST_ROOT/etc/apparmor.d/$FAKE_EXE" ] && [ ! -L "$LOXAIC_TEST_ROOT/etc/apparmor.d/disable/$FAKE_EXE" ]; }; then
+  echo "listen EACCES: permission denied 127.0.0.1" >&2; exit 1
+fi\n`,
+  );
+  chmodSync(sb.env.FAKE_APP_BIN, 0o755);
   sb.env.FAKE_USERS = path.join(sb.dir, "users");
   sb.url("http://127.0.0.1:4100/health", JSON.stringify({ status: "ok", services: { database: "ok" } }));
   return sb;
@@ -301,6 +321,44 @@ describe("install.sh", SLOW, () => {
     });
     expect(code).not.toBe(0);
     expect(out).toContain("needs libraries this system lacks: libasound.so.2 libgbm.so.1");
+  });
+
+  it("disables the package's AppArmor profile when it blocks sockets inside a container", () => {
+    publish(sb, "beta", "0.0.1-beta.19");
+    useChannel(sb, "beta", "0.0.1-beta.19");
+    const { code, out } = sb.run(INSTALL, ["--channel", "beta", "--version", "0.0.1-beta.19"], { FAKE_APPARMOR_BLOCKS: "1" });
+    expect(out).toContain("Loxaic Beta 0.0.1-beta.19 is running");
+    expect(code).toBe(0);
+    expect(isLink(path.join(sb.root, "etc/apparmor.d/disable/loxaic-beta"))).toBe(true);
+    expect(sb.log).toContain("apparmor_parser -R /etc/apparmor.d/loxaic-beta");
+  });
+
+  it("leaves the profile alone where sockets work", () => {
+    publish(sb, "beta", "0.0.1-beta.19");
+    useChannel(sb, "beta", "0.0.1-beta.19");
+    expect(sb.run(INSTALL, ["--channel", "beta", "--version", "0.0.1-beta.19"]).code).toBe(0);
+    expect(isLink(path.join(sb.root, "etc/apparmor.d/disable/loxaic-beta"))).toBe(false);
+    expect(sb.log.some((l) => l.startsWith("apparmor_parser"))).toBe(false);
+  });
+
+  it("fixes the profile on a container already on the newest version", () => {
+    publish(sb, "beta", "0.0.1-beta.19");
+    useChannel(sb, "beta", "0.0.1-beta.19");
+    expect(sb.run(INSTALL, ["--channel", "beta", "--version", "0.0.1-beta.19"]).code).toBe(0);
+    writeFileSync(sb.logFile, "");
+    const { code } = sb.run(INSTALL, ["--version", "0.0.1-beta.19"], { FAKE_APPARMOR_BLOCKS: "1", FAKE_INACTIVE: "3" });
+    expect(code).toBe(0);
+    expect(isLink(path.join(sb.root, "etc/apparmor.d/disable/loxaic-beta"))).toBe(true);
+    expect(sb.log).toContain("systemctl start loxaic-beta");
+  });
+
+  it("says why, before starting anything, when the app cannot open a socket", () => {
+    publish(sb, "beta", "0.0.1-beta.19");
+    useChannel(sb, "beta", "0.0.1-beta.19");
+    const { code, out } = sb.run(INSTALL, ["--channel", "beta", "--version", "0.0.1-beta.19"], { FAKE_NO_SOCKETS: "1" });
+    expect(code).not.toBe(0);
+    expect(out).toContain("Loxaic Beta cannot open a network socket here: listen EACCES: permission denied 127.0.0.1");
+    expect(sb.log.some((l) => l.startsWith("systemctl restart"))).toBe(false);
   });
 
   it("refuses to install one channel beside the other", () => {
