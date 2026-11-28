@@ -38,6 +38,7 @@ Dockerfiles and container entrypoints (`docker/`), the Proxmox install scripts (
 - Run `main` behind `LOXAIC_SOURCE_ONLY`, never a `BASH_SOURCE` check: under `curl | bash` that check is false and nothing runs.
 - Every path the scripts inspect goes through `$ROOT` (`LOXAIC_TEST_ROOT`), and every command is one a test can fake on `PATH`.
 - Values written into the unit's `ExecStart` must exclude `%` and `$`, which systemd expands.
+- Print `pct exec <ctid> -- /usr/local/sbin/loxaic-install` with its full path: `pct exec`'s `PATH` has no `/usr/local/sbin`.
 
 ## tsnet-proxy
 
