@@ -271,7 +271,8 @@ s.listen(0, "127.0.0.1", () => s.close());' 2>&1
 # namespaces. Inside a container the kernel enforces it in the container's
 # nested AppArmor namespace, where it denies every socket ("listen EACCES"),
 # and a headless install never starts Chromium, so the profile only gets in
-# the way. dpkg puts it back on every upgrade, so this runs after each install.
+# the way. The disable/ link survives package upgrades; the check still runs on
+# every invocation, so a profile that comes back is caught.
 check_sockets() {
   local bin=$1 out profile
   out=$(can_listen "$bin") && return 0

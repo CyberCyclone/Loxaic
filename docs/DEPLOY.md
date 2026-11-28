@@ -183,6 +183,10 @@ What the container gets:
     host needs the NVIDIA driver installed and working (`nvidia-smi`), and
     `/dev/nvidia-uvm` must exist before the container starts, so load it at
     boot on the host (`nvidia-modprobe -u -c=0`).
+- **No AppArmor profile for the app.** The `.deb` ships one for Chromium's
+  sandbox, and inside a container the kernel enforces it so that the server
+  cannot open a socket; a headless install never starts Chromium, so the
+  installer disables it when it gets in the way.
 - **A data directory** at `/var/lib/loxaic` (`/var/lib/loxaic-beta`),
   untouched by upgrades. One channel per container: the installer refuses
   to put the other beside it.
