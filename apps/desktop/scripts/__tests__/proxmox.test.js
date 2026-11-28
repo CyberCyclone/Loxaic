@@ -159,7 +159,14 @@ function installSandbox() {
   echo "profile $FAKE_EXE flags=(unconfined) { userns, }" > "$LOXAIC_TEST_ROOT/etc/apparmor.d/$FAKE_EXE" ;;
 esac; done`,
   );
-  sb.fake("systemctl", '[ "$1" = is-active ] && exit "${FAKE_INACTIVE:-0}"; exit 0');
+  // Starting the service is what creates its database.
+  sb.fake(
+    "systemctl",
+    `case $1 in
+  is-active) exit "\${FAKE_INACTIVE:-0}" ;;
+  start|restart) mkdir -p "$LOXAIC_TEST_ROOT/var/lib/$2/postgres" ;;
+esac`,
+  );
   sb.fake("docker", 'exit "${FAKE_DOCKER_EXIT:-0}"');
   sb.fake("ldd", 'printf "%s\\n" "${FAKE_LDD:-libc.so.6 => /lib/libc.so.6}"');
   sb.fake("useradd", `echo "\${@: -1}" >> "$FAKE_USERS"`);
@@ -167,7 +174,13 @@ esac; done`,
   sb.fake("getent", '[ "$1" = group ] && case $2 in docker|render|video) echo "$2:x:44:" ;; *) exit 2 ;; esac');
   sb.fake("nvidia-smi", 'echo "${FAKE_NVIDIA_SMI:-}"');
   sb.fake("journalctl", 'echo "last journal lines"');
-  sb.fake("hostname", 'echo "192.168.1.50 fd00::50"');
+  sb.fake(
+    "ip",
+    `cat <<'EOF'
+2: eth0    inet 192.168.1.50/24 brd 192.168.1.255 scope global dynamic eth0\\       valid_lft 86313sec
+3: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever
+EOF`,
+  );
   sb.fake("apparmor_parser", "");
   // The installed app binary, run as Node to try a listen. FAKE_APPARMOR_BLOCKS
   // is a container whose kernel enforces the package's profile; FAKE_NO_SOCKETS
@@ -272,7 +285,8 @@ describe("install.sh", SLOW, () => {
     expect(log).toContain("usermod -aG docker loxaic-beta");
     expect(log).toContain("systemctl restart loxaic-beta");
     expect(out).toContain("http://192.168.1.50:4100");
-    expect(out).not.toContain("fd00::50");
+    // Docker's bridge is not an address anyone else can use.
+    expect(out).not.toContain("172.17.0.1");
     expect(out).toContain("the first account made becomes the admin");
   });
 
@@ -359,6 +373,16 @@ describe("install.sh", SLOW, () => {
     expect(code).not.toBe(0);
     expect(out).toContain("Loxaic Beta cannot open a network socket here: listen EACCES: permission denied 127.0.0.1");
     expect(sb.log.some((l) => l.startsWith("systemctl restart"))).toBe(false);
+  });
+
+  it("still warns about the first account after a failed first run left the package installed", () => {
+    publish(sb, "beta", "0.0.1-beta.19");
+    useChannel(sb, "beta", "0.0.1-beta.19");
+    // The first run installed the package, then failed before the server ever started.
+    expect(sb.run(INSTALL, ["--channel", "beta", "--version", "0.0.1-beta.19"], { FAKE_NO_SOCKETS: "1" }).code).not.toBe(0);
+    const { code, out } = sb.run(INSTALL, ["--channel", "beta", "--version", "0.0.1-beta.19"], { FAKE_INACTIVE: "3" });
+    expect(code).toBe(0);
+    expect(out).toContain("the first account made becomes the admin");
   });
 
   it("refuses to install one channel beside the other", () => {
@@ -708,7 +732,7 @@ describe("create-lxc.sh", SLOW, () => {
   it("says how to retry or remove the container when the install inside it fails", () => {
     const { code, out } = sb.run(CREATE, ["--gpu", "none"], { FAKE_INSTALL_EXIT: "1" });
     expect(code).not.toBe(0);
-    expect(out).toContain("pct exec 105 -- loxaic-install, or remove it with: pct destroy 105");
+    expect(out).toContain("pct exec 105 -- /usr/local/sbin/loxaic-install, or remove it with: pct destroy 105");
   });
 
   it("pushes a local installer instead of downloading one when told to", () => {

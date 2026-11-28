@@ -333,8 +333,9 @@ print_summary() {
   local addr
   echo
   echo "$(product_name "$CHANNEL") ${1} is running."
-  for addr in $(hostname -I 2>/dev/null || true); do
-    case $addr in *:*) ;; *) echo "  http://${addr}:${PORT}" ;; esac
+  # IPv4 addresses other machines can reach: not Docker's bridges.
+  for addr in $(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth)/ { sub(/\/.*/, "", $4); print $4 }'); do
+    echo "  http://${addr}:${PORT}"
   done
   [ -n "$ADVERTISE_URL" ] && echo "  ${ADVERTISE_URL}"
   if [ "${2:-}" = fresh ]; then
@@ -342,7 +343,7 @@ print_summary() {
     echo "Create your account now: the first account made becomes the admin,"
     echo "and anyone who can reach this address can sign up until you do."
   fi
-  echo "Upgrade later by running: loxaic-install"
+  echo "Upgrade later by running: /usr/local/sbin/loxaic-install"
 }
 
 main() {
@@ -384,7 +385,8 @@ main() {
 
   local current installed=0 changed=0 fresh=""
   current=$(installed_version "$CHANNEL")
-  [ -n "$current" ] || fresh=fresh
+  # No database yet means no accounts yet, whatever an earlier failed run left.
+  [ -d "${ROOT}/var/lib/$(service_name "$CHANNEL")/postgres" ] || fresh=fresh
   if [ "$current" = "$RELEASE_VERSION" ]; then
     log "$(product_name "$CHANNEL") ${current} is already installed"
   else

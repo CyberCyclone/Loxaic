@@ -7,7 +7,7 @@
 #
 # It makes an unprivileged Ubuntu 24.04 container that can run Docker (agent
 # sandboxes need it), passes the host's GPUs through for local models, and
-# runs install.sh inside it. Upgrade later with: pct exec <ctid> -- loxaic-install
+# runs install.sh inside it. Upgrade later with: pct exec <ctid> -- /usr/local/sbin/loxaic-install
 set -euo pipefail
 
 REPO="${LOXAIC_REPO:-CyberCyclone/Loxaic}"
@@ -233,7 +233,7 @@ create_container() {
     --features nesting=1,keyctl=1 \
     --onboot 1 \
     --ostype ubuntu \
-    --description "Loxaic (${CHANNEL}). Upgrade: pct exec ${CTID} -- loxaic-install"
+    --description "Loxaic (${CHANNEL}). Upgrade: pct exec ${CTID} -- /usr/local/sbin/loxaic-install"
   pct start "$CTID"
 }
 
@@ -282,7 +282,7 @@ run_installer() {
   pct push "$CTID" "$script" /usr/local/sbin/loxaic-install --perms 0755
   log "Installing Loxaic inside container ${CTID}"
   pct exec "$CTID" -- /usr/local/sbin/loxaic-install --channel "$CHANNEL" ${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"} \
-    || die "the install inside container ${CTID} failed (above). Fix the cause and run: pct exec ${CTID} -- loxaic-install, or remove it with: pct destroy ${CTID}"
+    || die "the install inside container ${CTID} failed (above). Fix the cause and run: pct exec ${CTID} -- /usr/local/sbin/loxaic-install, or remove it with: pct destroy ${CTID}"
 }
 
 main() {
@@ -299,7 +299,7 @@ main() {
   wait_for_network
   run_installer
   echo
-  echo "Container ${CTID} is ready. Shell: pct enter ${CTID}. Upgrade: pct exec ${CTID} -- loxaic-install"
+  echo "Container ${CTID} is ready. Shell: pct enter ${CTID}. Upgrade: pct exec ${CTID} -- /usr/local/sbin/loxaic-install"
 }
 
 [ "${LOXAIC_SOURCE_ONLY:-}" = 1 ] || main "$@"

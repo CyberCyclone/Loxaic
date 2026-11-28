@@ -200,10 +200,12 @@ checking its sha512 against the release's feed, and restarts the service. It
 does nothing when that release is already installed:
 
 ```bash
-pct exec <ctid> -- loxaic-install
-pct exec <ctid> -- loxaic-install --version 0.0.1-beta.19   # roll back
+pct exec <ctid> -- /usr/local/sbin/loxaic-install
+pct exec <ctid> -- /usr/local/sbin/loxaic-install --version 0.0.1-beta.19   # roll back
 ```
 
+(`pct exec` runs with a `PATH` that leaves out `/usr/local/sbin`, hence the
+full path; inside `pct enter`, plain `loxaic-install` works.)
 `loxaic-install` is the copy of `install.sh` that was current when the
 container was made. To pick up a newer installer, run it from the branch
 instead: `pct exec <ctid> -- bash -c "$(curl -fsSL
