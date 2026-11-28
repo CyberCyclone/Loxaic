@@ -58,6 +58,10 @@ Creates a Proxmox container with Loxaic installed as a headless host.
                            dri = AMD/Intel (/dev/dri, /dev/kfd).
   --port <n>               Loxaic's port inside the container (default: 4100).
   --advertise-url <url>    Address other machines should use, e.g. a reverse proxy.
+  --tailscale              Put Loxaic on your tailnet (prints a link to approve it).
+  --tailscale-name <name>  Its tailnet name (default: from --hostname).
+  --funnel                 Also publish it to the internet with Tailscale Funnel,
+                           once you have created your account.
   -y, --yes                Do not ask before creating the container.
   --help                   Show this help.
 EOF
@@ -117,7 +121,8 @@ parse_args() {
   while [ $# -gt 0 ]; do
     case $1 in
       --channel) CHANNEL=${2:-}; shift 2 ;;
-      --version|--port|--advertise-url) INSTALL_ARGS+=("$1" "${2:-}"); shift 2 ;;
+      --version|--port|--advertise-url|--tailscale-name) INSTALL_ARGS+=("$1" "${2:-}"); shift 2 ;;
+      --tailscale|--funnel) INSTALL_ARGS+=("$1"); shift ;;
       --ctid) CTID=${2:-}; shift 2 ;;
       --hostname) CT_HOSTNAME=${2:-}; shift 2 ;;
       --storage) STORAGE=${2:-}; shift 2 ;;

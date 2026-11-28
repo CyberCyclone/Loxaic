@@ -26,6 +26,11 @@ const RAW = "https://raw.githubusercontent.com/CyberCyclone/Loxaic";
 // Each script run spawns a few dozen fake commands: about 2 s on macOS.
 const SLOW = { timeout: 30_000 };
 
+// Every test here is synchronous (spawnSync), so without this the worker never
+// reaches the event loop between tests and cannot answer vitest's RPC. Past
+// 60 s for the file, that fails the run with "Timeout calling onTaskUpdate".
+afterEach(() => new Promise((resolve) => { setImmediate(resolve); }));
+
 /** The disable/ symlink points at the real /etc path, so it dangles here. */
 const isLink = (file) => {
   try { return lstatSync(file).isSymbolicLink(); } catch { return false; }
@@ -159,21 +164,38 @@ function installSandbox() {
   echo "profile $FAKE_EXE flags=(unconfined) { userns, }" > "$LOXAIC_TEST_ROOT/etc/apparmor.d/$FAKE_EXE" ;;
 esac; done`,
   );
-  // Starting the service is what creates its database.
+  // Starting the service is what creates its database, and the app's first
+  // start writes config.json (headless.js --as-host).
   sb.fake(
     "systemctl",
     `case $1 in
   is-active) exit "\${FAKE_INACTIVE:-0}" ;;
-  start|restart) mkdir -p "$LOXAIC_TEST_ROOT/var/lib/$2/postgres" ;;
+  show) echo "inv-1" ;;
+  start|restart)
+    mkdir -p "$LOXAIC_TEST_ROOT/var/lib/$2/postgres"
+    [ -f "$LOXAIC_TEST_ROOT/var/lib/$2/config.json" ] || printf '%s\\n' "$INITIAL_CONFIG" > "$LOXAIC_TEST_ROOT/var/lib/$2/config.json" ;;
 esac`,
   );
+  sb.env.INITIAL_CONFIG = JSON.stringify(INITIAL_CONFIG, null, 2);
+  sb.fake("hostname", 'echo "${FAKE_HOSTNAME:-loxaic}"');
   sb.fake("docker", 'exit "${FAKE_DOCKER_EXIT:-0}"');
   sb.fake("ldd", 'printf "%s\\n" "${FAKE_LDD:-libc.so.6 => /lib/libc.so.6}"');
   sb.fake("useradd", `echo "\${@: -1}" >> "$FAKE_USERS"`);
   sb.fake("usermod", "");
   sb.fake("getent", '[ "$1" = group ] && case $2 in docker|render|video) echo "$2:x:44:" ;; *) exit 2 ;; esac');
   sb.fake("nvidia-smi", 'echo "${FAKE_NVIDIA_SMI:-}"');
-  sb.fake("journalctl", 'echo "last journal lines"');
+  // The service's own log, read by invocation: one snapshot per read, in the
+  // order journal() gave them, then the last one again.
+  sb.fake(
+    "journalctl",
+    `if [ "$1" = "_SYSTEMD_INVOCATION_ID=inv-1" ] && [ -n "\${FAKE_JOURNAL_DIR:-}" ]; then
+  n=$(( $(cat "$FAKE_JOURNAL_DIR/n") + 1 )); echo "$n" > "$FAKE_JOURNAL_DIR/n"
+  f="$FAKE_JOURNAL_DIR/$n"; [ -f "$f" ] || f="$FAKE_JOURNAL_DIR/last"
+  cat "$f"
+else
+  echo "last journal lines"
+fi`,
+  );
   sb.fake(
     "ip",
     `cat <<'EOF'
@@ -215,6 +237,31 @@ function publish(sb, channel, version, { badSha = false } = {}) {
   return { deb, feed };
 }
 
+/** What headless.js --as-host writes on its first start. */
+const INITIAL_CONFIG = {
+  version: 1,
+  mode: "host",
+  instanceId: "7f81b518-ef9c-4f01-9d6b-757afee068b0",
+  host: { name: "loxaic", port: 4100, bind: "lan", db: { kind: "embedded" } },
+};
+
+// The lines headless.js and its Tailscale sidecar print, as `journalctl -o cat` shows them.
+const AUTH_LINK = "https://login.tailscale.com/a/gd67c07c76e962b0b";
+const SIDECAR_NOISE = `[tsnet:serve] tsnet-proxy: [tsnet] To start this tsnet server, restart with TS_AUTHKEY set, or go to: ${AUTH_LINK}`;
+const NEEDS_APPROVAL = `${SIDECAR_NOISE}\nTailscale needs approval for this machine: ${AUTH_LINK}`;
+const REACHABLE = "Reachable on the tailnet at https://loxaic.tail47eac7.ts.net\n[stack] server now advertises https://loxaic.tail47eac7.ts.net";
+const EXPIRED = "Tailscale: This machine was not approved on the tailnet in time. Open the approval link and try again.";
+
+/** The service's log as the installer polls it: one snapshot per poll. */
+function journal(sb, ...snapshots) {
+  const dir = path.join(sb.dir, "journal");
+  mkdirSync(dir, { recursive: true });
+  snapshots.forEach((text, i) => { writeFileSync(path.join(dir, String(i + 1)), text + "\n"); });
+  writeFileSync(path.join(dir, "last"), snapshots.at(-1) + "\n");
+  writeFileSync(path.join(dir, "n"), "0");
+  sb.env.FAKE_JOURNAL_DIR = dir;
+}
+
 function useChannel(sb, channel, debVersion) {
   sb.env.FAKE_PRODUCT = PRODUCTS[channel].product;
   sb.env.FAKE_EXE = PRODUCTS[channel].exe;
@@ -244,6 +291,17 @@ describe("install.sh: feed and version parsing", () => {
     for (const bad of ["1.2", "v1.2.3", "1.2.3-rc.1", "1.2.3/../x", "1.2.3; rm"]) {
       expect(call(INSTALL, "valid_version", [bad]).code).not.toBe(0);
     }
+  });
+
+  it("names the machine on the tailnet the way the desktop app does", () => {
+    const name = (host) => call(INSTALL, `hostname() { echo "${host}"; }; default_tailnet_name`).out;
+    expect(name("nuke")).toBe("loxaic-nuke");
+    expect(name("Rack_GPU.local")).toBe("loxaic-rack-gpu-local");
+    expect(name("loxaic")).toBe("loxaic");
+    expect(name("")).toBe("loxaic");
+    expect(name("x".repeat(80))).toHaveLength(63);
+    for (const ok of ["loxaic-nuke", "a", "0box"]) expect(call(INSTALL, "valid_tailnet_name", [ok]).code).toBe(0);
+    for (const bad of ["Loxaic", "-x", "x-", "a b", "a.b", "x".repeat(64)]) expect(call(INSTALL, "valid_tailnet_name", [bad]).code).not.toBe(0);
   });
 
   it("reads the host's NVIDIA driver version from both kernel module banners", () => {
@@ -498,6 +556,126 @@ describe("install.sh", SLOW, () => {
     expect(sb.log).toContain("usermod -aG render loxaic-beta");
   });
 
+  describe("Tailscale", () => {
+    const config = () => JSON.parse(sb.read("var/lib/loxaic-beta/config.json"));
+    const restarts = () => sb.log.filter((l) => l === "systemctl restart loxaic-beta").length;
+    const install = (args, env) => sb.run(INSTALL, ["--version", "0.0.1-beta.19", ...args], env);
+    const installed = () => {
+      expect(install(["--channel", "beta"]).code).toBe(0);
+      writeFileSync(sb.logFile, "");
+    };
+    beforeEach(() => {
+      publish(sb, "beta", "0.0.1-beta.19");
+      useChannel(sb, "beta", "0.0.1-beta.19");
+    });
+
+    it("puts a new install on the tailnet once its first start has written config.json, showing the approval link once", () => {
+      journal(sb, NEEDS_APPROVAL, NEEDS_APPROVAL, `${NEEDS_APPROVAL}\n${REACHABLE}`);
+      const { code, out } = install(["--channel", "beta", "--tailscale"]);
+      expect(out).toContain("https://loxaic.tail47eac7.ts.net");
+      expect(code).toBe(0);
+      expect(config()).toEqual({
+        ...INITIAL_CONFIG,
+        host: { ...INITIAL_CONFIG.host, tailnet: { enabled: true, hostname: "loxaic", funnel: false } },
+      });
+      // Installed and started, then restarted onto the edited config.
+      expect(restarts()).toBe(2);
+      expect(out.split(AUTH_LINK).length - 1).toBe(1);
+      expect(out).toContain("Approve this machine on your tailnet within 10 minutes");
+    });
+
+    it("keeps Funnel off on a new install until the first account exists, then publishes it", () => {
+      journal(sb, REACHABLE);
+      const first = install(["--channel", "beta", "--funnel"]);
+      expect(first.code).toBe(0);
+      expect(config().host.tailnet).toEqual({ enabled: true, hostname: "loxaic", funnel: false });
+      expect(first.out).toContain("Funnel stays off until you have an account");
+      expect(first.out).toContain("/usr/local/sbin/loxaic-install --funnel");
+
+      writeFileSync(sb.logFile, "");
+      journal(sb, REACHABLE);
+      const second = install(["--funnel"]);
+      expect(second.code).toBe(0);
+      expect(config().host.tailnet.funnel).toBe(true);
+      expect(second.out).toContain("is on the internet (Tailscale Funnel), so creating accounts");
+      expect(second.out).not.toContain("first account");
+      expect(restarts()).toBe(1);
+      expect(sb.log.some((l) => l.startsWith("curl") && l.includes(".deb"))).toBe(false);
+    });
+
+    it("leaves the setting alone on a plain upgrade, and turns it off without losing the name", () => {
+      installed();
+      journal(sb, REACHABLE);
+      expect(install(["--tailscale-name", "loxaic-nuke", "--funnel"]).code).toBe(0);
+      const before = sb.read("var/lib/loxaic-beta/config.json");
+
+      writeFileSync(sb.logFile, "");
+      const bare = install([]);
+      expect(bare.out).toContain("Already current");
+      expect(sb.read("var/lib/loxaic-beta/config.json")).toBe(before);
+      expect(restarts()).toBe(0);
+
+      expect(install(["--no-funnel"]).code).toBe(0);
+      expect(config().host.tailnet).toEqual({ enabled: true, hostname: "loxaic-nuke", funnel: false });
+      writeFileSync(sb.logFile, "");
+      const off = install(["--no-tailscale"]);
+      expect(off.code).toBe(0);
+      expect(config().host).toEqual({ ...INITIAL_CONFIG.host, tailnet: { enabled: false, hostname: "loxaic-nuke", funnel: false } });
+      expect(restarts()).toBe(1);
+      expect(off.out).not.toContain("Joining your tailnet");
+    });
+
+    it("adds nothing to config.json for --no-funnel on an install that never used Tailscale", () => {
+      installed();
+      expect(install(["--no-funnel"]).code).toBe(0);
+      expect(config()).toEqual(INITIAL_CONFIG);
+      expect(restarts()).toBe(0);
+    });
+
+    it("restarts once for a new link when the last one expired unapproved", () => {
+      installed();
+      journal(sb, REACHABLE);
+      expect(install(["--tailscale"]).code).toBe(0);
+      writeFileSync(sb.logFile, "");
+      journal(sb, `${NEEDS_APPROVAL}\n${EXPIRED}`, NEEDS_APPROVAL, REACHABLE);
+      const { code, out } = install(["--tailscale"]);
+      expect(code).toBe(0);
+      expect(restarts()).toBe(1);
+      expect(out).toContain("The last approval link expired");
+      expect(out).toContain("https://loxaic.tail47eac7.ts.net");
+    });
+
+    it("stops with Tailscale's own reason, and after a second expired link", () => {
+      installed();
+      journal(sb, "Tailscale: tailnet policy does not allow Funnel for this node");
+      const denied = install(["--tailscale"]);
+      expect(denied.code).not.toBe(0);
+      expect(denied.out).toContain("Tailscale: tailnet policy does not allow Funnel for this node");
+
+      writeFileSync(sb.logFile, "");
+      journal(sb, EXPIRED);
+      const expired = install(["--tailscale"]);
+      expect(expired.code).not.toBe(0);
+      expect(expired.out).toContain("not approved on the tailnet in time");
+      expect(restarts()).toBe(1);
+    });
+
+    it("gives up after its timeout, having shown the link and how to get a new one", () => {
+      journal(sb, NEEDS_APPROVAL);
+      const { code, out } = install(["--channel", "beta", "--tailscale"], { LOXAIC_TAILNET_TIMEOUT: "0" });
+      expect(code).not.toBe(0);
+      expect(out).toContain(AUTH_LINK);
+      expect(out).toContain("Run this again with --tailscale for a new approval link");
+    });
+
+    it("refuses contradictory options and names Tailscale would reject, before installing anything", () => {
+      for (const args of [["--no-tailscale", "--funnel"], ["--tailscale", "--no-tailscale"], ["--funnel", "--no-funnel"], ["--tailscale-name", "Loxaic Box"], ["--tailscale-name", "-x"]]) {
+        expect(install(args).code, args.join(" ")).not.toBe(0);
+      }
+      expect(sb.log.some((l) => l.startsWith("apt-get"))).toBe(false);
+    });
+  });
+
   describe("NVIDIA", () => {
     const V = "580.95.05";
     const RUN_URL = `https://download.nvidia.com/XFree86/Linux-x86_64/${V}/NVIDIA-Linux-x86_64-${V}.run`;
@@ -640,6 +818,11 @@ describe("create-lxc.sh", SLOW, () => {
     expect(log).toContain("pct exec 105 -- /usr/local/sbin/loxaic-install --channel beta --version 0.0.1-beta.19");
     // --gpu none: no passthrough, so no stop-and-restart either.
     expect(log.some((l) => l.startsWith("pct set") || l.startsWith("pct stop"))).toBe(false);
+  });
+
+  it("passes the Tailscale options to the installer", () => {
+    expect(sb.run(CREATE, ["--gpu", "none", "--channel", "beta", "--tailscale-name", "loxaic-nuke", "--funnel"]).code).toBe(0);
+    expect(sb.log).toContain("pct exec 105 -- /usr/local/sbin/loxaic-install --channel beta --tailscale-name loxaic-nuke --funnel");
   });
 
   it("installs stable from master, and reuses a template that is already downloaded", () => {

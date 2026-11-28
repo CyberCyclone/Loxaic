@@ -7,6 +7,7 @@
 #   loxaic-install                    # install, or upgrade to the newest release
 #   loxaic-install --channel beta     # Loxaic Beta instead of Loxaic
 #   loxaic-install --version 1.2.0    # a specific release (rollback)
+#   loxaic-install --funnel           # reachable from anywhere, via Tailscale Funnel
 #
 # The .deb comes from this repository's GitHub releases and is checked against
 # the sha512 in the release's own update feed before it is installed. Running
@@ -18,6 +19,8 @@ REPO="${LOXAIC_REPO:-CyberCyclone/Loxaic}"
 # Test seam: every absolute path this script reads or writes goes through it.
 ROOT="${LOXAIC_TEST_ROOT:-}"
 HEALTH_TIMEOUT="${LOXAIC_HEALTH_TIMEOUT:-180}"
+# The app's Tailscale node gives up on an unapproved machine after 10 minutes.
+TAILNET_TIMEOUT="${LOXAIC_TAILNET_TIMEOUT:-660}"
 GITHUB="https://github.com/${REPO}"
 API="https://api.github.com/repos/${REPO}"
 
@@ -26,6 +29,13 @@ VERSION=""
 PORT=4100
 ADVERTISE_URL=""
 HOST_NAME=""
+# Tailscale: on, off, or empty to keep what the install already has.
+TAILNET=""
+TAILNET_NAME=""
+FUNNEL=""
+FRESH=""
+TAILNET_URL=""
+FUNNEL_DEFERRED=0
 TMP=""
 
 die() { echo "loxaic-install: $*" >&2; exit 1; }
@@ -45,7 +55,18 @@ for agent sandboxes), or upgrades an existing install to the newest release.
   --advertise-url <url>  Address other machines should use (a reverse proxy
                          or domain), instead of this machine's LAN address.
   --host-name <name>     Name shown against this host's models.
+  --tailscale            Put Loxaic on your tailnet at https://<name>.<tailnet>.ts.net,
+                         through the app's own Tailscale node (no Tailscale
+                         install needed). Prints a link to approve the machine.
+  --tailscale-name <n>   Its name on the tailnet (default: from the hostname).
+  --funnel               Also publish it to the internet with Tailscale Funnel,
+                         so devices without Tailscale can connect. Creating
+                         accounts is off while Funnel is on.
+  --no-funnel            Turn Funnel off again (e.g. to create an account).
+  --no-tailscale         Take Loxaic off the tailnet.
   --help                 Show this help.
+
+Without any of the Tailscale options, an upgrade keeps the current setting.
 EOF
 }
 
@@ -330,6 +351,106 @@ wait_for_health() {
   done
 }
 
+# ── Tailscale ────────────────────────────────────────────────────────────────
+# The app runs its own userspace Tailscale node (tsnet) when config.json's
+# host.tailnet says so, so the container needs no tailscaled and no TUN device.
+# This script edits only that block; the auth state stays in the app's data dir.
+
+valid_tailnet_name() { [[ $1 =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; }
+
+# "loxaic-<hostname>", the desktop app's default, unless the hostname already
+# says loxaic. Tailscale names are lowercase letters, digits and dashes.
+default_tailnet_name() {
+  local h
+  h=$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/^-*//; s/-*$//')
+  case $h in
+    "") h=loxaic ;;
+    loxaic*) ;;
+    *) h="loxaic-${h}" ;;
+  esac
+  h=$(printf '%s' "$h" | cut -c1-63 | sed 's/-*$//')
+  echo "$h"
+}
+
+config_path() { echo "${ROOT}/var/lib/$(service_name "$CHANNEL")/config.json"; }
+
+# Applies the Tailscale options to host.tailnet; returns 0 when the file
+# changed. The app writes config.json on its first start, so on a new install
+# this does nothing until then.
+apply_tailnet() {
+  local cfg new funnel=$FUNNEL
+  [ -n "${TAILNET}${FUNNEL}" ] || return 1
+  cfg=$(config_path)
+  [ -f "$cfg" ] || return 1
+  # Funnel closes sign-up, and the first account made becomes the admin, so a
+  # new install keeps Funnel off until that account exists.
+  if [ "$funnel" = on ] && [ "$FRESH" = fresh ]; then
+    funnel=off
+    FUNNEL_DEFERRED=1
+  fi
+  new="${TMP}/config.json"
+  jq --arg ts "$TAILNET" --arg name "$TAILNET_NAME" --arg dflt "$(default_tailnet_name)" --arg funnel "$funnel" '
+    if $ts == "" and .host.tailnet == null then . else
+      .host.tailnet = ((.host.tailnet // {enabled: false, funnel: false})
+        | if $ts == "on" then .enabled = true elif $ts == "off" then .enabled = false else . end
+        | if $name != "" then .hostname = $name elif (.hostname // "") == "" then .hostname = $dflt else . end
+        | if $funnel == "on" then .funnel = true elif $funnel == "off" then .funnel = false else . end)
+    end' "$cfg" > "$new" || die "could not update ${cfg#"$ROOT"}"
+  if cmp -s "$new" "$cfg"; then return 1; fi
+  # Rewritten in place, so the file keeps the service user's owner and 0600.
+  cat "$new" > "$cfg"
+  return 0
+}
+
+# Waits for the app's Tailscale node to come up and sets TAILNET_URL, showing
+# the approval link while it waits. Reads only the current run of the service.
+wait_for_tailnet() {
+  local service deadline inv out link url err shown="" restarted=0
+  service=$(service_name "$CHANNEL")
+  deadline=$(( $(date +%s) + TAILNET_TIMEOUT ))
+  log "Joining your tailnet"
+  while :; do
+    inv=$(systemctl show -p InvocationID --value "$service" 2>/dev/null || true)
+    out=""
+    [ -n "$inv" ] && out=$(journalctl "_SYSTEMD_INVOCATION_ID=${inv}" -o cat --no-pager 2>/dev/null || true)
+    url=$(sed -n 's/^Reachable on the tailnet at \(https:\/\/[^ ]*\).*/\1/p' <<< "$out" | tail -n 1)
+    if [ -n "$url" ]; then
+      TAILNET_URL=$url
+      return 0
+    fi
+    err=$(sed -n 's/^Tailscale: //p' <<< "$out" | tail -n 1)
+    if [ -n "$err" ]; then
+      # A link that expired unapproved, from this run or an earlier one: one
+      # restart gets a fresh link. Anything else is the reason to stop.
+      case $err in
+        *"not approved"*)
+          if [ "$restarted" = 0 ]; then
+            restarted=1
+            shown=""
+            log "The last approval link expired; restarting for a new one"
+            systemctl restart "$service"
+            wait_for_health
+            continue
+          fi ;;
+      esac
+      die "Tailscale: ${err}"
+    fi
+    link=$(sed -n 's/^Tailscale needs approval for this machine: \(https:\/\/[^ ]*\).*/\1/p' <<< "$out" | tail -n 1)
+    if [ -n "$link" ] && [ "$link" != "$shown" ]; then
+      shown=$link
+      echo
+      echo "Approve this machine on your tailnet within 10 minutes, in a browser"
+      echo "signed in to Tailscale:"
+      echo "  ${link}"
+      echo
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      die "Loxaic did not join your tailnet within ${TAILNET_TIMEOUT}s. Run this again with --tailscale for a new approval link."
+    fi
+    sleep 3
+  done
+}
+
 print_summary() {
   local addr
   echo
@@ -339,15 +460,26 @@ print_summary() {
     echo "  http://${addr}:${PORT}"
   done
   [ -n "$ADVERTISE_URL" ] && echo "  ${ADVERTISE_URL}"
-  if [ "${2:-}" = fresh ]; then
+  [ -n "$TAILNET_URL" ] && echo "  ${TAILNET_URL}"
+  if [ "$FRESH" = fresh ]; then
     echo
     echo "Create your account now: the first account made becomes the admin,"
     echo "and anyone who can reach this address can sign up until you do."
+  fi
+  if [ "$FUNNEL_DEFERRED" = 1 ]; then
+    echo
+    echo "Funnel stays off until you have an account, because it closes sign-up."
+    echo "Create your account, then publish Loxaic with: /usr/local/sbin/loxaic-install --funnel"
+  elif [ -n "$TAILNET_URL" ] && [ "$(jq -r '.host.tailnet.funnel // false' "$(config_path)" 2>/dev/null)" = true ]; then
+    echo
+    echo "${TAILNET_URL} is on the internet (Tailscale Funnel), so creating accounts"
+    echo "is off. To add one: run with --no-funnel, create it, then run with --funnel."
   fi
   echo "Upgrade later by running: /usr/local/sbin/loxaic-install"
 }
 
 main() {
+  local ts_on=0 ts_off=0 funnel_on=0 funnel_off=0
   while [ $# -gt 0 ]; do
     case $1 in
       --channel) CHANNEL=${2:-}; shift 2 ;;
@@ -360,6 +492,12 @@ main() {
       --advertise-url=*) ADVERTISE_URL=${1#*=}; shift ;;
       --host-name) HOST_NAME=${2:-}; shift 2 ;;
       --host-name=*) HOST_NAME=${1#*=}; shift ;;
+      --tailscale) ts_on=1; shift ;;
+      --tailscale-name) TAILNET_NAME=${2:-}; ts_on=1; shift 2 ;;
+      --tailscale-name=*) TAILNET_NAME=${1#*=}; ts_on=1; shift ;;
+      --funnel) funnel_on=1; ts_on=1; shift ;;
+      --no-funnel) funnel_off=1; shift ;;
+      --no-tailscale) ts_off=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; die "unknown option: $1" ;;
     esac
@@ -374,6 +512,14 @@ main() {
   # systemd expands % and $ in ExecStart, so the name is kept to plain characters.
   local name_re='^[A-Za-z0-9 ._-]*$'
   [[ $HOST_NAME =~ $name_re ]] || die "--host-name may contain only letters, digits, spaces, dots, dashes and underscores"
+  [ $((ts_on + ts_off)) -lt 2 ] || die "--no-tailscale cannot be combined with --tailscale, --tailscale-name or --funnel"
+  [ $((funnel_on + funnel_off)) -lt 2 ] || die "choose one of --funnel and --no-funnel"
+  if [ "$ts_on" = 1 ]; then TAILNET=on; fi
+  if [ "$ts_off" = 1 ]; then TAILNET=off; FUNNEL=off; fi
+  if [ "$funnel_on" = 1 ]; then FUNNEL=on; fi
+  if [ "$funnel_off" = 1 ]; then FUNNEL=off; fi
+  [ -z "$TAILNET_NAME" ] || valid_tailnet_name "$TAILNET_NAME" \
+    || die "--tailscale-name must be lowercase letters, digits and dashes, at most 63, not starting or ending with a dash"
 
   check_system
   TMP=$(mktemp -d)
@@ -384,10 +530,10 @@ main() {
   install_nvidia_userspace
   resolve_release
 
-  local current installed=0 changed=0 fresh=""
+  local current installed=0 changed=0
   current=$(installed_version "$CHANNEL")
   # No database yet means no accounts yet, whatever an earlier failed run left.
-  [ -d "${ROOT}/var/lib/$(service_name "$CHANNEL")/postgres" ] || fresh=fresh
+  [ -d "${ROOT}/var/lib/$(service_name "$CHANNEL")/postgres" ] || FRESH=fresh
   if [ "$current" = "$RELEASE_VERSION" ]; then
     log "$(product_name "$CHANNEL") ${current} is already installed"
   else
@@ -399,6 +545,7 @@ main() {
   check_sockets "${ROOT}/opt/$(product_name "$CHANNEL")/$(service_name "$CHANNEL")"
   ensure_user
   if write_unit; then changed=1; fi
+  if apply_tailnet; then changed=1; fi
 
   local service
   service=$(service_name "$CHANNEL")
@@ -406,13 +553,22 @@ main() {
   if [ "$installed" = 1 ] || [ "$changed" = 1 ]; then
     systemctl restart "$service"
   elif systemctl is-active --quiet "$service"; then
-    echo "Already current: $(product_name "$CHANNEL") ${current}."
-    return 0
+    # Asked to be on the tailnet: still check it is, below.
+    if [ "$TAILNET" != on ]; then
+      echo "Already current: $(product_name "$CHANNEL") ${current}."
+      return 0
+    fi
   else
     systemctl start "$service"
   fi
   wait_for_health
-  print_summary "$RELEASE_VERSION" "$fresh"
+  # A new install's first start is what writes config.json.
+  if apply_tailnet; then
+    systemctl restart "$service"
+    wait_for_health
+  fi
+  if [ "$TAILNET" = on ]; then wait_for_tailnet; fi
+  print_summary "$RELEASE_VERSION"
 }
 
 [ "${LOXAIC_SOURCE_ONLY:-}" = 1 ] || main "$@"
