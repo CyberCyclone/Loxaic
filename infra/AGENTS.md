@@ -39,6 +39,7 @@ Dockerfiles and container entrypoints (`docker/`), the Proxmox install scripts (
 - Every path the scripts inspect goes through `$ROOT` (`LOXAIC_TEST_ROOT`), and every command is one a test can fake on `PATH`.
 - Values written into the unit's `ExecStart` must exclude `%` and `$`, which systemd expands.
 - Print `pct exec <ctid> -- /usr/local/sbin/loxaic-install` with its full path: `pct exec`'s `PATH` has no `/usr/local/sbin`.
+- `install.sh` edits only `host.tailnet` in the app's `config.json`, rewritten in place (owner and 0600 kept); never a Tailscale auth key, which belongs in `secrets.json`. Keep the log lines `wait_for_tailnet` matches in step with `apps/desktop/src/headless.js`.
 
 ## tsnet-proxy
 

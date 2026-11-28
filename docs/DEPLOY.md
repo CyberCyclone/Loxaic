@@ -193,11 +193,35 @@ What the container gets:
 
 `create-lxc.sh --help` lists the options: container ID, storage, disk size
 (default 64 GB, since models are large), cores, memory, bridge, static
-address, `--gpu dri|nvidia|none`, `--version`, `--advertise-url`. Without a
-terminal it asks nothing and takes the defaults.
+address, `--gpu dri|nvidia|none`, `--version`, `--advertise-url`,
+`--tailscale`, `--funnel`. Without a terminal it asks nothing and takes the
+defaults.
 
 **Create your account straight away.** The first account becomes the admin,
 and sign-up is open to anyone who can reach the address until then.
+
+**Reaching it from anywhere.** `--tailscale` puts Loxaic on your tailnet at
+`https://<name>.<tailnet>.ts.net`, through the app's own Tailscale node, so the
+container needs no Tailscale install and no TUN device. The name defaults to
+`loxaic-<hostname>`, or set it with `--tailscale-name`. The installer prints a
+link to approve the machine and waits up to 10 minutes for it. `--funnel` also
+publishes that address to the internet with Tailscale Funnel, so a phone
+without the Tailscale app can connect. Your tailnet policy must allow Funnel
+(the `funnel` node attribute).
+
+While Funnel is on, creating accounts is switched off, because the address is
+public (scanners find new Funnel names within minutes). A new install keeps
+Funnel off until you have made your account and run `--funnel` again. Both
+work on an existing container too, and a plain upgrade keeps the setting:
+
+```bash
+pct exec <ctid> -- /usr/local/sbin/loxaic-install --funnel        # publish
+pct exec <ctid> -- /usr/local/sbin/loxaic-install --no-funnel     # e.g. to add an account
+pct exec <ctid> -- /usr/local/sbin/loxaic-install --no-tailscale  # tailnet off
+```
+
+In the Tailscale admin console, turn off key expiry for the machine, or it
+leaves the tailnet after about 180 days and needs approving again.
 
 **Upgrading** installs the newest release of the container's channel, after
 checking its sha512 against the release's feed, and restarts the service. It
