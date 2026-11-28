@@ -72,22 +72,51 @@ rather not put a display on. Two equivalent ways to invoke it:
   invoke `headless.js` inside the packaged app directly. This never
   initialises Chromium, so it needs no display and no `xvfb`, ever.
 
+On Debian or Ubuntu, `infra/proxmox/install.sh` does all of the following
+for you (it is what the Proxmox script below runs inside its container):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CyberCyclone/Loxaic/master/infra/proxmox/install.sh | sudo bash
+```
+
+By hand, for the stable app's `.deb` (Loxaic Beta installs to `/opt/Loxaic
+Beta/loxaic-beta`): create a system user that owns nothing but its data
+directory, add it to the `docker` group (a host refuses to start without a
+container engine), and give it a unit. Postgres refuses to run as root, so
+the unit must not either.
+
 ```ini
 # /etc/systemd/system/loxaic.service
 [Unit]
 Description=Loxaic
-After=network.target
+Wants=network-online.target docker.service
+After=network-online.target docker.service
 
 [Service]
-Environment=ELECTRON_RUN_AS_NODE=1
-ExecStart=/opt/loxaic/loxaic /opt/loxaic/resources/app/src/headless.js \
-  --data-dir=/var/lib/loxaic --port=4100
-Restart=on-failure
 User=loxaic
+Group=loxaic
+StateDirectory=loxaic
+Environment=ELECTRON_RUN_AS_NODE=1
+Environment=HOME=/var/lib/loxaic
+ExecStart=/opt/Loxaic/loxaic /opt/Loxaic/resources/app/src/headless.js \
+  --data-dir=/var/lib/loxaic --port=4100 --as-host --bind lan
+KillMode=mixed
+TimeoutStopSec=60
+Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+```bash
+sudo useradd --system --user-group --home-dir /var/lib/loxaic --no-create-home --shell /usr/sbin/nologin loxaic
+sudo usermod -aG docker loxaic
+sudo systemctl daemon-reload && sudo systemctl enable --now loxaic
+```
+
+The packaged binary also loads `libasound.so.2` and `libgbm.so.1`, which the
+`.deb` does not declare: on a minimal server install `libasound2t64` (or
+`libasound2`) and `libgbm1`.
 
 A headless instance reads the same `config.json` the GUI writes, so a machine
 set up through the app can be moved to a systemd unit without reconfiguring
@@ -122,6 +151,63 @@ account created in one signs in from the other) — a machine can move between
 `Ctrl-C`/`SIGTERM` drains the server and shuts Postgres down cleanly before
 exiting; a `systemctl restart` (or replacing the binary — see Upgrading
 below) reuses the existing database.
+
+### Proxmox VE (LXC)
+
+Run one command on the Proxmox host, as root. It creates an unprivileged
+Ubuntu 24.04 container, installs Loxaic in it as a headless host, and prints
+the address:
+
+```bash
+# Loxaic (stable releases)
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/CyberCyclone/Loxaic/master/infra/proxmox/create-lxc.sh)"
+# Loxaic Beta
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/CyberCyclone/Loxaic/beta/infra/proxmox/create-lxc.sh)" -- --channel beta
+```
+
+Each channel's scripts are fetched from its release branch (`master` for
+stable, `beta` for beta), which only a release moves, so a host only ever runs
+an installer that shipped. Stable has no release yet; until it does, use the
+beta line.
+
+What the container gets:
+
+- **Docker**, for agent sandboxes and document extraction: the container has
+  `nesting=1,keyctl=1`, and the install stops if `docker run hello-world`
+  fails, because a host will not start without it.
+- **GPUs** (`--gpu auto`, the default, passes every one it finds):
+  - AMD and Intel `/dev/dri/renderD*` and `/dev/kfd`, owned by the
+    container's `render` group, with the Vulkan loader installed.
+  - NVIDIA: every `/dev/nvidia*` node, plus that exact driver version's
+    user-space libraries, downloaded from NVIDIA with no kernel module. The
+    host needs the NVIDIA driver installed and working (`nvidia-smi`), and
+    `/dev/nvidia-uvm` must exist before the container starts, so load it at
+    boot on the host (`nvidia-modprobe -u -c=0`).
+- **A data directory** at `/var/lib/loxaic` (`/var/lib/loxaic-beta`),
+  untouched by upgrades. One channel per container: the installer refuses
+  to put the other beside it.
+
+`create-lxc.sh --help` lists the options: container ID, storage, disk size
+(default 64 GB, since models are large), cores, memory, bridge, static
+address, `--gpu dri|nvidia|none`, `--version`, `--advertise-url`. Without a
+terminal it asks nothing and takes the defaults.
+
+**Create your account straight away.** The first account becomes the admin,
+and sign-up is open to anyone who can reach the address until then.
+
+**Upgrading** installs the newest release of the container's channel, after
+checking its sha512 against the release's feed, and restarts the service. It
+does nothing when that release is already installed:
+
+```bash
+pct exec <ctid> -- loxaic-install
+pct exec <ctid> -- loxaic-install --version 0.0.1-beta.19   # roll back
+```
+
+`loxaic-install` is the copy of `install.sh` that was current when the
+container was made. To pick up a newer installer, run it from the branch
+instead: `pct exec <ctid> -- bash -c "$(curl -fsSL
+https://raw.githubusercontent.com/CyberCyclone/Loxaic/beta/infra/proxmox/install.sh)"`.
 
 ### Ports and data
 

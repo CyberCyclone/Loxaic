@@ -1,6 +1,6 @@
 # infra
 
-Dockerfiles and container entrypoints (`docker/`), the sandbox image and its document extractor (`docker/sandbox.Dockerfile`, `docker/sandbox/extract.py`), the environments' Compose file (`envs/compose.yml`), and the Go `tsnet-proxy` sidecar the desktop embeds. These rules cover what other code depends on in each.
+Dockerfiles and container entrypoints (`docker/`), the Proxmox install scripts (`proxmox/`), the sandbox image and its document extractor (`docker/sandbox.Dockerfile`, `docker/sandbox/extract.py`), the environments' Compose file (`envs/compose.yml`), and the Go `tsnet-proxy` sidecar the desktop embeds. These rules cover what other code depends on in each.
 
 ## Sandbox image
 
@@ -28,6 +28,16 @@ Dockerfiles and container entrypoints (`docker/`), the sandbox image and its doc
 ## Environments (`envs/compose.yml`)
 
 - Slot containers get no Docker socket and no host credentials; never mount `/var/run/docker.sock` (it hands the deployed code the daemon). `scripts/envs.sh` sends this file from the workstation, not from the deployed commit.
+
+## Proxmox scripts (`proxmox/`)
+
+- Users run `create-lxc.sh` as root on their Proxmox host straight from `raw.githubusercontent.com`; each channel's scripts come from its release branch (`script_ref`: stable→`master`, beta→`beta`), never `dev`.
+- `install.sh` checks a `.deb` against the sha512 in its release's feed before `apt-get install`; keep `feed_deb_entry` in step with electron-builder's feed (fixture: `apps/desktop/scripts/__tests__/fixtures/proxmox/`).
+- One channel per machine: each has its own `/opt` directory, user, unit and `/var/lib` data directory, and `install.sh` refuses the other beside it.
+- Keep both scripts runnable under macOS's bash 3.2 (no `mapfile`, no associative arrays, guard empty-array expansion); `proxmox.test.js` runs them there.
+- Run `main` behind `LOXAIC_SOURCE_ONLY`, never a `BASH_SOURCE` check: under `curl | bash` that check is false and nothing runs.
+- Every path the scripts inspect goes through `$ROOT` (`LOXAIC_TEST_ROOT`), and every command is one a test can fake on `PATH`.
+- Values written into the unit's `ExecStart` must exclude `%` and `$`, which systemd expands.
 
 ## tsnet-proxy
 
