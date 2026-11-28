@@ -1,0 +1,12 @@
+version: 0.0.1-beta.20
+files:
+  - url: Loxaic-Beta-0.0.1-beta.20-linux-x86_64.AppImage
+    sha512: 2s6ZATqeX57lDWDztXUemN/R1gVtvzj1DsOvjUruF5+I1/RKX5oEtEuSmwwbU53Wih3D7MeE1XKw3HH/nDe04A==
+    size: 219602425
+    blockMapSize: 228877
+  - url: Loxaic-Beta-0.0.1-beta.20-linux-amd64.deb
+    sha512: 2hSp/1KW7bjkxbSYNdYXmDu5iRLwgnTA8MJ4Y3AXiruznK6e6LtwPnzhWZb5RVpc6M8pfACYB2P41Y2vA1bEAA==
+    size: 185191680
+path: Loxaic-Beta-0.0.1-beta.20-linux-x86_64.AppImage
+sha512: 2s6ZATqeX57lDWDztXUemN/R1gVtvzj1DsOvjUruF5+I1/RKX5oEtEuSmwwbU53Wih3D7MeE1XKw3HH/nDe04A==
+releaseDate: '2026-11-27T07:02:59.971Z'

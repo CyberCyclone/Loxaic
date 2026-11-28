@@ -38,6 +38,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      # The Proxmox scripts run as root on users' hosts; ubuntu-latest ships shellcheck.
+      - run: shellcheck infra/proxmox/*.sh
 
   typecheck:
     name: typecheck
